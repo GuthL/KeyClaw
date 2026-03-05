@@ -1,0 +1,8 @@
+# OS/editor files
+.DS_Store
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.*
