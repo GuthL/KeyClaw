@@ -2,8 +2,6 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
-pub const CODE_BLOCKED_BY_LEAK_POLICY: &str = "blocked_by_leak_policy";
-pub const CODE_GITLEAKS_UNAVAILABLE: &str = "gitleaks_unavailable";
 pub const CODE_MITM_NOT_EFFECTIVE: &str = "mitm_not_effective";
 pub const CODE_BODY_TOO_LARGE: &str = "body_too_large";
 pub const CODE_INVALID_JSON: &str = "invalid_json";

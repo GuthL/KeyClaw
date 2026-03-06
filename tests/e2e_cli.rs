@@ -11,46 +11,49 @@ use std::os::unix::process::ExitStatusExt;
 #[cfg(unix)]
 use wait_timeout::ChildExt;
 
+// Test secrets that match gitleaks generic-api-key rule (keyword + high-entropy value)
+// Format: "api_key = <high-entropy-token>" triggers the generic-api-key rule
+const TEST_SECRET_CODEX: &str = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+const TEST_SECRET_CLAUDE: &str = "xY2zW4vU6tS8rQ0pO2nM4lK6jI8hG0f";
+
 #[test]
 fn mitm_codex_intercepts_and_sanitizes() {
     let (upstream_url, rx, _guard) = start_upstream();
-    let secret = "sk-ABCDEF0123456789ABCDEF0123456789";
 
     let (stderr, exit_code) = run_mitm(
         "codex",
         free_addr(),
         &upstream_url,
-        &format!(r#"{{"prompt":"{}"}}"#, secret),
+        &format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX),
     );
 
     assert_eq!(exit_code, 0, "stderr={stderr}");
     let body = rx
         .recv_timeout(Duration::from_secs(2))
         .expect("upstream body");
-    assert!(!body.contains(secret));
-    assert!(body.contains("{{KEYCLAW_SECRET_"));
-    assert!(!stderr.contains(secret));
+    assert!(!body.contains(TEST_SECRET_CODEX), "secret leaked to upstream: {body}");
+    assert!(body.contains("{{KEYCLAW_SECRET_"), "no placeholder in upstream body: {body}");
+    assert!(!stderr.contains(TEST_SECRET_CODEX));
 }
 
 #[test]
 fn mitm_claude_intercepts_and_sanitizes() {
     let (upstream_url, rx, _guard) = start_upstream();
-    let secret = "sk-ant-ABCDEFGHIJKLMNOPQRSTUVWX123456";
 
     let (stderr, exit_code) = run_mitm(
         "claude",
         free_addr(),
         &upstream_url,
-        &format!(r#"{{"prompt":"{}"}}"#, secret),
+        &format!(r#"{{"prompt":"secret_key: {}"}}"#, TEST_SECRET_CLAUDE),
     );
 
     assert_eq!(exit_code, 0, "stderr={stderr}");
     let body = rx
         .recv_timeout(Duration::from_secs(2))
         .expect("upstream body");
-    assert!(!body.contains(secret));
-    assert!(body.contains("{{KEYCLAW_SECRET_"));
-    assert!(!stderr.contains(secret));
+    assert!(!body.contains(TEST_SECRET_CLAUDE), "secret leaked to upstream: {body}");
+    assert!(body.contains("{{KEYCLAW_SECRET_"), "no placeholder in upstream body: {body}");
+    assert!(!stderr.contains(TEST_SECRET_CLAUDE));
 }
 
 #[test]
@@ -71,21 +74,20 @@ fn doctor_detects_proxy_bypass_attempt() {
 #[test]
 fn logs_contain_no_raw_secrets() {
     let (upstream_url, rx, _guard) = start_upstream();
-    let secret = "sk-ABCDEF0123456789ABCDEF0123456789";
 
     let (stderr, exit_code) = run_mitm(
         "codex",
         free_addr(),
         &upstream_url,
-        &format!(r#"{{"prompt":"{}"}}"#, secret),
+        &format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX),
     );
 
     assert_eq!(exit_code, 0, "stderr={stderr}");
     let _ = rx
         .recv_timeout(Duration::from_secs(2))
         .expect("upstream body");
-    assert!(!stderr.contains(secret));
-    assert!(stderr.contains("replaced"));
+    assert!(!stderr.contains(TEST_SECRET_CODEX));
+    assert!(stderr.contains("replaced"), "expected 'replaced' in stderr: {stderr}");
 }
 
 #[cfg(unix)]

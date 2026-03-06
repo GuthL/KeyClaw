@@ -623,50 +623,6 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
     eprintln!("---");
 }
 
-/// Split `text` into (emit, hold) where `hold` is a suffix that looks like the
-/// start of a placeholder that hasn't closed yet.  Returns the full text with
-/// an empty hold when there is nothing to buffer.
-fn split_at_incomplete_placeholder(text: &str) -> (String, String) {
-    let marker = "{{KEYCLAW_SECRET_";
-    // Max placeholder length: "{{KEYCLAW_SECRET_" (17) + prefix (1-5) + "_" (1) + hash (16) + "}}" (2) = 41
-    let max_hold = marker.len() + 5 + 1 + 16 + 2;
-
-    // Check if any suffix of `text` is a prefix of the marker, or is
-    // an opened marker without a closing "}}"
-    for i in 1..=max_hold.min(text.len()) {
-        let split = text.len() - i;
-        if !text.is_char_boundary(split) {
-            continue;
-        }
-        let tail = &text[split..];
-        // Case 1: tail is a prefix of the marker (e.g. "{{K", "{{KEYCLAW_SECRET_")
-        if marker.starts_with(tail) {
-            return (text[..split].to_string(), tail.to_string());
-        }
-        // Case 2: tail starts with the full marker but hasn't closed yet
-        if tail.starts_with(marker) && !tail.contains("}}") {
-            return (text[..split].to_string(), tail.to_string());
-        }
-    }
-    (text.to_string(), String::new())
-}
-
-fn resolve_chunk(processor: &Arc<Processor>, text: &str) -> String {
-    if !text.contains("{{KEYCLAW_SECRET_") {
-        return text.to_string();
-    }
-    match processor.resolve_text(text.as_bytes()) {
-        Ok(resolved) => {
-            let result = String::from_utf8_lossy(&resolved).into_owned();
-            if result != text {
-                log_line("response: resolved placeholders in stream chunk".to_string());
-            }
-            result
-        }
-        Err(_) => text.to_string(),
-    }
-}
-
 fn log_line(line: String) {
     eprintln!("keyclaw: {}", logscrub::scrub(&line));
 }
