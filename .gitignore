@@ -6,3 +6,12 @@
 # Environment files
 .env
 .env.*
+
+# Rust
+target/
+
+# Local binaries
+keyclaw
+
+# Generated CA certs (machine-specific)
+certs/
