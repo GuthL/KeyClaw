@@ -21,7 +21,7 @@ The binary is at `./target/release/keyclaw`. No external services needed for bui
 ### Request Flow (outbound)
 
 ```
-User CLI → KeyClaw Proxy → detect secrets → replace with {{KEYCLAW_SECRET_xxx}}
+User CLI → KeyClaw Proxy → detect secrets (gitleaks rules) → replace with {{KEYCLAW_SECRET_xxx}}
 → store mapping in encrypted vault → forward sanitized request to API
 ```
 
@@ -35,26 +35,25 @@ API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_xxx}} placeholders
 ### Key Design Decisions
 
 1. **hudsucker** is the MITM proxy engine (HTTP/HTTPS/WebSocket)
-2. **Placeholders are deterministic** — same secret always produces same placeholder ID (SHA-256 based)
-3. **Vault is AES-GCM encrypted** with scrypt key derivation, atomic writes via temp file + rename
-4. **Fail-closed by default** — if detection errors occur, requests are blocked, not silently passed
+2. **Gitleaks rules are compiled natively** — 220+ rules from `gitleaks.toml` parsed at startup into Rust regex. No subprocess needed.
+3. **Placeholders are deterministic** — same secret always produces same placeholder ID (5-char prefix + SHA-256 hash)
+4. **Vault is AES-GCM encrypted** with scrypt key derivation, atomic writes via temp file + rename
 5. **WebSocket compression is stripped** — `Sec-WebSocket-Extensions` header is removed because tungstenite can't handle permessage-deflate (RSV1 bits)
 6. **SSE streams are not buffered** — placeholders are resolved per-chunk via `map_frame` to preserve streaming behavior
 7. **CA certs are generated at runtime** — no embedded certs, each machine generates its own on first run
+8. **Custom rules** can be loaded from a file via `KEYCLAW_GITLEAKS_CONFIG` env var
 
 ## Module Map
 
 | Module | Purpose | Key Types |
 |--------|---------|-----------|
+| `gitleaks_rules.rs` | Parse gitleaks.toml, compile regex rules natively | `RuleSet`, `Rule`, `SecretMatch` |
 | `proxy.rs` | MITM proxy server, HTTP/WS handlers | `Server`, `KeyclawHttpHandler` |
-| `pipeline.rs` | Orchestrates rewrite + policy evaluation | `Processor`, `RewriteResult` |
-| `placeholder.rs` | Secret detection regex, placeholder generation | `replace_secrets()`, `resolve_placeholders()` |
+| `pipeline.rs` | Orchestrates rewrite pipeline | `Processor`, `RewriteResult` |
+| `placeholder.rs` | Secret replacement using RuleSet, placeholder generation | `replace_secrets()`, `resolve_placeholders()` |
 | `redaction.rs` | JSON tree walker, notice injection | `walk_json_strings()`, `inject_redaction_notice()` |
 | `vault.rs` | AES-GCM encrypted secret↔placeholder storage | `Store` |
 | `certgen.rs` | Runtime CA cert/key generation via rcgen | `ensure_ca()`, `CaPair` |
-| `policy.rs` | Block/warn/allow decisions from detector findings | `Executor`, `Decision`, `Action` |
-| `detector/embedded.rs` | Built-in regex + entropy secret detection | `EmbeddedDetector` |
-| `detector/gitleaks.rs` | Gitleaks subprocess wrapper | `GitleaksDetector` |
 | `launcher.rs` | CLI subcommands (proxy, mitm, doctor, rewrite-json) | `Runner`, `run_cli()` |
 | `config.rs` | Environment variable configuration | `Config` |
 | `errors.rs` | Error types with deterministic codes | `KeyclawError` |
@@ -64,7 +63,9 @@ API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_xxx}} placeholders
 
 ### Adding a new secret pattern
 
-Edit `src/placeholder.rs` → `replace_secrets()`. Add a new `rewrite()` or `rewrite_with_generic_regex()` call with your regex pattern. The function chains transformations — add yours to the chain.
+Add a `[[rules]]` entry to `gitleaks.toml` at the repo root. The rule needs `id`, `regex`, and optionally `keywords` (for fast pre-filtering) and `secretGroup` (capture group index). Rules are compiled at startup via `include_str!`.
+
+For custom per-deployment rules, set `KEYCLAW_GITLEAKS_CONFIG=/path/to/custom.toml`.
 
 ### Changing proxy behavior
 
@@ -87,9 +88,11 @@ Edit `src/redaction.rs` → `inject_redaction_notice()`. The notice is injected 
 
 ### Placeholder format
 ```
-{{KEYCLAW_SECRET_<16 hex chars>}}
+{{KEYCLAW_SECRET_<prefix>_<16 hex chars>}}
 ```
-Example: `{{KEYCLAW_SECRET_e5edb9c02dc4acd3}}`
+Example: `{{KEYCLAW_SECRET_ghp_A_edc439282b0de94f}}`
+
+The prefix is the first 5 characters of the secret (for human readability in logs).
 
 ### Vault path
 ```
@@ -110,20 +113,22 @@ source ~/.keyclaw/env.sh   # Sets HTTP_PROXY, SSL_CERT_FILE, etc.
 ## Error Handling
 
 All errors use `KeyclawError` with optional deterministic codes:
-- `blocked_by_leak_policy` — secret found, request blocked
-- `gitleaks_unavailable` — gitleaks binary missing
 - `mitm_not_effective` — proxy bypass detected
+- `body_too_large` — request exceeds max body size
+- `invalid_json` — JSON parse/rewrite failed
+- `strict_resolve_failed` — placeholder resolution failed in strict mode
 
 Check errors with `code_of(&err)` to get the code string.
 
 ## Testing
 
-Tests are in `tests/`. Integration tests in `tests/integration_proxy.rs` spin up a real proxy. Unit tests cover detection, placeholder logic, policy decisions, and vault operations.
+Tests are in `tests/`. Integration tests in `tests/integration_proxy.rs` spin up a real proxy. E2E tests in `tests/e2e_cli.rs` test the full binary. Unit tests cover placeholder logic, pipeline, and vault operations.
 
 ```bash
 cargo test                          # All tests
 cargo test placeholder              # Just placeholder tests
 cargo test --test integration_proxy # Just proxy integration tests
+cargo test --test e2e_cli           # Just e2e CLI tests
 ```
 
 ## Dependencies to Know
@@ -131,5 +136,16 @@ cargo test --test integration_proxy # Just proxy integration tests
 - **hudsucker 0.24** — MITM proxy engine (wraps hyper + rustls + tungstenite)
 - **rcgen 0.14** — CA certificate generation (via hudsucker re-export)
 - **aes-gcm** — Vault encryption
-- **aho-corasick** — Fast multi-pattern string matching for secret detection
+- **toml** — Parsing gitleaks.toml rules
+- **regex** — Native regex compilation of gitleaks rules (with 50MB size limit for complex patterns)
 - **scrypt** — Key derivation for vault passphrase
+
+## Development Workflow
+
+This project uses a **multi-agent dev team** workflow. For any non-trivial changes:
+
+1. **Product Manager** — Specs out the feature, defines acceptance criteria
+2. **Dev Lead** — Implements the change
+3. **PR Reviewer** — Reviews the code for correctness, performance, and architecture compliance before merge
+
+Always run `cargo test` and `cargo build --release` before committing.
