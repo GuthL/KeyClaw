@@ -142,40 +142,36 @@ cargo test --test e2e_cli           # Just e2e CLI tests
 
 ## Development Workflow
 
-This project uses a **multi-agent dev team** workflow via the skill at `.claude/skills/multi-agent-dev-team/`.
+For any non-trivial change, follow this 3-phase loop:
 
-### Required Roles (every non-trivial change)
+### Phase 1: PM (spec before code)
+Before writing any code, define:
+- **What** — one sentence describing the change
+- **Acceptance criteria** — concrete conditions that mean "done"
+- **Scope** — what's in, what's explicitly out
+- **Edge cases** — failure modes to handle
 
-1. **Product Manager** — Specs out the feature, defines acceptance criteria
-2. **Dev Lead** — Implements the change
-3. **PR Reviewer** — Reviews the code for correctness, performance, security, and architecture compliance before merge
+### Phase 2: Implement
+Write the code. Run `cargo test && cargo build --release` before moving on.
 
-### Optional Roles (as needed)
+### Phase 3: PR Review (self-review before commit)
+Review your own changes as a critical Staff Engineer would:
+- **Correctness** — does it meet the acceptance criteria?
+- **Security** — any secret leaks, placeholder integrity issues, vault concerns?
+- **Performance** — regex efficiency, per-request overhead?
+- **Rust idioms** — proper error handling, no unwrap in production paths, lifetime correctness?
 
-- **Architect** — System design decisions for major features
-- **Security Reviewer** — Mandatory for any code touching secrets, vault, crypto, or proxy interception
-- **QA Engineer** — Write tests for complex logic
+Only commit after all three phases pass.
 
-### Ralph Loop Integration
+### Ralph Loop
 
-For iterative development, use `/ralph-loop` with the dev team:
+For iterative development with `/ralph-loop`:
 
 ```
-/ralph-loop "Implement [feature]. Follow multi-agent dev team workflow:
-1. Check .claude/dev-team-state.md for current phase
-2. If no spec, act as PM and create one
-3. If spec exists, act as Dev Lead and implement
-4. If implemented, act as PR Reviewer and review
-5. If review has issues, fix them as Dev Lead
-6. If all good, run cargo test && cargo build --release
-7. If all green, commit and output <promise>APPROVED</promise>
-Track state in .claude/dev-team-state.md" --completion-promise "APPROVED" --max-iterations 15
-```
-
-### Pre-commit Checklist
-
-Always run before committing:
-```bash
-cargo test
-cargo build --release
+/ralph-loop "Implement [feature].
+Phase 1: Write a 5-line spec with acceptance criteria.
+Phase 2: Implement. Run cargo test && cargo build --release.
+Phase 3: Self-review for correctness, security, performance.
+If review finds issues, fix and re-review.
+When all green, commit and output <promise>DONE</promise>" --completion-promise "DONE" --max-iterations 10
 ```
