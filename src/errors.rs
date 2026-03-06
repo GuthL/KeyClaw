@@ -101,3 +101,4 @@ pub fn code_of<'a>(err: &'a (dyn Error + 'static)) -> Option<&'a str> {
     }
     None
 }
+pub const CODE_REQUEST_TIMEOUT: &str = "request_timeout";

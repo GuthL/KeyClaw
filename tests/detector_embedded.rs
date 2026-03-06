@@ -12,7 +12,7 @@ fn embedded_detector_finds_known_secrets() {
 #[test]
 fn embedded_detector_false_positive_guards() {
     let d = keyclaw::detector::EmbeddedDetector::new();
-    let payload = br#"{"prompt":"placeholder {{KEYCLAW_SECRET_aaaaaaaaaaaaaaaa}} api_key AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
+    let payload = br#"{"prompt":"placeholder {{KEYCLAW_SECRET_a_aaaaaaaaaaaaaaaa}} api_key AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
     let findings = d.detect(payload).expect("detect");
     assert_eq!(findings.len(), 0);
