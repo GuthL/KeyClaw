@@ -142,10 +142,40 @@ cargo test --test e2e_cli           # Just e2e CLI tests
 
 ## Development Workflow
 
-This project uses a **multi-agent dev team** workflow. For any non-trivial changes:
+This project uses a **multi-agent dev team** workflow via the skill at `.claude/skills/multi-agent-dev-team/`.
+
+### Required Roles (every non-trivial change)
 
 1. **Product Manager** — Specs out the feature, defines acceptance criteria
 2. **Dev Lead** — Implements the change
-3. **PR Reviewer** — Reviews the code for correctness, performance, and architecture compliance before merge
+3. **PR Reviewer** — Reviews the code for correctness, performance, security, and architecture compliance before merge
 
-Always run `cargo test` and `cargo build --release` before committing.
+### Optional Roles (as needed)
+
+- **Architect** — System design decisions for major features
+- **Security Reviewer** — Mandatory for any code touching secrets, vault, crypto, or proxy interception
+- **QA Engineer** — Write tests for complex logic
+
+### Ralph Loop Integration
+
+For iterative development, use `/ralph-loop` with the dev team:
+
+```
+/ralph-loop "Implement [feature]. Follow multi-agent dev team workflow:
+1. Check .claude/dev-team-state.md for current phase
+2. If no spec, act as PM and create one
+3. If spec exists, act as Dev Lead and implement
+4. If implemented, act as PR Reviewer and review
+5. If review has issues, fix them as Dev Lead
+6. If all good, run cargo test && cargo build --release
+7. If all green, commit and output <promise>APPROVED</promise>
+Track state in .claude/dev-team-state.md" --completion-promise "APPROVED" --max-iterations 15
+```
+
+### Pre-commit Checklist
+
+Always run before committing:
+```bash
+cargo test
+cargo build --release
+```
