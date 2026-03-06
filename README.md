@@ -33,7 +33,7 @@ AI coding assistants like **Claude Code** and **OpenAI Codex** are incredibly po
 │             │     │           KeyClaw Proxy           │     │             │
 │  Claude CLI ├────►│                                   ├────►│ Anthropic   │
 │  Codex CLI  │     │  1. Intercept request             │     │ OpenAI      │
-│             │◄────┤  2. Detect secrets (regex/entropy) │◄────┤ API         │
+│             │◄────┤  2. Detect secrets (gitleaks rules)│◄────┤ API         │
 │             │     │  3. Replace with {{KEYCLAW_xxx}}   │     │             │
 │             │     │  4. Store in encrypted vault       │     │             │
 │             │     │  5. Forward sanitized request      │     │             │
@@ -51,23 +51,23 @@ AI coding assistants like **Claude Code** and **OpenAI Codex** are incredibly po
                     └───────────────────┘
 ```
 
-### Detection Pipeline
+### Detection
 
-KeyClaw uses a multi-layered detection chain:
+KeyClaw bundles the full [Gitleaks](https://github.com/gitleaks/gitleaks) ruleset (220+ rules) compiled natively into Rust regex at startup. No subprocess, no external binary needed.
 
-| Layer | Method | What It Catches |
-|-------|--------|-----------------|
-| **Gitleaks** | Subprocess | 800+ secret patterns from the Gitleaks ruleset |
-| **Regex** | Aho-Corasick | OpenAI keys (`sk-proj-*`), AWS keys (`AKIA*`), GitHub tokens (`ghp_*`, `ghs_*`) |
-| **Generic** | Pattern match | `api_key=...`, `secret_key=...`, `access_token=...` |
-| **Entropy** | Shannon entropy | High-entropy strings that look like credentials |
+Rules cover:
+- **Provider keys** — OpenAI, Anthropic, AWS, GitHub, GitLab, Slack, Stripe, GCP, and 200+ more
+- **Generic patterns** — `api_key=...`, `secret_key=...`, `access_token=...`
+- **Private keys** — RSA, EC, OPENSSH, PGP, age
+
+Custom rules can be loaded from a file via `KEYCLAW_GITLEAKS_CONFIG`.
 
 ### What Makes It Different
 
 - **Transparent** — Works as a drop-in proxy. No code changes, no wrapper SDKs.
 - **Bidirectional** — Redacts secrets in requests, reinjects them in responses (including SSE streams and WebSocket).
 - **Machine-agnostic** — Generates its own CA certificate on first run. Clone, build, run.
-- **Fail-closed** — If detection fails, requests are blocked by default. No silent failures.
+- **No external deps** — Gitleaks rules are compiled natively; no subprocess or binary needed.
 - **Vault-backed** — Secrets are stored in an AES-GCM encrypted vault with atomic writes. Placeholders are deterministic per-secret.
 
 ## Getting Started
@@ -75,7 +75,6 @@ KeyClaw uses a multi-layered detection chain:
 ### Prerequisites
 
 - Rust 1.75+ and Cargo
-- (Optional) [Gitleaks](https://github.com/gitleaks/gitleaks) for extended detection
 
 ### Install
 
@@ -125,14 +124,18 @@ KeyClaw is configured via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KEYCLAW_LISTEN` | `127.0.0.1:8877` | Proxy listen address |
+| `KEYCLAW_PROXY_ADDR` | `127.0.0.1:8877` | Proxy listen address |
+| `KEYCLAW_PROXY_URL` | `http://127.0.0.1:8877` | Proxy URL exported to child processes |
+| `KEYCLAW_CA_CERT` | (auto-generated `~/.keyclaw/ca.crt`) | Override CA cert path passed to clients |
 | `KEYCLAW_VAULT_PATH` | `~/.keyclaw/vault.enc` | Encrypted vault location |
 | `KEYCLAW_VAULT_PASSPHRASE` | (built-in default) | Vault encryption passphrase |
-| `KEYCLAW_POLICY_MODE` | `block` | `block` or `warn` — whether to block or warn on detected secrets |
-| `KEYCLAW_ALLOWED_HOSTS` | `api.anthropic.com,api.openai.com,...` | Hosts to intercept |
+| `KEYCLAW_CODEX_HOSTS` | `api.openai.com,chat.openai.com,chatgpt.com` | Codex/OpenAI hosts to intercept |
+| `KEYCLAW_CLAUDE_HOSTS` | `api.anthropic.com,claude.ai` | Claude/Anthropic hosts to intercept |
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` (2MB) | Maximum request body size |
+| `KEYCLAW_GITLEAKS_CONFIG` | (bundled rules) | Path to custom gitleaks.toml rule file |
 | `KEYCLAW_UNSAFE_LOG` | `false` | Log actual secrets (for debugging only!) |
-| `KEYCLAW_REQUIRE_MITM` | `true` | Fail if proxy bypass is detected |
+| `KEYCLAW_FAIL_CLOSED` | `true` | Fail closed on errors |
+| `KEYCLAW_REQUIRE_MITM_EFFECTIVE` | `true` | Fail if proxy bypass is detected |
 
 ## Error Codes
 
@@ -140,9 +143,10 @@ KeyClaw uses deterministic error codes for programmatic handling:
 
 | Code | Meaning |
 |------|---------|
-| `blocked_by_leak_policy` | Secret detected in request, blocked by policy |
-| `gitleaks_unavailable` | Gitleaks binary not found (falls back to embedded detector) |
 | `mitm_not_effective` | Proxy bypass detected (e.g., `NO_PROXY=*`) |
+| `body_too_large` | Request body exceeds `KEYCLAW_MAX_BODY_BYTES` |
+| `invalid_json` | Failed to parse/rewrite request JSON |
+| `strict_resolve_failed` | Placeholder resolution failed in strict mode |
 
 ## Security Model
 
@@ -166,24 +170,32 @@ The trust boundary is your machine. KeyClaw's CA certificate is generated locall
 
 ```
 src/
-├── main.rs          # Entry point
-├── lib.rs           # Module declarations
-├── certgen.rs       # Runtime CA certificate generation
-├── config.rs        # Environment-based configuration
-├── proxy.rs         # MITM proxy (HTTP, SSE, WebSocket)
-├── pipeline.rs      # Request rewrite + policy evaluation pipeline
-├── placeholder.rs   # Secret detection and placeholder replacement
-├── redaction.rs      # JSON walker + notice injection
-├── vault.rs         # AES-GCM encrypted secret storage
-├── policy.rs        # Policy executor (block/warn/allow)
-├── launcher.rs      # CLI launcher (mitm/proxy/doctor)
-├── logscrub.rs      # Log sanitization
-├── errors.rs        # Error types and codes
-└── detector/
-    ├── mod.rs        # Detector trait
-    ├── gitleaks.rs   # Gitleaks subprocess detector
-    └── embedded.rs   # Built-in regex/entropy detector
+├── main.rs            # Entry point
+├── lib.rs             # Module declarations
+├── certgen.rs         # Runtime CA certificate generation
+├── config.rs          # Environment-based configuration
+├── gitleaks_rules.rs  # Gitleaks TOML parser + native regex compilation
+├── proxy.rs           # MITM proxy (HTTP, SSE, WebSocket)
+├── pipeline.rs        # Request rewrite pipeline
+├── placeholder.rs     # Secret detection and placeholder replacement
+├── redaction.rs       # JSON walker + notice injection
+├── vault.rs           # AES-GCM encrypted secret storage
+├── launcher.rs        # CLI launcher (mitm/proxy/doctor)
+├── logscrub.rs        # Log sanitization
+└── errors.rs          # Error types and codes
+gitleaks.toml          # Bundled detection rules (220+)
 ```
+
+## Agent Guides
+
+This repository includes dedicated guide files for AI coding agents:
+
+| File | Agent | Purpose |
+|------|-------|---------|
+| [`CLAUDE.md`](CLAUDE.md) | Claude Code | Helps Claude understand the codebase architecture, module map, build commands, and common tasks |
+| [`AGENTS.md`](AGENTS.md) | OpenAI Codex | Same guide in the format expected by Codex CLI |
+
+These files are automatically picked up by their respective agents when working in the repository, giving them context about the project structure, key design decisions, and how to navigate the code.
 
 ## Tests
 
