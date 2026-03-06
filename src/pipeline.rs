@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::errors::{
-    KeyclawError, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON,
+    KeyclawError, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_STRICT_RESOLVE_FAILED,
 };
 use crate::placeholder::{self, Replacement};
 use crate::policy::{Action, Decision, Executor};
@@ -104,8 +104,15 @@ impl Processor {
             return Ok(body.to_vec());
         }
 
-        let resolved = crate::placeholder::resolve_placeholders(&text, false, |id| vault.resolve(id))?;
-        Ok(resolved.into_bytes())
+        match crate::placeholder::resolve_placeholders(&text, self.strict_mode, |id| vault.resolve(id)) {
+            Ok(resolved) => Ok(resolved.into_bytes()),
+            Err(err) if self.strict_mode => Err(KeyclawError::coded_with_source(
+                CODE_STRICT_RESOLVE_FAILED,
+                "strict text placeholder resolution failed",
+                err,
+            )),
+            Err(_) => Ok(body.to_vec()),
+        }
     }
 
     pub fn replacement_summary(&self, replacements: &[Replacement]) -> String {

@@ -56,7 +56,7 @@ fn codex_payload_rewritten_before_upstream() {
         .and_then(|u| u.host_str().map(|h| h.to_string()))
         .expect("host");
 
-    let mut proxy = Server::new("127.0.0.1:0".to_string(), vec![host], Arc::new(processor));
+    let mut proxy = Server::new("127.0.0.1:0".to_string(), vec![host], Arc::new(processor), String::new(), String::new());
     proxy.max_body_bytes = 1 << 20;
     proxy.body_timeout = Duration::from_secs(2);
     let running = proxy.start().expect("start proxy");
@@ -108,7 +108,7 @@ fn claude_payload_rewritten_before_upstream() {
         .and_then(|u| u.host_str().map(|h| h.to_string()))
         .expect("host");
 
-    let mut proxy = Server::new("127.0.0.1:0".to_string(), vec![host], Arc::new(processor));
+    let mut proxy = Server::new("127.0.0.1:0".to_string(), vec![host], Arc::new(processor), String::new(), String::new());
     proxy.max_body_bytes = 1 << 20;
     proxy.body_timeout = Duration::from_secs(2);
     let running = proxy.start().expect("start proxy");
@@ -163,7 +163,7 @@ fn gitleaks_finding_warns_but_allows_request() {
         .and_then(|u| u.host_str().map(|h| h.to_string()))
         .expect("host");
 
-    let mut proxy = Server::new("127.0.0.1:0".to_string(), vec![host], Arc::new(processor));
+    let mut proxy = Server::new("127.0.0.1:0".to_string(), vec![host], Arc::new(processor), String::new(), String::new());
     proxy.max_body_bytes = 1 << 20;
     proxy.body_timeout = Duration::from_secs(2);
     let running = proxy.start().expect("start proxy");
@@ -205,7 +205,7 @@ fn gitleaks_timeout_fallback_allows_when_clean() {
         .and_then(|u| u.host_str().map(|h| h.to_string()))
         .expect("host");
 
-    let mut proxy = Server::new("127.0.0.1:0".to_string(), vec![host], Arc::new(processor));
+    let mut proxy = Server::new("127.0.0.1:0".to_string(), vec![host], Arc::new(processor), String::new(), String::new());
     proxy.max_body_bytes = 1 << 20;
     proxy.body_timeout = Duration::from_secs(2);
     let running = proxy.start().expect("start proxy");
@@ -244,11 +244,7 @@ fn untrusted_host_passes_through_without_rewriting() {
         },
     );
 
-    let mut proxy = Server::new(
-        "127.0.0.1:0".to_string(),
-        vec!["example.com".to_string()],
-        Arc::new(processor),
-    );
+    let mut proxy = Server::new("127.0.0.1:0".to_string(), vec!["example.com".to_string()], Arc::new(processor), String::new(), String::new());
     proxy.max_body_bytes = 1 << 20;
     proxy.body_timeout = Duration::from_secs(2);
     let running = proxy.start().expect("start proxy");

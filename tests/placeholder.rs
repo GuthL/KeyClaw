@@ -24,7 +24,7 @@ fn replace_and_resolve_placeholders_roundtrip() {
 
 #[test]
 fn strict_resolve_fails_on_missing_secret() {
-    let err = resolve_placeholders("value {{KEYCLAW_SECRET_aaaaaaaaaaaaaaaa}}", true, |_| {
+    let err = resolve_placeholders("value {{KEYCLAW_SECRET_a_aaaaaaaaaaaaaaaa}}", true, |_| {
         Ok(None)
     });
     assert!(err.is_err());

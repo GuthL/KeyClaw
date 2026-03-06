@@ -19,7 +19,7 @@ use hudsucker::{
 };
 
 use crate::errors::{
-    code_of, KeyclawError, CODE_BLOCKED_BY_LEAK_POLICY, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON,
+    code_of, KeyclawError, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_REQUEST_TIMEOUT,
 };
 use crate::logscrub;
 use crate::pipeline::Processor;
@@ -166,6 +166,7 @@ impl Server {
                     max_body_bytes,
                     body_timeout,
                     intercepted,
+                    request_had_secrets: false,
                 };
 
                 let shutdown = async move {
@@ -215,6 +216,9 @@ struct KeyclawHttpHandler {
     max_body_bytes: i64,
     body_timeout: Duration,
     intercepted: Arc<AtomicI64>,
+    /// Set to true when handle_request replaced secrets in this request.
+    /// Used by handle_response to decide whether to buffer streaming responses.
+    request_had_secrets: bool,
 }
 
 impl HttpHandler for KeyclawHttpHandler {
@@ -262,6 +266,21 @@ impl HttpHandler for KeyclawHttpHandler {
         let content_type = header_value(&req, CONTENT_TYPE.as_str()).unwrap_or_default();
         let content_type_is_json = is_json(&content_type);
 
+        if self.max_body_bytes > 0 {
+            if let Some(content_len) = header_value(&req, CONTENT_LENGTH.as_str())
+                .and_then(|v| v.parse::<i64>().ok())
+            {
+                if content_len > self.max_body_bytes {
+                    return json_error_response(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        CODE_BODY_TOO_LARGE,
+                        "request body exceeded maximum size",
+                    )
+                    .into();
+                }
+            }
+        }
+
         let (parts, body) = req.into_parts();
 
         // Skip empty body requests (e.g. GET, OPTIONS, HEAD)
@@ -276,8 +295,13 @@ impl HttpHandler for KeyclawHttpHandler {
                 .into();
             }
             Err(_) => {
-                log_line("body read timeout — passing request through".to_string());
-                return Request::from_parts(parts, Body::empty()).into();
+                log_line("body read timeout — returning timeout error".to_string());
+                return json_error_response(
+                    StatusCode::REQUEST_TIMEOUT,
+                    CODE_REQUEST_TIMEOUT,
+                    "request body read timed out",
+                )
+                .into();
             }
         };
 
@@ -322,7 +346,8 @@ impl HttpHandler for KeyclawHttpHandler {
             }
         };
 
-        if !rewritten.replacements.is_empty() {
+        self.request_had_secrets = !rewritten.replacements.is_empty();
+        if self.request_had_secrets {
             log_line(format!(
                 "request rewritten for host {host}: {}",
                 self.processor.replacement_summary(&rewritten.replacements)
@@ -340,9 +365,10 @@ impl HttpHandler for KeyclawHttpHandler {
             }
         }
 
-        if unsafe_log_enabled() {
-            rewritten_req.headers_mut().remove("accept-encoding");
-        }
+        // Always strip accept-encoding so the upstream sends uncompressed
+        // responses.  The streaming resolver needs plain-text frames to detect
+        // and replace placeholders that span multiple SSE events.
+        rewritten_req.headers_mut().remove("accept-encoding");
 
         rewritten_req.into()
     }
@@ -597,22 +623,34 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
     eprintln!("---");
 }
 
-#[allow(dead_code)]
+/// Split `text` into (emit, hold) where `hold` is a suffix that looks like the
+/// start of a placeholder that hasn't closed yet.  Returns the full text with
+/// an empty hold when there is nothing to buffer.
 fn split_at_incomplete_placeholder(text: &str) -> (String, String) {
     let marker = "{{KEYCLAW_SECRET_";
-    for i in 1..=marker.len() + 16 + 2 {
-        if text.len() < i {
-            break;
+    // Max placeholder length: "{{KEYCLAW_SECRET_" (17) + prefix (1-5) + "_" (1) + hash (16) + "}}" (2) = 41
+    let max_hold = marker.len() + 5 + 1 + 16 + 2;
+
+    // Check if any suffix of `text` is a prefix of the marker, or is
+    // an opened marker without a closing "}}"
+    for i in 1..=max_hold.min(text.len()) {
+        let split = text.len() - i;
+        if !text.is_char_boundary(split) {
+            continue;
         }
-        let tail = &text[text.len() - i..];
-        if marker.starts_with(tail) || (tail.starts_with("{{KEYCLAW_SECRET_") && !tail.contains("}}")) {
-            return (text[..text.len() - i].to_string(), tail.to_string());
+        let tail = &text[split..];
+        // Case 1: tail is a prefix of the marker (e.g. "{{K", "{{KEYCLAW_SECRET_")
+        if marker.starts_with(tail) {
+            return (text[..split].to_string(), tail.to_string());
+        }
+        // Case 2: tail starts with the full marker but hasn't closed yet
+        if tail.starts_with(marker) && !tail.contains("}}") {
+            return (text[..split].to_string(), tail.to_string());
         }
     }
     (text.to_string(), String::new())
 }
 
-#[allow(dead_code)]
 fn resolve_chunk(processor: &Arc<Processor>, text: &str) -> String {
     if !text.contains("{{KEYCLAW_SECRET_") {
         return text.to_string();
