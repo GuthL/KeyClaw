@@ -3,15 +3,15 @@ use std::sync::Arc;
 use crate::errors::{
     KeyclawError, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_STRICT_RESOLVE_FAILED,
 };
+use crate::gitleaks_rules::RuleSet;
 use crate::placeholder::{self, Replacement};
-use crate::policy::{Action, Decision, Executor};
 use crate::redaction;
 use crate::vault::Store;
 
 #[derive(Clone)]
 pub struct Processor {
     pub vault: Option<Arc<Store>>,
-    pub policy: Option<Arc<Executor>>,
+    pub ruleset: Arc<RuleSet>,
     pub max_body_size: i64,
     pub strict_mode: bool,
 }
@@ -20,7 +20,6 @@ pub struct Processor {
 pub struct RewriteResult {
     pub body: Vec<u8>,
     pub replacements: Vec<Replacement>,
-    pub decision: Decision,
 }
 
 impl Processor {
@@ -32,9 +31,10 @@ impl Processor {
             ));
         }
 
+        let ruleset = &self.ruleset;
         let mut replacements: Vec<Replacement> = Vec::new();
         let rewritten = redaction::walk_json_strings(body, |s| {
-            let (out, reps) = placeholder::replace_secrets(s, |secret| {
+            let (out, reps) = placeholder::replace_secrets(s, ruleset, |secret| {
                 if let Some(vault) = &self.vault {
                     vault.store_secret(secret)
                 } else {
@@ -61,21 +61,9 @@ impl Processor {
             rewritten
         };
 
-        let mut decision = Decision::allow();
-        if let Some(policy) = &self.policy {
-            decision = policy.evaluate(&rewritten);
-            if decision.action == Action::Warn && !decision.findings.is_empty() {
-                eprintln!(
-                    "keyclaw [WARN] policy found {} finding(s) after rewrite (secrets already replaced)",
-                    decision.findings.len()
-                );
-            }
-        }
-
         Ok(RewriteResult {
             body: rewritten,
             replacements,
-            decision,
         })
     }
 

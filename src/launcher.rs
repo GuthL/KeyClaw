@@ -12,10 +12,9 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use tempfile::NamedTempFile;
 
 use crate::config::Config;
-use crate::detector::{EmbeddedDetector, GitleaksDetector};
 use crate::errors::{code_of, KeyclawError, CODE_MITM_NOT_EFFECTIVE};
+use crate::gitleaks_rules::RuleSet;
 use crate::pipeline::Processor;
-use crate::policy::{Executor, Mode};
 use crate::proxy::Server;
 use crate::vault::Store;
 
@@ -107,7 +106,6 @@ fn run_proxy(cfg: &Config, processor: Arc<Processor>) -> i32 {
 
     let proxy_url = format!("http://{}", running_proxy.addr);
 
-    // CA cert already written by certgen::ensure_ca()
     let keyclaw_dir = crate::certgen::keyclaw_dir();
     let ca_path = keyclaw_dir.join("ca.crt");
 
@@ -146,7 +144,6 @@ fi
     eprintln!("keyclaw: source ~/.keyclaw/env.sh in any shell to route through keyclaw");
     eprintln!("keyclaw: press Ctrl-C to stop");
 
-    // Block on signals
     let mut signals = match signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
@@ -162,15 +159,12 @@ fi
         break;
     }
 
-    // Cleanup — keep env.sh (it self-disables via PID check)
     let _ = fs::remove_file(&pid_path);
     drop(running_proxy);
 
     eprintln!("\nkeyclaw: proxy stopped");
     0
 }
-
-
 
 fn run_rewrite_json(processor: Arc<Processor>) -> i32 {
     let mut input = Vec::new();
@@ -409,27 +403,22 @@ fn build_processor(cfg: &Config) -> Arc<Processor> {
 
     let vault = Arc::new(Store::new(vault_path, passphrase));
 
-    let gitleaks = Arc::new(GitleaksDetector::new(
-        cfg.gitleaks_binary.clone(),
-        cfg.detector_timeout,
-    ));
-    let embedded = Arc::new(EmbeddedDetector::new());
-
-    let mode = match std::env::var("KEYCLAW_POLICY_MODE") {
-        Ok(v) if v.eq_ignore_ascii_case("warn") => Mode::Warn,
-        _ => Mode::Block,
+    let ruleset = match std::env::var("KEYCLAW_GITLEAKS_CONFIG") {
+        Ok(path) if !path.trim().is_empty() => {
+            RuleSet::from_file(std::path::Path::new(&path)).unwrap_or_else(|e| {
+                eprintln!("keyclaw: failed to load custom rules from {path}: {e}");
+                eprintln!("keyclaw: falling back to bundled rules");
+                RuleSet::bundled().expect("bundled gitleaks rules must compile")
+            })
+        }
+        _ => RuleSet::bundled().expect("bundled gitleaks rules must compile"),
     };
 
-    let policy = Arc::new(Executor::new(
-        Some(gitleaks),
-        Some(embedded),
-        mode,
-        cfg.fail_closed,
-    ));
+    eprintln!("keyclaw: {} gitleaks rules loaded", ruleset.rules.len());
 
     Arc::new(Processor {
         vault: Some(vault),
-        policy: Some(policy),
+        ruleset: Arc::new(ruleset),
         max_body_size: cfg.max_body_bytes,
         strict_mode: cfg.fail_closed,
     })
@@ -470,13 +459,11 @@ fn resolve_ca_cert_path(
         return Ok((Some(explicit_path.to_string()), None));
     }
 
-    // Use the cert from ~/.keyclaw/ca.crt (written by certgen::ensure_ca)
     let ca_path = crate::certgen::keyclaw_dir().join("ca.crt");
     if ca_path.exists() {
         return Ok((Some(ca_path.to_string_lossy().to_string()), None));
     }
 
-    // Fallback: generate and write to temp
     let ca = crate::certgen::ensure_ca()?;
     let temp = NamedTempFile::new()
         .map_err(|e| KeyclawError::uncoded(format!("create temp CA file: {e}")))?;
