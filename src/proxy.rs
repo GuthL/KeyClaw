@@ -217,7 +217,7 @@ impl SseStreamResolver {
         let resolved = match self.processor.resolve_text(self.pending_text.as_bytes()) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(err) => {
-                log_line(format!("sse resolve_text error: {err}"));
+                log_warn(format!("sse resolve_text error: {err}"));
                 self.pending_text.clone()
             }
         };
@@ -379,7 +379,7 @@ impl Server {
             Ok(listener) => listener,
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 let fallback = "127.0.0.1:0";
-                log_line(format!(
+                log_warn(format!(
                     "proxy listen address {bind_addr} is busy, falling back to {fallback}"
                 ));
                 TcpListener::bind(fallback).map_err(|fallback_err| {
@@ -517,7 +517,7 @@ impl HttpHandler for KeyclawHttpHandler {
             return req.into();
         }
         self.intercepted.fetch_add(1, Ordering::SeqCst);
-        log_line(format!(
+        log_debug(format!(
             "intercept {} {} (host={})",
             req.method(),
             req.uri().path(),
@@ -539,7 +539,7 @@ impl HttpHandler for KeyclawHttpHandler {
         {
             let (mut parts, body) = req.into_parts();
             parts.headers.remove("sec-websocket-extensions");
-            log_line(
+            log_debug(
                 "ws upgrade: stripped sec-websocket-extensions to disable compression".to_string(),
             );
             return Request::from_parts(parts, body).into();
@@ -577,7 +577,7 @@ impl HttpHandler for KeyclawHttpHandler {
                 .into();
             }
             Err(_) => {
-                log_line("body read timeout — returning timeout error".to_string());
+                log_warn("body read timeout — returning timeout error".to_string());
                 return json_error_response(
                     StatusCode::REQUEST_TIMEOUT,
                     CODE_REQUEST_TIMEOUT,
@@ -617,24 +617,24 @@ impl HttpHandler for KeyclawHttpHandler {
             Ok(Ok(Ok(result))) => result,
             Ok(Ok(Err(err))) => {
                 let code = code_of(&err).unwrap_or("unknown");
-                log_line(format!("rewrite error ({code}): {err} — passing through"));
+                log_warn(format!("rewrite error ({code}): {err} — passing through"));
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
             }
             Ok(Err(err)) => {
-                log_line(format!(
+                log_warn(format!(
                     "request processing failed: {err} — passing through"
                 ));
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
             }
             Err(_) => {
-                log_line("rewrite timeout — passing request through".to_string());
+                log_warn("rewrite timeout — passing request through".to_string());
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
             }
         };
 
         self.request_had_secrets = !rewritten.replacements.is_empty();
         if self.request_had_secrets {
-            log_line(format!(
+            log_debug(format!(
                 "request rewritten for host {host}: {}",
                 self.processor.replacement_summary(&rewritten.replacements)
             ));
@@ -717,7 +717,7 @@ impl HttpHandler for KeyclawHttpHandler {
                 tokio::task::spawn_blocking(move || processor.resolve_text(&payload)).await
             {
                 if resolved != body_bytes {
-                    log_line("response: resolved placeholders back to secrets".to_string());
+                    log_debug("response: resolved placeholders back to secrets".to_string());
                     body_bytes = resolved;
                 }
             }
@@ -753,17 +753,17 @@ impl WebSocketHandler for KeyclawHttpHandler {
 
                     match sink.send(message).await {
                         Err(tungstenite::Error::ConnectionClosed) => {}
-                        Err(err) => log_line(format!("ws send error: {err}")),
+                        Err(err) => log_warn(format!("ws send error: {err}")),
                         Ok(()) => {}
                     }
                 }
                 Err(err) => {
                     if !is_expected_websocket_close_error(&err) {
-                        log_line(format!("ws message error: {err}"));
+                        log_warn(format!("ws message error: {err}"));
                         match sink.send(Message::Close(None)).await {
                             Err(tungstenite::Error::ConnectionClosed) => {}
                             Err(close_err) => {
-                                log_line(format!("ws close error: {close_err}"));
+                                log_warn(format!("ws close error: {close_err}"));
                             }
                             Ok(()) => {}
                         }
@@ -780,7 +780,7 @@ impl WebSocketHandler for KeyclawHttpHandler {
         if !matches!(ctx, WebSocketContext::ClientToServer { .. }) {
             if let Message::Text(text) = &msg {
                 if let Some(value) = self.resolve_ws_response_text(text.as_str()) {
-                    log_line("ws response: resolved placeholders".to_string());
+                    log_debug("ws response: resolved placeholders".to_string());
                     return Some(Message::Text(value.into()));
                 }
             }
@@ -792,7 +792,7 @@ impl WebSocketHandler for KeyclawHttpHandler {
             if let Some((value, count)) =
                 self.rewrite_ws_request_text(text.as_str(), uses_input_only_ws_rewrite(ctx))
             {
-                log_line(format!("ws request: redacted {} secret(s)", count));
+                log_debug(format!("ws request: redacted {} secret(s)", count));
                 return Some(Message::Text(value.into()));
             }
         }
@@ -965,11 +965,11 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
     log_out!("---");
 }
 
-fn log_line(line: String) {
-    if !crate::logging::enabled(crate::logging::LogLevel::Info) {
+fn log_with_level(level: crate::logging::LogLevel, line: String) {
+    if !crate::logging::enabled(level) {
         return;
     }
-    let msg = crate::logging::render(crate::logging::LogLevel::Info, &line);
+    let msg = crate::logging::render(level, &line);
     if let Ok(mut guard) = LOG_FILE.lock() {
         if let Some(ref mut f) = *guard {
             let _ = writeln!(f, "{}", msg);
@@ -977,6 +977,14 @@ fn log_line(line: String) {
         }
     }
     eprintln!("{}", msg);
+}
+
+fn log_debug(line: String) {
+    log_with_level(crate::logging::LogLevel::Debug, line);
+}
+
+fn log_warn(line: String) {
+    log_with_level(crate::logging::LogLevel::Warn, line);
 }
 
 #[cfg(test)]

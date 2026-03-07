@@ -166,11 +166,12 @@ The only intentional exception to scrubbed runtime logging is `KEYCLAW_UNSAFE_LO
 
 Operator-facing runtime messages use leveled stderr prefixes:
 
-- `keyclaw info:` startup, shutdown, and normal proxy activity summaries
+- `keyclaw info:` startup, shutdown, CA/ruleset initialization, and other lifecycle summaries
+- `keyclaw debug:` per-request proxy activity such as interception, rewrite, and placeholder resolution
 - `keyclaw warn:` risky but non-fatal conditions such as unsafe logging or bypass risk
 - `keyclaw error:` fatal CLI errors before exit
 
-Set `KEYCLAW_LOG_LEVEL=error`, `warn`, `info`, or `debug` to reduce or expand stderr verbosity. The default is `info`. The `doctor` subcommand is intentionally separate: it writes its `doctor: PASS|WARN|FAIL ...` report to stdout so it can be piped or parsed cleanly.
+Set `KEYCLAW_LOG_LEVEL=error`, `warn`, `info`, or `debug` to reduce or expand stderr verbosity. The default is `info`, which stays lifecycle-focused and avoids emitting a line for every proxied request. Use `debug` when troubleshooting live traffic. The `doctor` subcommand is intentionally separate: it writes its `doctor: PASS|WARN|FAIL ...` report to stdout so it can be piped or parsed cleanly.
 
 ## Error Codes
 
