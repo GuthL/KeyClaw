@@ -1,9 +1,12 @@
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
+use futures::{SinkExt, Stream, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hudsucker::{
     certificate_authority::RcgenAuthority,
@@ -13,7 +16,7 @@ use hudsucker::{
     },
     rcgen::{Issuer, KeyPair},
     rustls::crypto::aws_lc_rs,
-    tokio_tungstenite::tungstenite::Message,
+    tokio_tungstenite::tungstenite::{self, Message},
     Body, HttpContext, HttpHandler, Proxy, RequestOrResponse, WebSocketContext, WebSocketHandler,
 };
 use serde_json::Value;
@@ -32,6 +35,16 @@ pub fn set_unsafe_log(enabled: bool) {
 
 fn unsafe_log_enabled() -> bool {
     UNSAFE_LOG.load(Ordering::Relaxed)
+}
+
+static LOG_FILE: std::sync::Mutex<Option<File>> = std::sync::Mutex::new(None);
+
+pub fn set_log_file(path: &std::path::Path) -> std::io::Result<()> {
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    if let Ok(mut guard) = LOG_FILE.lock() {
+        *guard = Some(file);
+    }
+    Ok(())
 }
 
 fn truncate_utf8(s: &str, max: usize) -> &str {
@@ -273,6 +286,30 @@ fn drain_complete_sse_events(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
     }
 
     events
+}
+
+fn is_expected_websocket_close_error(err: &tungstenite::Error) -> bool {
+    match err {
+        tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => true,
+        tungstenite::Error::Protocol(tungstenite::error::ProtocolError::ResetWithoutClosingHandshake) => true,
+        tungstenite::Error::Io(io_err) => {
+            io_err.kind() == std::io::ErrorKind::UnexpectedEof
+                && io_err.to_string().contains("close_notify")
+        }
+        _ => false,
+    }
+}
+
+fn uses_input_only_ws_rewrite_path(path: &str) -> bool {
+    path.starts_with("/backend-api/codex/responses")
+}
+
+fn uses_input_only_ws_rewrite(ctx: &WebSocketContext) -> bool {
+    matches!(
+        ctx,
+        WebSocketContext::ClientToServer { dst, .. }
+            if uses_input_only_ws_rewrite_path(dst.path())
+    )
 }
 
 pub struct Server {
@@ -697,6 +734,43 @@ impl HttpHandler for KeyclawHttpHandler {
 }
 
 impl WebSocketHandler for KeyclawHttpHandler {
+    async fn handle_websocket(
+        mut self,
+        ctx: WebSocketContext,
+        mut stream: impl Stream<Item = Result<Message, tungstenite::Error>> + Unpin + Send + 'static,
+        mut sink: impl futures::Sink<Message, Error = tungstenite::Error> + Unpin + Send + 'static,
+    ) {
+        while let Some(message) = stream.next().await {
+            match message {
+                Ok(message) => {
+                    let Some(message) = self.handle_message(&ctx, message).await else {
+                        continue;
+                    };
+
+                    match sink.send(message).await {
+                        Err(tungstenite::Error::ConnectionClosed) => {}
+                        Err(err) => log_line(format!("ws send error: {err}")),
+                        Ok(()) => {}
+                    }
+                }
+                Err(err) => {
+                    if !is_expected_websocket_close_error(&err) {
+                        log_line(format!("ws message error: {err}"));
+                        match sink.send(Message::Close(None)).await {
+                            Err(tungstenite::Error::ConnectionClosed) => {}
+                            Err(close_err) => {
+                                log_line(format!("ws close error: {close_err}"));
+                            }
+                            Ok(()) => {}
+                        }
+                    }
+
+                    break;
+                }
+            }
+        }
+    }
+
     async fn handle_message(&mut self, ctx: &WebSocketContext, msg: Message) -> Option<Message> {
         // Server -> Client: resolve any placeholders in responses
         if !matches!(ctx, WebSocketContext::ClientToServer { .. }) {
@@ -723,7 +797,12 @@ impl WebSocketHandler for KeyclawHttpHandler {
                 let s = text.as_str();
                 let processor = self.processor.clone();
                 let payload = s.as_bytes().to_vec();
-                match processor.rewrite_and_evaluate(&payload) {
+                let rewrite = if uses_input_only_ws_rewrite(ctx) {
+                    processor.rewrite_and_evaluate_codex_ws(&payload)
+                } else {
+                    processor.rewrite_and_evaluate(&payload)
+                };
+                match rewrite {
                     Ok(result) if !result.replacements.is_empty() => {
                         log_line(format!(
                             "ws request: redacted {} secret(s)",
@@ -835,8 +914,22 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
     if !unsafe_log_enabled() || replacements.is_empty() {
         return;
     }
+    let use_file = LOG_FILE.lock().ok().as_ref().map_or(false, |g| g.is_some());
+    macro_rules! log_out {
+        ($($arg:tt)*) => {
+            if use_file {
+                if let Ok(mut guard) = LOG_FILE.lock() {
+                    if let Some(ref mut f) = *guard {
+                        let _ = writeln!(f, $($arg)*);
+                    }
+                }
+            } else {
+                eprintln!($($arg)*);
+            }
+        }
+    }
     let text = String::from_utf8_lossy(original);
-    eprintln!(
+    log_out!(
         "keyclaw [UNSAFE] INTERCEPTIONS for {host} ({} found):",
         replacements.len()
     );
@@ -847,7 +940,7 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
             let before = truncate_utf8(&text[ctx_start..pos], 100);
             let after_end = std::cmp::min(secret_end + 100, text.len());
             let after = truncate_utf8(&text[secret_end..after_end], 100);
-            eprintln!(
+            log_out!(
                 "  ...{}[SECRET:{} -> {}]{}...",
                 before,
                 &r.secret[..std::cmp::min(8, r.secret.len())],
@@ -855,16 +948,65 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
                 after
             );
         } else {
-            eprintln!(
+            log_out!(
                 "  {} -> {}",
                 &r.secret[..std::cmp::min(8, r.secret.len())],
                 r.placeholder
             );
         }
     }
-    eprintln!("---");
+    log_out!("---");
 }
 
 fn log_line(line: String) {
-    eprintln!("keyclaw: {}", logscrub::scrub(&line));
+    let msg = format!("keyclaw: {}", logscrub::scrub(&line));
+    if let Ok(mut guard) = LOG_FILE.lock() {
+        if let Some(ref mut f) = *guard {
+            let _ = writeln!(f, "{}", msg);
+            return;
+        }
+    }
+    eprintln!("{}", msg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_expected_websocket_close_error, uses_input_only_ws_rewrite_path,
+    };
+    use hudsucker::tokio_tungstenite::tungstenite::{self, error::ProtocolError};
+
+    #[test]
+    fn tls_unexpected_eof_is_treated_as_expected_ws_close() {
+        let err = tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "peer closed connection without sending TLS close_notify",
+        ));
+
+        assert!(is_expected_websocket_close_error(&err));
+    }
+
+    #[test]
+    fn reset_without_closing_handshake_is_treated_as_expected_ws_close() {
+        let err = tungstenite::Error::Protocol(ProtocolError::ResetWithoutClosingHandshake);
+
+        assert!(is_expected_websocket_close_error(&err));
+    }
+
+    #[test]
+    fn unrelated_io_errors_are_not_treated_as_expected_ws_close() {
+        let err = tungstenite::Error::Io(std::io::Error::other("socket exploded"));
+
+        assert!(!is_expected_websocket_close_error(&err));
+    }
+
+    #[test]
+    fn codex_responses_ws_uses_input_only_scope() {
+        assert!(uses_input_only_ws_rewrite_path("/backend-api/codex/responses"));
+    }
+
+    #[test]
+    fn non_codex_ws_keeps_full_scope() {
+        assert!(!uses_input_only_ws_rewrite_path("/backend-api/other"));
+    }
 }

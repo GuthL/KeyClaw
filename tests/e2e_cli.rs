@@ -141,6 +141,133 @@ fn mitm_releases_proxy_port_immediately_on_sigint() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn mitm_returns_control_to_interactive_shell_after_child_exit() {
+    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let vault_path = temp.path().join("vault.enc");
+    let gitleaks_config = temp.path().join("gitleaks.toml");
+    std::fs::write(&gitleaks_config, "rules = []\n").expect("write gitleaks config");
+
+    let py = format!(
+        r#"
+import os
+import pty
+import re
+import select
+import signal
+import subprocess
+import sys
+import time
+
+bin_path = {bin_path:?}
+vault_path = {vault_path:?}
+gitleaks_config = {gitleaks_config:?}
+cmd = (
+    "KEYCLAW_REQUIRE_MITM_EFFECTIVE=false "
+    "KEYCLAW_PROXY_ADDR=127.0.0.1:0 "
+    f"KEYCLAW_VAULT_PATH={vault_path} "
+    f"KEYCLAW_GITLEAKS_CONFIG={gitleaks_config} "
+    "KEYCLAW_VAULT_PASSPHRASE=test-passphrase "
+    f"{{bin_path}} mitm codex -- bash -lc 'exit 0'; "
+    "printf '__RC__=%s\\n' \"$?\"; jobs -l; exit"
+)
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", "--noprofile", "--norc", "-i"])
+
+os.set_blocking(fd, False)
+buf = bytearray()
+sentinel = re.compile(rb"(?:\r\n|\n|\r)__RC__=")
+ready = re.compile(rb"(?:\r\n|\n|\r)__READY__(?:\r\n|\n|\r)")
+
+def pump(timeout, marker=None):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.1)
+        if fd not in ready:
+            continue
+        try:
+            data = os.read(fd, 4096)
+        except BlockingIOError:
+            continue
+        except OSError:
+            return False
+        if not data:
+            return False
+        buf.extend(data)
+        if marker and marker.search(buf):
+            return True
+        if marker is None and sentinel.search(buf):
+            return True
+    return False
+
+def write_all(data):
+    view = memoryview(data)
+    while view:
+        _, writable, _ = select.select([], [fd], [], 0.1)
+        if fd not in writable:
+            continue
+        try:
+            written = os.write(fd, view)
+        except BlockingIOError:
+            continue
+        view = view[written:]
+
+time.sleep(1.0)
+write_all(b"export PS1='PROMPT> '; printf '__READY__\\n'\r")
+if not pump(10.0, ready):
+    print(buf.decode("utf-8", "replace"))
+    sys.exit(3)
+write_all(cmd.encode())
+write_all(b"\r")
+ok = pump(5.0)
+output = buf.decode("utf-8", "replace")
+print(output)
+
+if not ok:
+    try:
+        raw = subprocess.check_output(["pgrep", "-P", str(pid)], text=True)
+        for child in raw.split():
+            try:
+                os.kill(int(child), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    except subprocess.CalledProcessError:
+        pass
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    sys.exit(1)
+
+if re.search(r"(^|[\r\n])__RC__=0(?:\r\n|\n|\r|$)", output) and "Stopped" not in output:
+    sys.exit(0)
+
+sys.exit(2)
+"#,
+        bin_path = bin.display().to_string(),
+        vault_path = vault_path.display().to_string(),
+        gitleaks_config = gitleaks_config.display().to_string(),
+    );
+
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(py)
+        .output()
+        .expect("run pty harness");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "pty harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn run_mitm(tool: &str, addr: String, upstream_url: &str, payload: &str) -> (String, i32) {
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");
