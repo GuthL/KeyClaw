@@ -163,7 +163,14 @@ KeyClaw uses deterministic error codes for programmatic handling:
 | `mitm_not_effective` | Proxy bypass detected (e.g., `NO_PROXY=*`) |
 | `body_too_large` | Request body exceeds `KEYCLAW_MAX_BODY_BYTES` |
 | `invalid_json` | Failed to parse/rewrite request JSON |
+| `request_timeout` | Request body read timed out before inspection completed |
 | `strict_resolve_failed` | Placeholder resolution failed in strict mode |
+
+## Request Handling Notes
+
+- Oversized JSON request bodies are rejected with `413 body_too_large` and are not forwarded upstream.
+- Request bodies that do not finish streaming before `KEYCLAW_DETECTOR_TIMEOUT` are rejected with `408 request_timeout`.
+- Malformed JSON request bodies are passed through unchanged; KeyClaw only rewrites payloads it can parse safely.
 
 ## Security Model
 
