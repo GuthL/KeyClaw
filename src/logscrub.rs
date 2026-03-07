@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn scrub_keeps_safe_text() {
-        let input = "keyclaw: proxy listening on 127.0.0.1:8877";
+        let input = "keyclaw info: proxy listening on 127.0.0.1:8877";
         assert_eq!(scrub(input), input);
     }
 }

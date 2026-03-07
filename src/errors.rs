@@ -58,6 +58,15 @@ impl KeyclawError {
     pub fn code(&self) -> Option<&str> {
         self.code.as_deref()
     }
+
+    pub fn display_without_code(&self) -> String {
+        match (self.msg.is_empty(), self.source.as_ref()) {
+            (false, Some(source)) => format!("{}: {}", self.msg, source),
+            (false, None) => self.msg.clone(),
+            (true, Some(source)) => source.to_string(),
+            (true, None) => "keyclaw error".to_string(),
+        }
+    }
 }
 
 impl Display for KeyclawError {

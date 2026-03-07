@@ -24,7 +24,6 @@ use serde_json::Value;
 use crate::errors::{
     code_of, KeyclawError, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_REQUEST_TIMEOUT,
 };
-use crate::logscrub;
 use crate::pipeline::Processor;
 
 static UNSAFE_LOG: AtomicBool = AtomicBool::new(false);
@@ -964,7 +963,10 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
 }
 
 fn log_line(line: String) {
-    let msg = format!("keyclaw: {}", logscrub::scrub(&line));
+    if !crate::logging::enabled(crate::logging::LogLevel::Info) {
+        return;
+    }
+    let msg = crate::logging::render(crate::logging::LogLevel::Info, &line);
     if let Ok(mut guard) = LOG_FILE.lock() {
         if let Some(ref mut f) = *guard {
             let _ = writeln!(f, "{}", msg);

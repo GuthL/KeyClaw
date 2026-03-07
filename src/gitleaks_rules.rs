@@ -17,6 +17,7 @@ pub struct Rule {
 /// All compiled gitleaks rules.
 pub struct RuleSet {
     pub rules: Vec<Rule>,
+    pub skipped_rules: usize,
 }
 
 // ── TOML deserialization shapes ──────────────────────────────
@@ -73,18 +74,16 @@ impl RuleSet {
                         secret_group: r.secret_group.unwrap_or(0),
                     });
                 }
-                Err(e) => {
-                    eprintln!("keyclaw: skipping gitleaks rule {}: {e}", r.id);
+                Err(_) => {
                     skipped += 1;
                 }
             }
         }
 
-        if skipped > 0 {
-            eprintln!("keyclaw: loaded {} rules, skipped {skipped}", rules.len());
-        }
-
-        Ok(RuleSet { rules })
+        Ok(RuleSet {
+            rules,
+            skipped_rules: skipped,
+        })
     }
 
     /// Return the bundled default rules (compiled into the binary).

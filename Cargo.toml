@@ -26,8 +26,6 @@ signal-hook = "0.3"
 thiserror = "2.0"
 tempfile = "3.23"
 tiny_http = "0.12"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.50", features = ["rt-multi-thread", "signal", "sync", "time"] }
 url = "2.5"
 x509-parser = "0.18"

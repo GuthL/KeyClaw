@@ -144,6 +144,7 @@ KeyClaw is configured via environment variables:
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` (2MB) | Maximum request body size |
 | `KEYCLAW_DETECTOR_TIMEOUT` | `4s` | Timeout for request-body secret detection and streamed body reads (`250ms`, `4s`, `1m` formats supported) |
 | `KEYCLAW_GITLEAKS_CONFIG` | (bundled rules) | Path to custom gitleaks.toml rule file |
+| `KEYCLAW_LOG_LEVEL` | `info` | Operator log verbosity for stderr runtime messages (`error`, `warn`, `info`, `debug`) |
 | `KEYCLAW_UNSAFE_LOG` | `false` | Disable normal log scrubbing and log raw secret material for debugging only; unsafe and opt-in |
 | `KEYCLAW_FAIL_CLOSED` | `true` | Fail closed on errors |
 | `KEYCLAW_REQUIRE_MITM_EFFECTIVE` | `true` | Fail if proxy bypass is detected |
@@ -153,6 +154,16 @@ KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`. Secret detection uses th
 By default, KeyClaw creates a machine-local vault key next to the encrypted vault and reuses it on later runs. Set `KEYCLAW_VAULT_PASSPHRASE` only when you need to override that key material explicitly. Existing vaults written with the removed built-in default are migrated to a generated local key on the next successful write. If an existing vault cannot be decrypted or its key material is missing, KeyClaw fails closed and tells you how to recover.
 
 The only intentional exception to scrubbed runtime logging is `KEYCLAW_UNSAFE_LOG=true`. When enabled, KeyClaw may write raw request fragments to stderr or `~/.keyclaw/mitm.log` to help debug interception problems. Leave it unset for normal use.
+
+## Logging
+
+Operator-facing runtime messages use leveled stderr prefixes:
+
+- `keyclaw info:` startup, shutdown, and normal proxy activity summaries
+- `keyclaw warn:` risky but non-fatal conditions such as unsafe logging or bypass risk
+- `keyclaw error:` fatal CLI errors before exit
+
+Set `KEYCLAW_LOG_LEVEL=error`, `warn`, `info`, or `debug` to reduce or expand stderr verbosity. The default is `info`. The `doctor` subcommand is intentionally separate: it writes its `doctor: PASS|WARN|FAIL ...` report to stdout so it can be piped or parsed cleanly.
 
 ## Error Codes
 

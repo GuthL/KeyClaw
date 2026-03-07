@@ -3,6 +3,7 @@ pub mod config;
 pub mod errors;
 pub mod gitleaks_rules;
 pub mod launcher;
+pub mod logging;
 pub mod logscrub;
 pub mod pipeline;
 pub mod placeholder;
