@@ -42,3 +42,4 @@ Out of scope:
 5. **Minimal trust** — The proxy only intercepts configured hosts; all other traffic passes through untouched
 6. **In-process detection** — Secret detection uses the bundled gitleaks rules compiled into the binary; there is no external gitleaks subprocess in the runtime trust boundary
 7. **Fail closed on bad key material** — Missing, mismatched, or corrupt vault key material is treated as an operator-visible error, not as an empty vault
+8. **Unsafe logging is explicit** — `KEYCLAW_UNSAFE_LOG=true` is the only intentional way to bypass normal log scrubbing, and it is for local debugging only
