@@ -14,16 +14,15 @@ use hudsucker::{
     rcgen::{Issuer, KeyPair},
     rustls::crypto::aws_lc_rs,
     tokio_tungstenite::tungstenite::Message,
-    Body, HttpContext, HttpHandler, Proxy, RequestOrResponse, WebSocketContext,
-    WebSocketHandler,
+    Body, HttpContext, HttpHandler, Proxy, RequestOrResponse, WebSocketContext, WebSocketHandler,
 };
+use serde_json::Value;
 
 use crate::errors::{
     code_of, KeyclawError, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_REQUEST_TIMEOUT,
 };
 use crate::logscrub;
 use crate::pipeline::Processor;
-
 
 static UNSAFE_LOG: AtomicBool = AtomicBool::new(false);
 
@@ -46,6 +45,235 @@ fn truncate_utf8(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+#[derive(Clone)]
+struct BufferedInputJsonDeltaEvent {
+    other_lines: Vec<String>,
+    payload: Value,
+    fragment: String,
+}
+
+impl BufferedInputJsonDeltaEvent {
+    fn parse(event: &str) -> Option<Self> {
+        let mut other_lines = Vec::new();
+        let mut data_lines = Vec::new();
+
+        for line in event.lines() {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            if let Some(rest) = line.strip_prefix("data: ") {
+                data_lines.push(rest.to_string());
+            } else if let Some(rest) = line.strip_prefix("data:") {
+                data_lines.push(rest.to_string());
+            } else if !line.is_empty() {
+                other_lines.push(line.to_string());
+            }
+        }
+
+        if data_lines.is_empty() {
+            return None;
+        }
+
+        let payload_text = data_lines.join("\n");
+        let payload: Value = serde_json::from_str(&payload_text).ok()?;
+        let delta = payload.get("delta")?;
+        if delta.get("type")?.as_str()? != "input_json_delta" {
+            return None;
+        }
+
+        Some(Self {
+            other_lines,
+            fragment: delta.get("partial_json")?.as_str()?.to_string(),
+            payload,
+        })
+    }
+
+    fn budget(&self) -> usize {
+        self.fragment.len()
+    }
+
+    fn with_fragment(mut self, fragment: String) -> Self {
+        self.fragment = fragment;
+        self
+    }
+
+    fn render_with_fragment(&self, fragment: &str) -> Vec<u8> {
+        let mut payload = self.payload.clone();
+        if let Some(delta) = payload.get_mut("delta").and_then(Value::as_object_mut) {
+            delta.insert(
+                "partial_json".to_string(),
+                Value::String(fragment.to_string()),
+            );
+        }
+
+        let mut out = String::new();
+        for line in &self.other_lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push_str("data: ");
+        out.push_str(&payload.to_string());
+        out.push_str("\n\n");
+        out.into_bytes()
+    }
+}
+
+struct SseStreamResolver {
+    processor: Arc<Processor>,
+    frame_carry: Vec<u8>,
+    pending_events: Vec<BufferedInputJsonDeltaEvent>,
+    pending_text: String,
+}
+
+impl SseStreamResolver {
+    fn new(processor: Arc<Processor>) -> Self {
+        Self {
+            processor,
+            frame_carry: Vec::new(),
+            pending_events: Vec::new(),
+            pending_text: String::new(),
+        }
+    }
+
+    fn process_frame(&mut self, data: &[u8]) -> Vec<u8> {
+        self.frame_carry.extend_from_slice(data);
+        let mut out = Vec::new();
+
+        for event in drain_complete_sse_events(&mut self.frame_carry) {
+            let event_text = String::from_utf8_lossy(&event).into_owned();
+            if let Some(parsed) = BufferedInputJsonDeltaEvent::parse(&event_text) {
+                self.pending_text.push_str(&parsed.fragment);
+                self.pending_events.push(parsed);
+                self.flush_pending(&mut out, false);
+            } else {
+                self.flush_pending(&mut out, true);
+                out.extend_from_slice(&event);
+            }
+        }
+
+        out
+    }
+
+    fn flush_pending(&mut self, out: &mut Vec<u8>, force: bool) {
+        if self.pending_events.is_empty() {
+            return;
+        }
+
+        let (resolved_ready, unresolved_tail) = self.resolve_pending_text(force);
+        let keep_last_buffered = !force && !unresolved_tail.is_empty();
+        if keep_last_buffered && self.pending_events.len() == 1 {
+            let deferred = format!("{resolved_ready}{unresolved_tail}");
+            self.pending_text = deferred.clone();
+            if let Some(last) = self.pending_events.last_mut() {
+                *last = last.clone().with_fragment(deferred);
+            }
+            return;
+        }
+
+        let emit_count = if keep_last_buffered {
+            self.pending_events.len().saturating_sub(1)
+        } else {
+            self.pending_events.len()
+        };
+
+        let mut remaining = resolved_ready;
+        let mut drained = std::mem::take(&mut self.pending_events);
+        let deferred_event = if keep_last_buffered {
+            drained.pop()
+        } else {
+            None
+        };
+        let last_emitted = emit_count.saturating_sub(1);
+
+        for (idx, event) in drained.into_iter().enumerate() {
+            let fragment = if idx == last_emitted && !keep_last_buffered {
+                std::mem::take(&mut remaining)
+            } else {
+                take_prefix(&mut remaining, event.budget())
+            };
+            out.extend(event.render_with_fragment(&fragment));
+        }
+
+        if let Some(event) = deferred_event {
+            let deferred = format!("{remaining}{unresolved_tail}");
+            self.pending_text = deferred.clone();
+            self.pending_events.push(event.with_fragment(deferred));
+        } else {
+            self.pending_text.clear();
+        }
+    }
+
+    fn resolve_pending_text(&self, force: bool) -> (String, String) {
+        let resolved = match self.processor.resolve_text(self.pending_text.as_bytes()) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(err) => {
+                log_line(format!("sse resolve_text error: {err}"));
+                self.pending_text.clone()
+            }
+        };
+
+        if force {
+            return (resolved, String::new());
+        }
+
+        if let Some(partial_start) = crate::placeholder::find_partial_placeholder_start(&resolved) {
+            (
+                resolved[..partial_start].to_string(),
+                resolved[partial_start..].to_string(),
+            )
+        } else {
+            (resolved, String::new())
+        }
+    }
+}
+
+fn take_prefix(text: &mut String, max_bytes: usize) -> String {
+    if text.is_empty() || max_bytes == 0 {
+        return String::new();
+    }
+
+    let mut end = max_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let remainder = text.split_off(end);
+    std::mem::replace(text, remainder)
+}
+
+fn drain_complete_sse_events(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut events = Vec::new();
+    let mut start = 0usize;
+    let mut idx = 0usize;
+
+    while idx < buffer.len() {
+        let delimiter_len =
+            if idx + 1 < buffer.len() && buffer[idx] == b'\n' && buffer[idx + 1] == b'\n' {
+                Some(2)
+            } else if idx + 3 < buffer.len()
+                && buffer[idx] == b'\r'
+                && buffer[idx + 1] == b'\n'
+                && buffer[idx + 2] == b'\r'
+                && buffer[idx + 3] == b'\n'
+            {
+                Some(4)
+            } else {
+                None
+            };
+
+        if let Some(len) = delimiter_len {
+            let end = idx + len;
+            events.push(buffer[start..end].to_vec());
+            start = end;
+            idx = end;
+        } else {
+            idx += 1;
+        }
+    }
+
+    if start > 0 {
+        buffer.drain(..start);
+    }
+
+    events
+}
 
 pub struct Server {
     pub listen_addr: String,
@@ -83,7 +311,13 @@ impl RunningServer {
 }
 
 impl Server {
-    pub fn new(listen_addr: String, allowed_hosts: Vec<String>, processor: Arc<Processor>, ca_cert_pem: String, ca_key_pem: String) -> Self {
+    pub fn new(
+        listen_addr: String,
+        allowed_hosts: Vec<String>,
+        processor: Arc<Processor>,
+        ca_cert_pem: String,
+        ca_key_pem: String,
+    ) -> Self {
         Self {
             listen_addr,
             allowed_hosts: normalize_hosts(&allowed_hosts),
@@ -158,7 +392,8 @@ impl Server {
                 let listener = tokio::net::TcpListener::from_std(listener)
                     .map_err(|e| format!("adopt listener failed: {e}"))?;
 
-                let ca = build_ca_authority(&ca_cert_pem, &ca_key_pem).map_err(|e| e.to_string())?;
+                let ca =
+                    build_ca_authority(&ca_cert_pem, &ca_key_pem).map_err(|e| e.to_string())?;
 
                 let handler = KeyclawHttpHandler {
                     allowed_hosts,
@@ -244,7 +479,12 @@ impl HttpHandler for KeyclawHttpHandler {
             return req.into();
         }
         self.intercepted.fetch_add(1, Ordering::SeqCst);
-        log_line(format!("intercept {} {} (host={})", req.method(), req.uri().path(), host));
+        log_line(format!(
+            "intercept {} {} (host={})",
+            req.method(),
+            req.uri().path(),
+            host
+        ));
 
         if req.method() == Method::CONNECT {
             return req.into();
@@ -252,14 +492,18 @@ impl HttpHandler for KeyclawHttpHandler {
 
         // WebSocket upgrade: strip compression extensions so the server
         // doesn't negotiate permessage-deflate (tungstenite can't handle RSV1 bits)
-        if req.headers().get("upgrade")
+        if req
+            .headers()
+            .get("upgrade")
             .and_then(|v| v.to_str().ok())
             .map(|v| v.eq_ignore_ascii_case("websocket"))
             .unwrap_or(false)
         {
             let (mut parts, body) = req.into_parts();
             parts.headers.remove("sec-websocket-extensions");
-            log_line("ws upgrade: stripped sec-websocket-extensions to disable compression".to_string());
+            log_line(
+                "ws upgrade: stripped sec-websocket-extensions to disable compression".to_string(),
+            );
             return Request::from_parts(parts, body).into();
         }
 
@@ -267,8 +511,8 @@ impl HttpHandler for KeyclawHttpHandler {
         let content_type_is_json = is_json(&content_type);
 
         if self.max_body_bytes > 0 {
-            if let Some(content_len) = header_value(&req, CONTENT_LENGTH.as_str())
-                .and_then(|v| v.parse::<i64>().ok())
+            if let Some(content_len) =
+                header_value(&req, CONTENT_LENGTH.as_str()).and_then(|v| v.parse::<i64>().ok())
             {
                 if content_len > self.max_body_bytes {
                     return json_error_response(
@@ -317,7 +561,9 @@ impl HttpHandler for KeyclawHttpHandler {
 
         let original_payload = body_bytes.to_vec();
 
-        if original_payload.is_empty() || (!content_type_is_json && !is_json_payload(&original_payload)) {
+        if original_payload.is_empty()
+            || (!content_type_is_json && !is_json_payload(&original_payload))
+        {
             return Request::from_parts(parts, body_from_vec(original_payload)).into();
         }
 
@@ -337,7 +583,9 @@ impl HttpHandler for KeyclawHttpHandler {
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
             }
             Ok(Err(err)) => {
-                log_line(format!("request processing failed: {err} — passing through"));
+                log_line(format!(
+                    "request processing failed: {err} — passing through"
+                ));
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
             }
             Err(_) => {
@@ -373,18 +621,17 @@ impl HttpHandler for KeyclawHttpHandler {
         rewritten_req.into()
     }
 
-    async fn handle_response(
-        &mut self,
-        _ctx: &HttpContext,
-        res: Response<Body>,
-    ) -> Response<Body> {
+    async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
         // SSE/streaming: pass through without buffering
-        let is_streaming = res.headers()
+        let is_streaming = res
+            .headers()
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(|ct| ct.contains("text/event-stream") || ct.contains("stream"))
             .unwrap_or(false)
-            || res.headers().get("transfer-encoding")
+            || res
+                .headers()
+                .get("transfer-encoding")
                 .and_then(|v| v.to_str().ok())
                 .map(|v| v.contains("chunked"))
                 .unwrap_or(false);
@@ -398,58 +645,18 @@ impl HttpHandler for KeyclawHttpHandler {
         if is_streaming {
             let processor = Arc::clone(&self.processor);
             let (parts, body) = res.into_parts();
-            let mut carry: Vec<u8> = Vec::new();
-            let new_body = body.map_frame(move |frame| {
-                match frame.into_data() {
+            let mut sse_resolver = SseStreamResolver::new(processor);
+            let new_body = body
+                .map_frame(move |frame| match frame.into_data() {
                     Ok(data) => {
-                        // Prepend any carry from previous frame
-                        let combined = if carry.is_empty() {
-                            data.to_vec()
-                        } else {
-                            let mut c = std::mem::take(&mut carry);
-                            c.extend_from_slice(&data);
-                            c
-                        };
-
-                        let text = String::from_utf8_lossy(&combined);
-
-                        if text.contains("{{KEYCLAW_SECRET_") {
-                            log_line(format!("stream chunk has placeholder, resolving..."));
-                            match processor.resolve_text(&combined) {
-                                Ok(resolved) => {
-                                    let resolved_text = String::from_utf8_lossy(&resolved);
-                                    // Check for partial placeholder at end that continues next frame
-                                    if let Some(partial) = crate::placeholder::find_partial_placeholder_start(&resolved_text) {
-                                        carry = resolved[partial..].to_vec();
-                                        log_line("stream: carrying partial placeholder to next frame".to_string());
-                                        return hudsucker::hyper::body::Frame::data(
-                                            hudsucker::hyper::body::Bytes::from(resolved[..partial].to_vec())
-                                        );
-                                    }
-                                    log_line("response: resolved placeholders in stream chunk".to_string());
-                                    return hudsucker::hyper::body::Frame::data(
-                                        hudsucker::hyper::body::Bytes::from(resolved)
-                                    );
-                                }
-                                Err(e) => {
-                                    log_line(format!("resolve_text error: {}", e));
-                                }
-                            }
-                        } else if let Some(partial) = crate::placeholder::find_partial_placeholder_start(&text) {
-                            // No complete marker but might have a partial one starting
-                            carry = combined[partial..].to_vec();
-                            return hudsucker::hyper::body::Frame::data(
-                                hudsucker::hyper::body::Bytes::from(combined[..partial].to_vec())
-                            );
-                        }
-
-                        hudsucker::hyper::body::Frame::data(
-                            hudsucker::hyper::body::Bytes::from(combined)
-                        )
+                        let rewritten = sse_resolver.process_frame(&data);
+                        hudsucker::hyper::body::Frame::data(hudsucker::hyper::body::Bytes::from(
+                            rewritten,
+                        ))
                     }
                     Err(frame) => frame,
-                }
-            }).boxed();
+                })
+                .boxed();
             return Response::from_parts(parts, new_body.into());
         }
 
@@ -465,7 +672,9 @@ impl HttpHandler for KeyclawHttpHandler {
         if text.contains("{{KEYCLAW_SECRET_") {
             let processor = Arc::clone(&self.processor);
             let payload = body_bytes.clone();
-            if let Ok(Ok(resolved)) = tokio::task::spawn_blocking(move || processor.resolve_text(&payload)).await {
+            if let Ok(Ok(resolved)) =
+                tokio::task::spawn_blocking(move || processor.resolve_text(&payload)).await
+            {
                 if resolved != body_bytes {
                     log_line("response: resolved placeholders back to secrets".to_string());
                     body_bytes = resolved;
@@ -479,7 +688,6 @@ impl HttpHandler for KeyclawHttpHandler {
         }
         resp
     }
-
 
     async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
         request_host(req)
@@ -628,7 +836,10 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
         return;
     }
     let text = String::from_utf8_lossy(original);
-    eprintln!("keyclaw [UNSAFE] INTERCEPTIONS for {host} ({} found):", replacements.len());
+    eprintln!(
+        "keyclaw [UNSAFE] INTERCEPTIONS for {host} ({} found):",
+        replacements.len()
+    );
     for r in replacements {
         if let Some(pos) = text.find(&r.secret) {
             let ctx_start = if pos > 100 { pos - 100 } else { 0 };
@@ -644,7 +855,11 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
                 after
             );
         } else {
-            eprintln!("  {} -> {}", &r.secret[..std::cmp::min(8, r.secret.len())], r.placeholder);
+            eprintln!(
+                "  {} -> {}",
+                &r.secret[..std::cmp::min(8, r.secret.len())],
+                r.placeholder
+            );
         }
     }
     eprintln!("---");
