@@ -776,48 +776,42 @@ impl WebSocketHandler for KeyclawHttpHandler {
     async fn handle_message(&mut self, ctx: &WebSocketContext, msg: Message) -> Option<Message> {
         // Server -> Client: resolve any placeholders in responses
         if !matches!(ctx, WebSocketContext::ClientToServer { .. }) {
-            match &msg {
-                Message::Text(text) => {
-                    let s = text.as_str();
-                    if s.contains("{{KEYCLAW_SECRET_") {
-                        if let Ok(resolved) = self.processor.resolve_text(s.as_bytes()) {
-                            if let Ok(value) = String::from_utf8(resolved) {
-                                log_line("ws response: resolved placeholders".to_string());
-                                return Some(Message::Text(value.into()));
-                            }
+            if let Message::Text(text) = &msg {
+                let s = text.as_str();
+                if s.contains("{{KEYCLAW_SECRET_") {
+                    if let Ok(resolved) = self.processor.resolve_text(s.as_bytes()) {
+                        if let Ok(value) = String::from_utf8(resolved) {
+                            log_line("ws response: resolved placeholders".to_string());
+                            return Some(Message::Text(value.into()));
                         }
                     }
                 }
-                _ => {}
             }
             return Some(msg);
         }
 
         // Client -> Server: redact secrets in WS messages
-        match &msg {
-            Message::Text(text) => {
-                let s = text.as_str();
-                let processor = self.processor.clone();
-                let payload = s.as_bytes().to_vec();
-                let rewrite = if uses_input_only_ws_rewrite(ctx) {
-                    processor.rewrite_and_evaluate_codex_ws(&payload)
-                } else {
-                    processor.rewrite_and_evaluate(&payload)
-                };
-                match rewrite {
-                    Ok(result) if !result.replacements.is_empty() => {
-                        log_line(format!(
-                            "ws request: redacted {} secret(s)",
-                            result.replacements.len()
-                        ));
-                        if let Ok(value) = String::from_utf8(result.body) {
-                            return Some(Message::Text(value.into()));
-                        }
+        if let Message::Text(text) = &msg {
+            let s = text.as_str();
+            let processor = self.processor.clone();
+            let payload = s.as_bytes().to_vec();
+            let rewrite = if uses_input_only_ws_rewrite(ctx) {
+                processor.rewrite_and_evaluate_codex_ws(&payload)
+            } else {
+                processor.rewrite_and_evaluate(&payload)
+            };
+            match rewrite {
+                Ok(result) if !result.replacements.is_empty() => {
+                    log_line(format!(
+                        "ws request: redacted {} secret(s)",
+                        result.replacements.len()
+                    ));
+                    if let Ok(value) = String::from_utf8(result.body) {
+                        return Some(Message::Text(value.into()));
                     }
-                    _ => {}
                 }
+                _ => {}
             }
-            _ => {}
         }
         Some(msg)
     }
@@ -916,7 +910,7 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
     if !unsafe_log_enabled() || replacements.is_empty() {
         return;
     }
-    let use_file = LOG_FILE.lock().ok().as_ref().map_or(false, |g| g.is_some());
+    let use_file = LOG_FILE.lock().ok().as_ref().is_some_and(|g| g.is_some());
     macro_rules! log_out {
         ($($arg:tt)*) => {
             if use_file {
@@ -937,7 +931,7 @@ fn log_replacements(host: &str, original: &[u8], replacements: &[crate::placehol
     );
     for r in replacements {
         if let Some(pos) = text.find(&r.secret) {
-            let ctx_start = if pos > 100 { pos - 100 } else { 0 };
+            let ctx_start = pos.saturating_sub(100);
             let secret_end = pos + r.secret.len();
             let before = truncate_utf8(&text[ctx_start..pos], 100);
             let after_end = std::cmp::min(secret_end + 100, text.len());

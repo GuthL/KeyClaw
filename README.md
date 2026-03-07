@@ -98,7 +98,7 @@ claude "what API keys are in my .env?"   # secrets are redacted automatically
 codex "deploy using my AWS credentials"  # same protection for Codex
 ```
 
-The `env.sh` script auto-disables when the proxy isn't running — safe to add to your `.bashrc`.
+The `env.sh` script validates that the recorded `keyclaw proxy` process is still the active instance before exporting proxy variables, and it ignores stale PID state safely — safe to add to your `.bashrc`.
 
 ### Quick Start — MITM Wrapper
 

@@ -477,9 +477,7 @@ fn rewrite_json_command(home: &std::path::Path) -> Command {
 }
 
 fn can_bind(addr: SocketAddr) -> bool {
-    TcpListener::bind(addr)
-        .map(|listener| drop(listener))
-        .is_ok()
+    TcpListener::bind(addr).map(drop).is_ok()
 }
 
 fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
