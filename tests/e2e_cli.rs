@@ -85,6 +85,21 @@ fn doctor_detects_proxy_bypass_attempt() {
 }
 
 #[test]
+fn doctor_detects_suffix_no_proxy_bypass_attempt() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = doctor_command(temp.path())
+        .env("NO_PROXY", ".openai.com")
+        .output()
+        .expect("run doctor");
+
+    assert_ne!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("FAIL proxy-bypass"), "output={out}");
+    assert!(out.contains(".openai.com"), "output={out}");
+    assert!(out.contains("matches api.openai.com"), "output={out}");
+}
+
+#[test]
 fn doctor_warns_on_unsafe_log_but_exits_zero() {
     let temp = tempfile::tempdir().expect("tempdir");
     let output = doctor_command(temp.path())

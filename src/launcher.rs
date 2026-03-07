@@ -857,26 +857,108 @@ fn build_command(tool: &str, child_args: Vec<String>) -> (String, Vec<String>) {
     (tool.to_string(), Vec::new())
 }
 
-pub fn launcher_bypass_risk(no_proxy: &str, hosts: &[String]) -> Option<String> {
-    let mut set = std::collections::HashSet::new();
-    for item in no_proxy.split(',') {
-        let v = item.trim().to_lowercase();
-        if !v.is_empty() {
-            set.insert(v);
+#[derive(Debug, PartialEq, Eq)]
+enum NoProxyEntry {
+    Wildcard,
+    Host {
+        raw: String,
+        host: String,
+        is_suffix: bool,
+        has_port: bool,
+    },
+}
+
+impl NoProxyEntry {
+    fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        if raw == "*" {
+            return Some(Self::Wildcard);
+        }
+
+        let (host, has_port) = split_host_port(raw);
+        let host = host.to_lowercase();
+        let is_suffix = host.starts_with('.');
+        let host = host.trim_start_matches('.').to_string();
+        if host.is_empty() {
+            return None;
+        }
+
+        Some(Self::Host {
+            raw: raw.to_string(),
+            host,
+            is_suffix,
+            has_port,
+        })
+    }
+
+    fn match_reason(&self, intercepted_host: &str) -> Option<String> {
+        match self {
+            Self::Wildcard => Some("NO_PROXY=*".to_string()),
+            Self::Host {
+                raw,
+                host,
+                is_suffix,
+                has_port,
+            } => {
+                let exact = intercepted_host == host;
+                let suffix = intercepted_host.ends_with(&format!(".{host}"));
+                if !exact && !(*is_suffix && suffix) {
+                    return None;
+                }
+
+                if *is_suffix || *has_port {
+                    Some(format!(
+                        "NO_PROXY includes {raw} (matches {intercepted_host})"
+                    ))
+                } else {
+                    Some(format!("NO_PROXY includes {raw}"))
+                }
+            }
         }
     }
+}
 
-    if set.contains("*") {
-        return Some("NO_PROXY=*".to_string());
-    }
+pub fn launcher_bypass_risk(no_proxy: &str, hosts: &[String]) -> Option<String> {
+    let entries = no_proxy
+        .split(',')
+        .filter_map(NoProxyEntry::parse)
+        .collect::<Vec<_>>();
 
-    for host in hosts {
-        if set.contains(&host.to_lowercase()) {
-            return Some(format!("NO_PROXY includes {host}"));
+    for host in hosts
+        .iter()
+        .filter_map(|host| normalize_no_proxy_host(host))
+    {
+        for entry in &entries {
+            if let Some(reason) = entry.match_reason(&host) {
+                return Some(reason);
+            }
         }
     }
 
     None
+}
+
+fn normalize_no_proxy_host(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+    Some(split_host_port(host).0.to_lowercase())
+}
+
+fn split_host_port(value: &str) -> (&str, bool) {
+    let value = value.trim();
+    if value.matches(':').count() == 1 {
+        if let Some((host, port)) = value.rsplit_once(':') {
+            if !host.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
+                return (host, true);
+            }
+        }
+    }
+    (value, false)
 }
 
 fn print_error(err: &KeyclawError) {
@@ -899,4 +981,62 @@ fn print_usage(w: &mut dyn Write) {
     let _ = writeln!(w, "  keyclaw mitm claude -- [claude args]");
     let _ = writeln!(w, "  keyclaw rewrite-json < payload.json");
     let _ = writeln!(w, "  keyclaw doctor");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn launcher_bypass_risk_detects_exact_host_matches() {
+        let risk = super::launcher_bypass_risk(
+            "api.openai.com",
+            &[
+                String::from("api.openai.com"),
+                String::from("api.anthropic.com"),
+            ],
+        );
+
+        assert_eq!(risk.as_deref(), Some("NO_PROXY includes api.openai.com"));
+    }
+
+    #[test]
+    fn launcher_bypass_risk_detects_suffix_matches() {
+        let risk = super::launcher_bypass_risk(".openai.com", &[String::from("api.openai.com")]);
+
+        assert_eq!(
+            risk.as_deref(),
+            Some("NO_PROXY includes .openai.com (matches api.openai.com)")
+        );
+    }
+
+    #[test]
+    fn launcher_bypass_risk_detects_host_port_matches() {
+        let risk =
+            super::launcher_bypass_risk("api.openai.com:443", &[String::from("api.openai.com")]);
+
+        assert_eq!(
+            risk.as_deref(),
+            Some("NO_PROXY includes api.openai.com:443 (matches api.openai.com)")
+        );
+    }
+
+    #[test]
+    fn launcher_bypass_risk_normalizes_case_and_whitespace() {
+        let risk =
+            super::launcher_bypass_risk(" API.OPENAI.COM:443 ", &[String::from("api.openai.com")]);
+
+        assert_eq!(
+            risk.as_deref(),
+            Some("NO_PROXY includes API.OPENAI.COM:443 (matches api.openai.com)")
+        );
+    }
+
+    #[test]
+    fn launcher_bypass_risk_ignores_unrelated_entries() {
+        let risk = super::launcher_bypass_risk(
+            "example.com,.internal.local",
+            &[String::from("api.openai.com")],
+        );
+
+        assert_eq!(risk, None);
+    }
 }
