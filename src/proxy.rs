@@ -393,21 +393,39 @@ impl HttpHandler for KeyclawHttpHandler {
             return res;
         }
 
-        // SSE/streaming: wrap body to resolve placeholders per-chunk without buffering
+        // SSE/streaming: wrap body to resolve placeholders per-chunk with carry-over
+        // for placeholders that span frame boundaries.
         if is_streaming {
             let processor = Arc::clone(&self.processor);
             let (parts, body) = res.into_parts();
+            let mut carry: Vec<u8> = Vec::new();
             let new_body = body.map_frame(move |frame| {
                 match frame.into_data() {
                     Ok(data) => {
-                        let text = String::from_utf8_lossy(&data);
-                        if text.contains("KEYCLAW") {
-                            log_line(format!("stream chunk contains KEYCLAW marker ({} bytes)", data.len()));
-                        }
+                        // Prepend any carry from previous frame
+                        let combined = if carry.is_empty() {
+                            data.to_vec()
+                        } else {
+                            let mut c = std::mem::take(&mut carry);
+                            c.extend_from_slice(&data);
+                            c
+                        };
+
+                        let text = String::from_utf8_lossy(&combined);
+
                         if text.contains("{{KEYCLAW_SECRET_") {
                             log_line(format!("stream chunk has placeholder, resolving..."));
-                            match processor.resolve_text(text.as_bytes()) {
+                            match processor.resolve_text(&combined) {
                                 Ok(resolved) => {
+                                    let resolved_text = String::from_utf8_lossy(&resolved);
+                                    // Check for partial placeholder at end that continues next frame
+                                    if let Some(partial) = crate::placeholder::find_partial_placeholder_start(&resolved_text) {
+                                        carry = resolved[partial..].to_vec();
+                                        log_line("stream: carrying partial placeholder to next frame".to_string());
+                                        return hudsucker::hyper::body::Frame::data(
+                                            hudsucker::hyper::body::Bytes::from(resolved[..partial].to_vec())
+                                        );
+                                    }
                                     log_line("response: resolved placeholders in stream chunk".to_string());
                                     return hudsucker::hyper::body::Frame::data(
                                         hudsucker::hyper::body::Bytes::from(resolved)
@@ -417,8 +435,17 @@ impl HttpHandler for KeyclawHttpHandler {
                                     log_line(format!("resolve_text error: {}", e));
                                 }
                             }
+                        } else if let Some(partial) = crate::placeholder::find_partial_placeholder_start(&text) {
+                            // No complete marker but might have a partial one starting
+                            carry = combined[partial..].to_vec();
+                            return hudsucker::hyper::body::Frame::data(
+                                hudsucker::hyper::body::Bytes::from(combined[..partial].to_vec())
+                            );
                         }
-                        hudsucker::hyper::body::Frame::data(data)
+
+                        hudsucker::hyper::body::Frame::data(
+                            hudsucker::hyper::body::Bytes::from(combined)
+                        )
                     }
                     Err(frame) => frame,
                 }
