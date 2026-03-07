@@ -155,6 +155,73 @@ fn untrusted_host_passes_through_without_rewriting() {
     assert!(capture.body.contains(CODEX_SECRET));
 }
 
+#[test]
+fn response_placeholders_resolved_back_to_secrets() {
+    let (upstream_url, rx, _upstream_guard) = start_echo_upstream();
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+
+    let client = Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+
+    // Send a request with a secret — the proxy will replace it with a placeholder.
+    // The echo upstream bounces the (rewritten) body back as the response.
+    // The proxy's response handler should resolve the placeholder back to the real secret.
+    let resp = client
+        .post(&upstream_url)
+        .header("content-type", "application/json")
+        .body(format!(
+            r#"{{"messages":[{{"content":"api_key = {}"}}]}}"#,
+            CODEX_SECRET
+        ))
+        .send()
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // Verify the upstream received the placeholder (not the secret)
+    let capture = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream capture");
+    assert!(!capture.body.contains(CODEX_SECRET), "secret leaked to upstream");
+    assert!(capture.body.contains("{{KEYCLAW_SECRET_"), "no placeholder sent to upstream");
+
+    // Verify the client received the real secret back (placeholder resolved)
+    let resp_body = resp.text().expect("response body");
+    assert!(
+        resp_body.contains(CODEX_SECRET),
+        "secret not reinjected in response: {}",
+        resp_body
+    );
+    // Check no *real* placeholders remain (the redaction notice contains an example
+    // `{{KEYCLAW_SECRET_xxxx}}` which is fine — it doesn't match the full pattern).
+    let real_placeholder_re =
+        regex::Regex::new(r"\{\{KEYCLAW_SECRET_[A-Za-z0-9*_-]{1,5}_[a-f0-9]{16}\}\}").unwrap();
+    assert!(
+        !real_placeholder_re.is_match(&resp_body),
+        "unresolved real placeholder in response: {}",
+        resp_body
+    );
+}
+
 fn new_processor_with_ca() -> (Processor, String, String) {
     let dir = tempfile::tempdir().expect("tempdir");
     let vault_path = dir.path().join("vault.enc");
@@ -170,6 +237,55 @@ fn new_processor_with_ca() -> (Processor, String, String) {
     };
 
     (processor, ca_cert, ca_key)
+}
+
+/// Upstream that echoes the request body back as the response body.
+fn start_echo_upstream() -> (String, mpsc::Receiver<UpstreamCapture>, thread::JoinHandle<()>) {
+    let listener =
+        TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = TinyServer::from_listener(listener, None).expect("server");
+
+    let (tx, rx) = mpsc::channel();
+
+    let join = thread::spawn(move || loop {
+        match server.recv_timeout(Duration::from_millis(100)) {
+            Ok(Some(mut req)) => {
+                let headers: Vec<(String, String)> = req
+                    .headers()
+                    .iter()
+                    .map(|h| {
+                        (
+                            h.field.as_str().as_str().to_lowercase(),
+                            h.value.as_str().to_string(),
+                        )
+                    })
+                    .collect();
+                let mut body = String::new();
+                let _ = req.as_reader().read_to_string(&mut body);
+                let _ = tx.send(UpstreamCapture {
+                    body: body.clone(),
+                    headers,
+                });
+                // Echo the request body back as the response
+                let _ = req.respond(
+                    Response::from_string(body)
+                        .with_header(
+                            tiny_http::Header::from_bytes(
+                                &b"content-type"[..],
+                                &b"application/json"[..],
+                            )
+                            .unwrap(),
+                        )
+                        .with_status_code(StatusCode(200)),
+                );
+            }
+            Ok(None) => continue,
+            Err(_) => break,
+        }
+    });
+
+    (format!("http://{}", addr), rx, join)
 }
 
 fn start_upstream() -> (String, mpsc::Receiver<UpstreamCapture>, thread::JoinHandle<()>) {
