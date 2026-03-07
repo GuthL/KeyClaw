@@ -179,8 +179,7 @@ fn untrusted_host_passes_through_without_rewriting() {
 fn response_placeholders_resolved_back_to_secrets() {
     let (upstream_url, rx, _upstream_guard) = start_echo_upstream();
     let (processor, ca_cert, ca_key) = new_processor_with_ca();
-    let request_secret = format!("api_key = {}", CODEX_SECRET);
-    let expected_placeholder = placeholder::make(&placeholder::make_id(&request_secret));
+    let expected_placeholder = placeholder::make(&placeholder::make_id(CODEX_SECRET));
 
     let host = url::Url::parse(&upstream_url)
         .ok()
@@ -382,8 +381,7 @@ fn request_body_timeout_returns_request_timeout_error() {
 
 #[test]
 fn sse_input_json_delta_fragments_resolve_split_placeholders() {
-    let request_secret = format!("api_key = {}", CODEX_SECRET);
-    let placeholder = placeholder::make(&placeholder::make_id(&request_secret));
+    let placeholder = placeholder::make(&placeholder::make_id(CODEX_SECRET));
     let split = placeholder.len() / 2;
     let first_fragment = format!("{{\"content\":\"{}", &placeholder[..split]);
     let second_fragment = format!("{}\"}}", &placeholder[split..]);
@@ -463,7 +461,7 @@ fn sse_input_json_delta_fragments_resolve_split_placeholders() {
     let deltas = collect_input_json_deltas(&resp_body);
     assert_eq!(
         deltas.concat(),
-        format!("{{\"content\":\"api_key = {}\"}}", CODEX_SECRET)
+        format!("{{\"content\":\"{}\"}}", CODEX_SECRET)
     );
     assert!(
         deltas

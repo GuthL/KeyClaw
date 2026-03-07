@@ -682,8 +682,11 @@ impl HttpHandler for KeyclawHttpHandler {
         // for placeholders that span frame boundaries.
         if is_streaming {
             let processor = Arc::clone(&self.processor);
-            let (parts, body) = res.into_parts();
+            let (mut parts, body) = res.into_parts();
             let mut sse_resolver = SseStreamResolver::new(processor);
+            // Streaming placeholder resolution can change frame sizes, so any
+            // upstream content-length is no longer reliable.
+            parts.headers.remove(CONTENT_LENGTH);
             let new_body = body
                 .map_frame(move |frame| match frame.into_data() {
                     Ok(data) => {
