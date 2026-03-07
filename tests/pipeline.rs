@@ -36,7 +36,9 @@ fn resolve_text_non_strict_mode_passes_through_missing_placeholder() {
     let processor = make_processor(false);
 
     let payload = b"hello {{KEYCLAW_SECRET_abcde_aaaaaaaaaaaaaaaa}}";
-    let resolved = processor.resolve_text(payload).expect("non-strict pass-through");
+    let resolved = processor
+        .resolve_text(payload)
+        .expect("non-strict pass-through");
     assert_eq!(resolved, payload);
 }
 

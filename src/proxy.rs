@@ -291,7 +291,9 @@ fn drain_complete_sse_events(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
 fn is_expected_websocket_close_error(err: &tungstenite::Error) -> bool {
     match err {
         tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => true,
-        tungstenite::Error::Protocol(tungstenite::error::ProtocolError::ResetWithoutClosingHandshake) => true,
+        tungstenite::Error::Protocol(
+            tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+        ) => true,
         tungstenite::Error::Io(io_err) => {
             io_err.kind() == std::io::ErrorKind::UnexpectedEof
                 && io_err.to_string().contains("close_notify")
@@ -971,9 +973,7 @@ fn log_line(line: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_expected_websocket_close_error, uses_input_only_ws_rewrite_path,
-    };
+    use super::{is_expected_websocket_close_error, uses_input_only_ws_rewrite_path};
     use hudsucker::tokio_tungstenite::tungstenite::{self, error::ProtocolError};
 
     #[test]
@@ -1002,7 +1002,9 @@ mod tests {
 
     #[test]
     fn codex_responses_ws_uses_input_only_scope() {
-        assert!(uses_input_only_ws_rewrite_path("/backend-api/codex/responses"));
+        assert!(uses_input_only_ws_rewrite_path(
+            "/backend-api/codex/responses"
+        ));
     }
 
     #[test]

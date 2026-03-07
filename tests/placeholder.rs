@@ -10,11 +10,15 @@ fn replace_and_resolve_placeholders_roundtrip() {
     let rules = bundled_rules();
     // Use generic-api-key pattern: "api_key = <high-entropy-value>"
     let input = "my api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v and secret_key: xY2zW4vU6tS8rQ0pO2nM4lK6jI8hG0f";
-    let (rewritten, replacements) =
-        replace_secrets(input, &rules, |secret| Ok(keyclaw::placeholder::make_id(secret)))
-            .expect("replace should succeed");
+    let (rewritten, replacements) = replace_secrets(input, &rules, |secret| {
+        Ok(keyclaw::placeholder::make_id(secret))
+    })
+    .expect("replace should succeed");
 
-    assert!(!replacements.is_empty(), "expected at least one replacement, input={input}, rewritten={rewritten}");
+    assert!(
+        !replacements.is_empty(),
+        "expected at least one replacement, input={input}, rewritten={rewritten}"
+    );
     assert_ne!(rewritten, input);
 
     let resolved = resolve_placeholders(&rewritten, true, |id| {
@@ -40,5 +44,9 @@ fn strict_resolve_fails_on_missing_secret() {
 #[test]
 fn gitleaks_rules_load_successfully() {
     let rules = bundled_rules();
-    assert!(rules.rules.len() > 200, "expected 200+ rules, got {}", rules.rules.len());
+    assert!(
+        rules.rules.len() > 200,
+        "expected 200+ rules, got {}",
+        rules.rules.len()
+    );
 }
