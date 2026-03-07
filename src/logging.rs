@@ -67,6 +67,10 @@ pub fn info(message: &str) {
     emit(LogLevel::Info, message);
 }
 
+pub fn debug(message: &str) {
+    emit(LogLevel::Debug, message);
+}
+
 pub fn warn(message: &str) {
     emit(LogLevel::Warn, message);
 }
@@ -133,6 +137,11 @@ mod tests {
         assert!(enabled(LogLevel::Error));
         assert!(enabled(LogLevel::Warn));
         assert!(!enabled(LogLevel::Info));
+        assert!(!enabled(LogLevel::Debug));
+
+        configure(LogLevel::Debug);
+        assert!(enabled(LogLevel::Info));
+        assert!(enabled(LogLevel::Debug));
 
         configure(LogLevel::Info);
     }

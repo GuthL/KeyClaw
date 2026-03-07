@@ -421,11 +421,12 @@ fn rewrite_json_preserves_env_style_assignment_boundaries() {
 fn logs_contain_no_raw_secrets() {
     let (upstream_url, rx, _guard) = start_upstream();
 
-    let (stderr, exit_code) = run_mitm(
+    let (stderr, exit_code) = run_mitm_with_log_level(
         "codex",
         free_addr(),
         &upstream_url,
         &format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX),
+        Some("debug"),
     );
 
     assert_eq!(exit_code, 0, "stderr={stderr}");
@@ -434,8 +435,62 @@ fn logs_contain_no_raw_secrets() {
         .expect("upstream body");
     assert!(!stderr.contains(TEST_SECRET_CODEX));
     assert!(
-        stderr.contains("replaced"),
-        "expected 'replaced' in stderr: {stderr}"
+        stderr.contains("request rewritten for host"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn mitm_info_log_level_hides_per_request_proxy_activity() {
+    let (upstream_url, rx, _guard) = start_upstream();
+
+    let (stderr, exit_code) = run_mitm_with_log_level(
+        "codex",
+        free_addr(),
+        &upstream_url,
+        &format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX),
+        Some("info"),
+    );
+
+    assert_eq!(exit_code, 0, "stderr={stderr}");
+    let _ = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream body");
+    assert!(stderr.contains("keyclaw info:"), "stderr={stderr}");
+    assert!(!stderr.contains("intercept POST /"), "stderr={stderr}");
+    assert!(
+        !stderr.contains("request rewritten for host"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("response: resolved placeholders back to secrets"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn mitm_debug_log_level_preserves_per_request_proxy_activity() {
+    let (upstream_url, rx, _guard) = start_upstream();
+
+    let (stderr, exit_code) = run_mitm_with_log_level(
+        "codex",
+        free_addr(),
+        &upstream_url,
+        &format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX),
+        Some("debug"),
+    );
+
+    assert_eq!(exit_code, 0, "stderr={stderr}");
+    let _ = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream body");
+    assert!(
+        stderr.contains("keyclaw debug: intercept POST /"),
+        "stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("keyclaw debug: request rewritten for host 127.0.0.1: replaced 1 secrets"),
+        "stderr={stderr}"
     );
 }
 
@@ -715,6 +770,16 @@ sys.exit(2)
 }
 
 fn run_mitm(tool: &str, addr: String, upstream_url: &str, payload: &str) -> (String, i32) {
+    run_mitm_with_log_level(tool, addr, upstream_url, payload, None)
+}
+
+fn run_mitm_with_log_level(
+    tool: &str,
+    addr: String,
+    upstream_url: &str,
+    payload: &str,
+    log_level: Option<&str>,
+) -> (String, i32) {
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");
     let vault_path = temp.path().join("vault.enc");
@@ -723,8 +788,8 @@ fn run_mitm(tool: &str, addr: String, upstream_url: &str, payload: &str) -> (Str
         payload
     );
 
-    let output = Command::new(bin)
-        .arg("mitm")
+    let mut cmd = Command::new(bin);
+    cmd.arg("mitm")
         .arg(tool)
         .arg("--")
         .arg("python3")
@@ -738,9 +803,11 @@ fn run_mitm(tool: &str, addr: String, upstream_url: &str, payload: &str) -> (Str
         .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase")
         .env("KEYCLAW_CODEX_HOSTS", "127.0.0.1")
         .env("KEYCLAW_CLAUDE_HOSTS", "127.0.0.1")
-        .env("UPSTREAM_URL", upstream_url)
-        .output()
-        .expect("run mitm");
+        .env("UPSTREAM_URL", upstream_url);
+    if let Some(level) = log_level {
+        cmd.env("KEYCLAW_LOG_LEVEL", level);
+    }
+    let output = cmd.output().expect("run mitm");
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     (stderr, output.status.code().unwrap_or(1))
