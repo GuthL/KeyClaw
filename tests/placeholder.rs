@@ -50,3 +50,29 @@ fn gitleaks_rules_load_successfully() {
         rules.rules.len()
     );
 }
+
+#[test]
+fn generic_api_key_rule_preserves_assignment_boundaries() {
+    let rules = bundled_rules();
+    let input = concat!(
+        "install K_API_KEY: 11111111-2222-3333-4444-555555555555 in .env\n",
+        "then set K_API_KEY = aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n",
+    );
+
+    let (rewritten, replacements) = replace_secrets(input, &rules, |secret| {
+        Ok(keyclaw::placeholder::make_id(secret))
+    })
+    .expect("replace should succeed");
+
+    assert_eq!(replacements.len(), 2, "rewritten={rewritten}");
+    assert!(
+        rewritten.contains("K_API_KEY: {{KEYCLAW_SECRET_"),
+        "rewritten={rewritten}"
+    );
+    assert!(
+        rewritten.contains("K_API_KEY = {{KEYCLAW_SECRET_"),
+        "rewritten={rewritten}"
+    );
+    assert!(rewritten.contains("}} in .env"), "rewritten={rewritten}");
+    assert!(rewritten.ends_with("}}\n"), "rewritten={rewritten}");
+}

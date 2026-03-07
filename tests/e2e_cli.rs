@@ -318,6 +318,36 @@ fn rewrite_json_creates_machine_local_vault_key_without_env_override() {
 }
 
 #[test]
+fn rewrite_json_preserves_env_style_assignment_boundaries() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let payload = r#"{"messages":[{"role":"user","content":"install K_API_KEY: 11111111-2222-3333-4444-555555555555 in .env\nthen set K_API_KEY = aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]}"#;
+
+    let mut child = rewrite_json_command(temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn rewrite-json");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+    let output = child.wait_with_output().expect("wait rewrite-json");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("K_API_KEY: {{KEYCLAW_SECRET_"), "output={out}");
+    assert!(
+        out.contains("K_API_KEY = {{KEYCLAW_SECRET_"),
+        "output={out}"
+    );
+    assert!(out.contains("}} in .env"), "output={out}");
+    assert!(!out.contains("install {{KEYCLAW_SECRET_"), "output={out}");
+}
+
+#[test]
 fn logs_contain_no_raw_secrets() {
     let (upstream_url, rx, _guard) = start_upstream();
 
