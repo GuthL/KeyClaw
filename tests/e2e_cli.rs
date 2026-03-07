@@ -146,6 +146,38 @@ fn doctor_reports_clean_healthcheck() {
 }
 
 #[test]
+fn doctor_fails_when_existing_vault_key_is_missing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let vault_path = temp.path().join("vault.enc");
+    let store = keyclaw::vault::Store::new(vault_path.clone(), "custom-passphrase".to_string());
+
+    let mut entries = std::collections::HashMap::new();
+    entries.insert(
+        "api_key".to_string(),
+        "sk-ABCDEF0123456789ABCDEF0123456789".to_string(),
+    );
+    store.save(&entries).expect("seed vault");
+
+    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
+    let output = Command::new(bin)
+        .arg("doctor")
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("KEYCLAW_PROXY_ADDR", "127.0.0.1:0")
+        .env("KEYCLAW_PROXY_URL", "http://127.0.0.1:0")
+        .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true")
+        .env("KEYCLAW_VAULT_PATH", &vault_path)
+        .output()
+        .expect("run doctor");
+
+    assert_ne!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("FAIL vault-key"), "output={out}");
+    assert!(out.contains("vault key"), "output={out}");
+    assert!(out.contains("hint:"), "output={out}");
+}
+
+#[test]
 fn doctor_fails_on_broken_generated_ca_pair() {
     let temp = tempfile::tempdir().expect("tempdir");
     let ca_dir = temp.path().join(".keyclaw");
@@ -213,6 +245,40 @@ fn rewrite_json_respects_custom_gitleaks_config() {
     assert_eq!(output.status.code(), Some(0));
     let out = String::from_utf8_lossy(&output.stdout);
     assert_eq!(out, payload);
+}
+
+#[test]
+fn rewrite_json_creates_machine_local_vault_key_without_env_override() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let vault_path = temp.path().join("vault.enc");
+    let payload = format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX);
+    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
+
+    let mut child = Command::new(bin)
+        .arg("rewrite-json")
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("KEYCLAW_VAULT_PATH", &vault_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn rewrite-json");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+    let output = child.wait_with_output().expect("wait rewrite-json");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("{{KEYCLAW_SECRET_"), "output={out}");
+    assert!(
+        vault_path.with_extension("key").exists(),
+        "vault key missing"
+    );
 }
 
 #[test]

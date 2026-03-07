@@ -37,7 +37,8 @@ Out of scope:
 
 1. **Fail closed** — If detection fails, requests are blocked, not passed through
 2. **No embedded secrets** — CA certificates are generated per-machine at runtime
-3. **Encrypted at rest** — The vault uses AES-256-GCM with scrypt key derivation
+3. **Encrypted at rest** — The vault uses AES-256-GCM with scrypt key derivation, keyed by either an explicit `KEYCLAW_VAULT_PASSPHRASE` override or a generated machine-local `vault.key`
 4. **Log sanitization** — All log output is scrubbed for known secret patterns
 5. **Minimal trust** — The proxy only intercepts configured hosts; all other traffic passes through untouched
 6. **In-process detection** — Secret detection uses the bundled gitleaks rules compiled into the binary; there is no external gitleaks subprocess in the runtime trust boundary
+7. **Fail closed on bad key material** — Missing, mismatched, or corrupt vault key material is treated as an operator-visible error, not as an empty vault

@@ -13,12 +13,12 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use tempfile::NamedTempFile;
 use url::Url;
 
-use crate::config::{Config, DEFAULT_VAULT_PASSPHRASE};
+use crate::config::Config;
 use crate::errors::{code_of, KeyclawError, CODE_MITM_NOT_EFFECTIVE};
 use crate::gitleaks_rules::RuleSet;
 use crate::pipeline::Processor;
 use crate::proxy::Server;
-use crate::vault::Store;
+use crate::vault::{Store, VaultPassphraseStatus};
 
 pub fn run_cli(args: Vec<String>) -> i32 {
     if args.is_empty() {
@@ -32,15 +32,33 @@ pub fn run_cli(args: Vec<String>) -> i32 {
         "doctor" => run_doctor(&cfg),
         "mitm" => {
             configure_unsafe_logging(&cfg);
-            run_mitm(&cfg, build_processor(&cfg), &args[1..])
+            match build_processor(&cfg) {
+                Ok(processor) => run_mitm(&cfg, processor, &args[1..]),
+                Err(err) => {
+                    print_error(&err);
+                    1
+                }
+            }
         }
         "proxy" => {
             configure_unsafe_logging(&cfg);
-            run_proxy(&cfg, build_processor(&cfg))
+            match build_processor(&cfg) {
+                Ok(processor) => run_proxy(&cfg, processor),
+                Err(err) => {
+                    print_error(&err);
+                    1
+                }
+            }
         }
         "rewrite-json" => {
             configure_unsafe_logging(&cfg);
-            run_rewrite_json(build_processor(&cfg))
+            match build_processor(&cfg) {
+                Ok(processor) => run_rewrite_json(processor),
+                Err(err) => {
+                    print_error(&err);
+                    1
+                }
+            }
         }
         _ => {
             print_usage(&mut io::stderr());
@@ -706,37 +724,62 @@ fn check_unsafe_log(cfg: &Config) -> DoctorCheck {
 }
 
 fn check_vault_passphrase(cfg: &Config) -> DoctorCheck {
-    if cfg.vault_passphrase == DEFAULT_VAULT_PASSPHRASE {
-        warn_check(
-            "vault-passphrase",
-            "using the built-in default vault passphrase".to_string(),
-            "set KEYCLAW_VAULT_PASSPHRASE to a unique value before storing sensitive data"
+    match crate::vault::inspect_vault_passphrase_status(
+        &cfg.vault_path,
+        cfg.vault_passphrase.as_deref(),
+    ) {
+        Ok(VaultPassphraseStatus::EnvOverride) => pass_check(
+            "vault-key",
+            "custom vault passphrase configured via KEYCLAW_VAULT_PASSPHRASE".to_string(),
+        ),
+        Ok(VaultPassphraseStatus::LegacyEnvOverride) => warn_check(
+            "vault-key",
+            "KEYCLAW_VAULT_PASSPHRASE is set to the legacy built-in default".to_string(),
+            "set KEYCLAW_VAULT_PASSPHRASE to a unique value or remove it to use a generated machine-local key".to_string(),
+        ),
+        Ok(VaultPassphraseStatus::GeneratedKeyReady(path)) => pass_check(
+            "vault-key",
+            format!("machine-local vault key ready at {}", path.display()),
+        ),
+        Ok(VaultPassphraseStatus::GeneratedKeyWillBeCreated(path)) => pass_check(
+            "vault-key",
+            format!(
+                "machine-local vault key will be created at {} on first write",
+                path.display()
+            ),
+        ),
+        Ok(VaultPassphraseStatus::LegacyVaultWillMigrate(path)) => warn_check(
+            "vault-key",
+            "existing vault still uses the legacy built-in default and will be migrated on next write"
                 .to_string(),
-        )
-    } else {
-        pass_check(
-            "vault-passphrase",
-            "custom vault passphrase configured".to_string(),
-        )
+            format!(
+                "run a write path once to generate {} and re-encrypt the vault",
+                path.display()
+            ),
+        ),
+        Err(err) => fail_check(
+            "vault-key",
+            err.to_string(),
+            "restore the machine-local vault key or set KEYCLAW_VAULT_PASSPHRASE to the correct value".to_string(),
+        ),
     }
 }
 
-fn build_processor(cfg: &Config) -> Arc<Processor> {
-    let vault = Arc::new(Store::new(
-        cfg.vault_path.clone(),
-        cfg.vault_passphrase.clone(),
-    ));
+fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawError> {
+    let passphrase =
+        crate::vault::resolve_vault_passphrase(&cfg.vault_path, cfg.vault_passphrase.as_deref())?;
+    let vault = Arc::new(Store::new(cfg.vault_path.clone(), passphrase));
 
     let ruleset = load_runtime_ruleset(cfg);
 
     eprintln!("keyclaw: {} gitleaks rules loaded", ruleset.rules.len());
 
-    Arc::new(Processor {
+    Ok(Arc::new(Processor {
         vault: Some(vault),
         ruleset: Arc::new(ruleset),
         max_body_size: cfg.max_body_bytes,
         strict_mode: cfg.fail_closed,
-    })
+    }))
 }
 
 fn load_runtime_ruleset(cfg: &Config) -> RuleSet {
