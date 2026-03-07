@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use clap::{Arg, ColorChoice};
 #[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 
@@ -21,27 +22,30 @@ use crate::proxy::Server;
 use crate::vault::{Store, VaultPassphraseStatus};
 
 pub fn run_cli(args: Vec<String>) -> i32 {
-    if args.is_empty() {
-        print_usage(&mut io::stderr());
-        return 2;
-    }
+    let command = match parse_cli(args) {
+        Ok(command) => command,
+        Err(err) => {
+            let _ = err.print();
+            return err.exit_code();
+        }
+    };
 
     let cfg = Config::from_env();
     crate::logging::configure(cfg.log_level);
 
-    match args[0].as_str() {
-        "doctor" => run_doctor(&cfg),
-        "mitm" => {
+    match command {
+        CliCommand::Doctor => run_doctor(&cfg),
+        CliCommand::Mitm { tool, child_args } => {
             configure_unsafe_logging(&cfg);
             match build_processor(&cfg) {
-                Ok(processor) => run_mitm(&cfg, processor, &args[1..]),
+                Ok(processor) => run_mitm(&cfg, processor, &tool, child_args),
                 Err(err) => {
                     print_error(&err);
                     1
                 }
             }
         }
-        "proxy" => {
+        CliCommand::Proxy => {
             configure_unsafe_logging(&cfg);
             match build_processor(&cfg) {
                 Ok(processor) => run_proxy(&cfg, processor),
@@ -51,7 +55,7 @@ pub fn run_cli(args: Vec<String>) -> i32 {
                 }
             }
         }
-        "rewrite-json" => {
+        CliCommand::RewriteJson => {
             configure_unsafe_logging(&cfg);
             match build_processor(&cfg) {
                 Ok(processor) => run_rewrite_json(processor),
@@ -61,30 +65,80 @@ pub fn run_cli(args: Vec<String>) -> i32 {
                 }
             }
         }
-        _ => {
-            print_usage(&mut io::stderr());
-            2
-        }
     }
 }
 
-fn run_mitm(cfg: &Config, processor: Arc<Processor>, args: &[String]) -> i32 {
-    if args.is_empty() {
-        crate::logging::error("usage: keyclaw mitm <codex|claude> [-- child args]");
-        return 2;
-    }
+enum CliCommand {
+    Doctor,
+    Mitm {
+        tool: String,
+        child_args: Vec<String>,
+    },
+    Proxy,
+    RewriteJson,
+}
 
-    let tool = args[0].trim().to_lowercase();
+fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
+    let matches = cli()
+        .try_get_matches_from(std::iter::once("keyclaw".to_string()).chain(args.into_iter()))?;
+
+    match matches.subcommand() {
+        Some(("doctor", _)) => Ok(CliCommand::Doctor),
+        Some(("proxy", _)) => Ok(CliCommand::Proxy),
+        Some(("rewrite-json", _)) => Ok(CliCommand::RewriteJson),
+        Some(("mitm", subcommand)) => Ok(CliCommand::Mitm {
+            tool: subcommand
+                .get_one::<String>("tool")
+                .expect("required tool")
+                .to_string(),
+            child_args: subcommand
+                .get_many::<String>("child_args")
+                .map(|values| values.cloned().collect())
+                .unwrap_or_default(),
+        }),
+        _ => unreachable!("subcommand is required"),
+    }
+}
+
+fn cli() -> clap::Command {
+    clap::Command::new("keyclaw")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Local MITM proxy for secret-safe AI CLI traffic")
+        .color(ColorChoice::Never)
+        .disable_help_subcommand(true)
+        .subcommand_required(true)
+        .subcommand(clap::Command::new("proxy").about("Start the global proxy daemon"))
+        .subcommand(
+            clap::Command::new("mitm")
+                .about("Run a supported CLI behind the local MITM proxy")
+                .arg(
+                    Arg::new("tool")
+                        .value_name("TOOL")
+                        .help("CLI to launch through KeyClaw")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("child_args")
+                        .value_name("CHILD_ARGS")
+                        .help("Arguments forwarded to the child CLI")
+                        .num_args(0..)
+                        .trailing_var_arg(true)
+                        .allow_hyphen_values(true),
+                ),
+        )
+        .subcommand(
+            clap::Command::new("rewrite-json")
+                .about("Read JSON from stdin, redact secrets, and write JSON to stdout"),
+        )
+        .subcommand(clap::Command::new("doctor").about("Run operator health checks"))
+}
+
+fn run_mitm(cfg: &Config, processor: Arc<Processor>, tool: &str, child_args: Vec<String>) -> i32 {
+    let tool = tool.trim().to_lowercase();
     if tool != "codex" && tool != "claude" {
         crate::logging::error(&format!("unsupported tool \"{tool}\""));
         return 2;
     }
-
-    let child_args = if let Some(idx) = args[1..].iter().position(|a| a == "--") {
-        args[1 + idx + 1..].to_vec()
-    } else {
-        args[1..].to_vec()
-    };
 
     let mut runner = Runner::new(cfg.clone(), processor);
     match runner.launch(&tool, child_args) {
@@ -1106,18 +1160,6 @@ fn print_error(err: &KeyclawError) {
     } else {
         crate::logging::error(&msg);
     }
-}
-
-fn print_usage(w: &mut dyn Write) {
-    let _ = writeln!(w, "Usage:");
-    let _ = writeln!(
-        w,
-        "  keyclaw proxy                      # start global proxy daemon"
-    );
-    let _ = writeln!(w, "  keyclaw mitm codex -- [codex args]");
-    let _ = writeln!(w, "  keyclaw mitm claude -- [claude args]");
-    let _ = writeln!(w, "  keyclaw rewrite-json < payload.json");
-    let _ = writeln!(w, "  keyclaw doctor");
 }
 
 #[cfg(test)]

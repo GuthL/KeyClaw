@@ -18,6 +18,76 @@ const TEST_SECRET_CODEX: &str = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
 const TEST_SECRET_CLAUDE: &str = "xY2zW4vU6tS8rQ0pO2nM4lK6jI8hG0f";
 
 #[test]
+fn help_flag_returns_success_and_lists_supported_subcommands() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = keyclaw_command(temp.path())
+        .arg("--help")
+        .output()
+        .expect("run --help");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(out.contains("Usage:"), "stdout={out}");
+    assert!(out.contains("proxy"), "stdout={out}");
+    assert!(out.contains("mitm"), "stdout={out}");
+    assert!(out.contains("rewrite-json"), "stdout={out}");
+    assert!(out.contains("doctor"), "stdout={out}");
+    assert!(stderr.trim().is_empty(), "stderr={stderr}");
+}
+
+#[test]
+fn short_help_flag_returns_success_and_lists_supported_subcommands() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = keyclaw_command(temp.path())
+        .arg("-h")
+        .output()
+        .expect("run -h");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(out.contains("Usage:"), "stdout={out}");
+    assert!(out.contains("proxy"), "stdout={out}");
+    assert!(out.contains("mitm"), "stdout={out}");
+    assert!(out.contains("rewrite-json"), "stdout={out}");
+    assert!(out.contains("doctor"), "stdout={out}");
+    assert!(stderr.trim().is_empty(), "stderr={stderr}");
+}
+
+#[test]
+fn version_flag_returns_success_and_prints_crate_version() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = keyclaw_command(temp.path())
+        .arg("--version")
+        .output()
+        .expect("run --version");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(out.trim(), format!("keyclaw {}", env!("CARGO_PKG_VERSION")));
+    assert!(stderr.trim().is_empty(), "stderr={stderr}");
+}
+
+#[test]
+fn invalid_top_level_argument_returns_actionable_error() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = keyclaw_command(temp.path())
+        .arg("--wat")
+        .output()
+        .expect("run invalid arg");
+
+    assert_ne!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(out.trim().is_empty(), "stdout={out}");
+    assert!(err.contains("--wat"), "stderr={err}");
+    assert!(err.contains("Usage:"), "stderr={err}");
+    assert!(err.contains("--help"), "stderr={err}");
+}
+
+#[test]
 fn mitm_codex_intercepts_and_sanitizes() {
     let (upstream_url, rx, _guard) = start_upstream();
 
@@ -676,11 +746,17 @@ fn run_mitm(tool: &str, addr: String, upstream_url: &str, payload: &str) -> (Str
     (stderr, output.status.code().unwrap_or(1))
 }
 
-fn doctor_command(home: &std::path::Path) -> Command {
+fn keyclaw_command(home: &std::path::Path) -> Command {
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
+    let mut cmd = Command::new(bin);
+    cmd.env_clear().env("HOME", home);
+    cmd
+}
+
+fn doctor_command(home: &std::path::Path) -> Command {
     let vault_path = home.join("vault.enc");
 
-    let mut cmd = Command::new(bin);
+    let mut cmd = keyclaw_command(home);
     cmd.arg("doctor")
         .env_clear()
         .env("HOME", home)
@@ -693,13 +769,10 @@ fn doctor_command(home: &std::path::Path) -> Command {
 }
 
 fn rewrite_json_command(home: &std::path::Path) -> Command {
-    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let vault_path = home.join("vault.enc");
 
-    let mut cmd = Command::new(bin);
+    let mut cmd = keyclaw_command(home);
     cmd.arg("rewrite-json")
-        .env_clear()
-        .env("HOME", home)
         .env("KEYCLAW_VAULT_PATH", vault_path)
         .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
     cmd

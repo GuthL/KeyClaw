@@ -9,6 +9,8 @@ git clone https://github.com/GuthL/KeyClaw.git
 cd KeyClaw
 cargo build
 cargo test
+cargo run -- --help
+cargo run -- --version
 ```
 
 ### Prerequisites

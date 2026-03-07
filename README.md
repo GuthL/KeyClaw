@@ -85,6 +85,13 @@ cd KeyClaw
 cargo build --release
 ```
 
+Check the installed entrypoint before wiring it into your shell:
+
+```bash
+./target/release/keyclaw --help
+./target/release/keyclaw --version
+```
+
 ### Quick Start — Global Proxy
 
 The simplest way to use KeyClaw. Start the proxy, source the env, and use your CLI tools as normal:
