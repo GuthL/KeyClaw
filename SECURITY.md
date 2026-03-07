@@ -24,8 +24,24 @@ KeyClaw's security model is documented in the [README](README.md#security-model)
 Out of scope:
 
 - Attacks requiring local machine compromise (KeyClaw's trust boundary is the local machine)
+- Traffic or secrets that never pass through KeyClaw's configured local proxy path
 - Social engineering
 - Denial of service against the local proxy
+
+## Trust Boundary
+
+KeyClaw is a local developer tool, not a hosted secret manager.
+
+- It only protects supported Claude/Codex traffic that actually routes through the KeyClaw proxy on your machine.
+- The CA certificate, encrypted vault, and generated `vault.key` stay local unless you explicitly move or override them.
+- Secret detection, placeholder generation, and placeholder reinjection run in-process on the local machine.
+
+## Non-Goals And Limits
+
+- Protecting a compromised workstation
+- Guaranteeing perfect detection coverage across every provider or credential format
+- Preventing side channels such as secret length leakage
+- Protecting traffic sent to hosts outside the configured intercept lists
 
 ## Supported Versions
 

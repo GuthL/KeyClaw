@@ -6,7 +6,7 @@
  ╩ ╩╚═╝ ╩ ╚═╝╩═╝╩ ╩╚╩╝
 ```
 
-**Your secrets never leave your machine.**
+**Detected secrets are swapped locally before they leave your machine.**
 
 A transparent MITM proxy that intercepts AI coding assistant traffic,<br>
 redacts secrets before they reach the cloud, and reinjects them on the way back.
@@ -107,6 +107,7 @@ codex "deploy using my AWS credentials"  # same protection for Codex
 ```
 
 The `env.sh` script validates that the recorded `keyclaw proxy` process is still the active instance before exporting proxy variables, and it ignores stale PID state safely — safe to add to your `.bashrc`.
+It also exports `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `NODE_EXTRA_CA_CERTS` so supported CLI tools route through KeyClaw and trust the local CA.
 
 ### Quick Start — MITM Wrapper
 
@@ -119,6 +120,8 @@ Wraps a single CLI session with automatic proxy setup and teardown:
 # Wrap a Claude session
 ./target/release/keyclaw mitm claude -- claude
 ```
+
+The `mitm` wrapper injects the proxy and CA trust environment for the child process automatically. Use it when you want a single protected session without sourcing shell-wide proxy variables.
 
 ### Verify It Works
 
@@ -134,6 +137,27 @@ Interpret the output like this:
 - `WARN` — KeyClaw can still run, but the config is risky or non-standard
 - `FAIL` — fix this before relying on the proxy; `doctor` exits non-zero
 - `hint:` — the next operator action to take for that specific check
+
+## Troubleshooting
+
+Start with `./target/release/keyclaw doctor`. It is the fastest way to catch broken CA files, proxy bypass, custom ruleset problems, and missing vault key material before you debug the CLI itself.
+
+### Certificate Trust Or TLS Errors
+
+- Use either `source ~/.keyclaw/env.sh` from `keyclaw proxy` or the `keyclaw mitm ...` wrapper so the child process sees the local proxy URL and CA bundle variables.
+- Confirm `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, or `NODE_EXTRA_CA_CERTS` point at `~/.keyclaw/ca.crt` if you are wiring the environment manually.
+- If `doctor` reports a broken or partial CA pair, remove the bad files in `~/.keyclaw/` and rerun `keyclaw proxy` to regenerate them locally.
+
+### Proxy Bypass Or No Intercepted Traffic
+
+- Unset `NO_PROXY` or remove intercepted hosts such as `api.openai.com`, `chatgpt.com`, `api.anthropic.com`, or `claude.ai`.
+- Leave `KEYCLAW_REQUIRE_MITM_EFFECTIVE=true` enabled so `mitm` fails loudly instead of silently running without interception.
+- Set `KEYCLAW_LOG_LEVEL=debug` when you need to see per-request intercept and rewrite activity.
+
+### Custom Ruleset Or Vault Key Problems
+
+- If `doctor` fails the `ruleset` check, fix `KEYCLAW_GITLEAKS_CONFIG` or unset it to go back to the bundled rules.
+- If `doctor` fails the `vault-key` check, restore `~/.keyclaw/vault.key` or set `KEYCLAW_VAULT_PASSPHRASE` explicitly to the correct value.
 
 ## Configuration
 
@@ -199,15 +223,16 @@ KeyClaw uses deterministic error codes for programmatic handling:
 - API keys, tokens, and credentials leaking through CLI tool traffic
 - Accidental exposure of `.env` files, config files, and hardcoded credentials
 
-### What KeyClaw Does NOT Protect Against
+### Non-Goals And Limits
 
 - A compromised local machine (KeyClaw runs locally — if your machine is compromised, all bets are off)
-- Secrets transmitted outside of intercepted hosts
+- Traffic that never uses the KeyClaw proxy or targets hosts outside the configured intercept lists
+- Perfect secret detection across every provider, credential format, or prompt phrasing
 - Side-channel leakage (e.g., secret length is preserved in placeholders)
 
 ### Trust Boundary
 
-The trust boundary is your machine. KeyClaw's CA certificate is generated locally and never leaves your machine. The encrypted vault and its machine-local key stay on disk locally unless you explicitly override the key with `KEYCLAW_VAULT_PASSPHRASE`. All secret operations happen in-process.
+The trust boundary is your machine. KeyClaw only protects traffic that a supported CLI actually routes through the local proxy. The CA certificate is generated locally and never leaves your machine. The encrypted vault and its machine-local key stay on disk locally unless you explicitly override the key with `KEYCLAW_VAULT_PASSPHRASE`. Secret detection, placeholder generation, and reinjection all happen in-process.
 
 ## Project Structure
 
