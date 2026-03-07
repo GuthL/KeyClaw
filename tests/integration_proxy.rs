@@ -1,4 +1,5 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -247,6 +248,135 @@ fn response_placeholders_resolved_back_to_secrets() {
         !real_placeholder_re.is_match(&resp_body),
         "unresolved real placeholder in response: {}",
         resp_body
+    );
+}
+
+#[test]
+fn oversized_body_is_rejected_without_upstream_forwarding() {
+    let (upstream_url, rx, _upstream_guard) = start_upstream();
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 32;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+
+    let client = Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+
+    let resp = client
+        .post(&upstream_url)
+        .header("content-type", "application/json")
+        .body(format!(
+            r#"{{"messages":[{{"content":"api_key = {}"}}]}}"#,
+            CODEX_SECRET
+        ))
+        .send()
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 413);
+    let body = resp.text().expect("response body");
+    assert!(body.contains("body_too_large"), "body={body}");
+    assert!(
+        body.contains("request body exceeded maximum size"),
+        "body={body}"
+    );
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "oversized request should not reach upstream"
+    );
+}
+
+#[test]
+fn malformed_json_is_passed_through_unchanged() {
+    let (upstream_url, rx, _upstream_guard) = start_echo_upstream();
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+    let malformed = format!(r#"{{"prompt":"api_key = {}""#, CODEX_SECRET);
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+
+    let client = Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+
+    let resp = client
+        .post(&upstream_url)
+        .header("content-type", "application/json")
+        .body(malformed.clone())
+        .send()
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 200);
+    let capture = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream capture");
+    assert_eq!(capture.body, malformed);
+
+    let resp_body = resp.text().expect("response body");
+    assert_eq!(resp_body, malformed);
+}
+
+#[test]
+fn request_body_timeout_returns_request_timeout_error() {
+    let (upstream_url, rx, _upstream_guard) = start_upstream();
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_millis(150);
+    let running = proxy.start().expect("start proxy");
+
+    let response = send_partial_proxy_request(&running.addr, &upstream_url, r#"{"messages":["#, 64);
+
+    assert!(
+        response.contains("408 Request Timeout"),
+        "response={response}"
+    );
+    assert!(response.contains("request_timeout"), "response={response}");
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "timed out request should not reach upstream"
     );
 }
 
@@ -521,4 +651,39 @@ fn collect_input_json_deltas(body: &str) -> Vec<String> {
             Some(delta.get("partial_json")?.as_str()?.to_string())
         })
         .collect()
+}
+
+fn send_partial_proxy_request(
+    proxy_addr: &str,
+    upstream_url: &str,
+    partial_body: &str,
+    declared_content_length: usize,
+) -> String {
+    let host = url::Url::parse(upstream_url)
+        .ok()
+        .and_then(|u| {
+            u.host_str().map(|h| match u.port() {
+                Some(port) => format!("{h}:{port}"),
+                None => h.to_string(),
+            })
+        })
+        .expect("upstream host");
+
+    let mut stream = TcpStream::connect(proxy_addr).expect("connect proxy");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set read timeout");
+    let request = format!(
+        "POST {upstream_url} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {declared_content_length}\r\nConnection: close\r\n\r\n{partial_body}"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .expect("write partial request");
+    stream.flush().expect("flush request");
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read proxy response");
+    response
 }

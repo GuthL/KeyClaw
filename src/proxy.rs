@@ -777,14 +777,9 @@ impl WebSocketHandler for KeyclawHttpHandler {
         // Server -> Client: resolve any placeholders in responses
         if !matches!(ctx, WebSocketContext::ClientToServer { .. }) {
             if let Message::Text(text) = &msg {
-                let s = text.as_str();
-                if s.contains("{{KEYCLAW_SECRET_") {
-                    if let Ok(resolved) = self.processor.resolve_text(s.as_bytes()) {
-                        if let Ok(value) = String::from_utf8(resolved) {
-                            log_line("ws response: resolved placeholders".to_string());
-                            return Some(Message::Text(value.into()));
-                        }
-                    }
+                if let Some(value) = self.resolve_ws_response_text(text.as_str()) {
+                    log_line("ws response: resolved placeholders".to_string());
+                    return Some(Message::Text(value.into()));
                 }
             }
             return Some(msg);
@@ -792,28 +787,42 @@ impl WebSocketHandler for KeyclawHttpHandler {
 
         // Client -> Server: redact secrets in WS messages
         if let Message::Text(text) = &msg {
-            let s = text.as_str();
-            let processor = self.processor.clone();
-            let payload = s.as_bytes().to_vec();
-            let rewrite = if uses_input_only_ws_rewrite(ctx) {
-                processor.rewrite_and_evaluate_codex_ws(&payload)
-            } else {
-                processor.rewrite_and_evaluate(&payload)
-            };
-            match rewrite {
-                Ok(result) if !result.replacements.is_empty() => {
-                    log_line(format!(
-                        "ws request: redacted {} secret(s)",
-                        result.replacements.len()
-                    ));
-                    if let Ok(value) = String::from_utf8(result.body) {
-                        return Some(Message::Text(value.into()));
-                    }
-                }
-                _ => {}
+            if let Some((value, count)) =
+                self.rewrite_ws_request_text(text.as_str(), uses_input_only_ws_rewrite(ctx))
+            {
+                log_line(format!("ws request: redacted {} secret(s)", count));
+                return Some(Message::Text(value.into()));
             }
         }
         Some(msg)
+    }
+}
+
+impl KeyclawHttpHandler {
+    fn rewrite_ws_request_text(&self, text: &str, input_only: bool) -> Option<(String, usize)> {
+        let payload = text.as_bytes().to_vec();
+        let rewrite = if input_only {
+            self.processor.rewrite_and_evaluate_codex_ws(&payload)
+        } else {
+            self.processor.rewrite_and_evaluate(&payload)
+        };
+        match rewrite {
+            Ok(result) if !result.replacements.is_empty() => String::from_utf8(result.body)
+                .ok()
+                .map(|value| (value, result.replacements.len())),
+            _ => None,
+        }
+    }
+
+    fn resolve_ws_response_text(&self, text: &str) -> Option<String> {
+        if !text.contains("{{KEYCLAW_SECRET_") {
+            return None;
+        }
+
+        self.processor
+            .resolve_text(text.as_bytes())
+            .ok()
+            .and_then(|resolved| String::from_utf8(resolved).ok())
     }
 }
 
@@ -967,8 +976,17 @@ fn log_line(line: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_expected_websocket_close_error, uses_input_only_ws_rewrite_path};
+    use super::{
+        is_expected_websocket_close_error, uses_input_only_ws_rewrite_path, KeyclawHttpHandler,
+    };
+    use crate::gitleaks_rules::RuleSet;
+    use crate::pipeline::Processor;
+    use crate::placeholder;
+    use crate::vault::Store;
     use hudsucker::tokio_tungstenite::tungstenite::{self, error::ProtocolError};
+    use std::sync::atomic::AtomicI64;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     #[test]
     fn tls_unexpected_eof_is_treated_as_expected_ws_close() {
@@ -1004,5 +1022,71 @@ mod tests {
     #[test]
     fn non_codex_ws_keeps_full_scope() {
         assert!(!uses_input_only_ws_rewrite_path("/backend-api/other"));
+    }
+
+    #[test]
+    fn ws_request_text_messages_are_redacted() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = Arc::new(Store::new(
+            temp.path().join("vault.enc"),
+            "test-passphrase".to_string(),
+        ));
+        let processor = Arc::new(Processor {
+            vault: Some(Arc::clone(&vault)),
+            ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
+            max_body_size: 1 << 20,
+            strict_mode: true,
+        });
+        let handler = KeyclawHttpHandler {
+            allowed_hosts: vec!["api.openai.com".to_string()],
+            processor,
+            max_body_bytes: 1 << 20,
+            body_timeout: Duration::from_secs(1),
+            intercepted: Arc::new(AtomicI64::new(0)),
+            request_had_secrets: false,
+        };
+        let secret = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+        let text = handler
+            .rewrite_ws_request_text(
+                &format!(r#"{{"messages":[{{"content":"api_key = {}"}}]}}"#, secret),
+                false,
+            )
+            .expect("rewritten message")
+            .0;
+
+        assert!(!text.contains(secret), "text={text}");
+        assert!(text.contains("{{KEYCLAW_SECRET_"), "text={text}");
+    }
+
+    #[test]
+    fn ws_response_text_messages_are_resolved() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = Arc::new(Store::new(
+            temp.path().join("vault.enc"),
+            "test-passphrase".to_string(),
+        ));
+        let processor = Arc::new(Processor {
+            vault: Some(Arc::clone(&vault)),
+            ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
+            max_body_size: 1 << 20,
+            strict_mode: true,
+        });
+        let handler = KeyclawHttpHandler {
+            allowed_hosts: vec!["api.openai.com".to_string()],
+            processor,
+            max_body_bytes: 1 << 20,
+            body_timeout: Duration::from_secs(1),
+            intercepted: Arc::new(AtomicI64::new(0)),
+            request_had_secrets: false,
+        };
+        let request_secret = "api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+        let id = vault.store_secret(request_secret).expect("store secret");
+        let placeholder = placeholder::make(&id);
+        let text = handler
+            .resolve_ws_response_text(&format!(r#"{{"content":"{}"}}"#, placeholder))
+            .expect("resolved message");
+
+        assert!(text.contains(request_secret), "text={text}");
+        assert!(!text.contains(&placeholder), "text={text}");
     }
 }
