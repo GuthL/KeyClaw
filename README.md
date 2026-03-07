@@ -45,6 +45,7 @@ AI coding assistants like **Claude Code** and **OpenAI Codex** are incredibly po
                     ┌─────────┴─────────┐
                     │  ~/.keyclaw/       │
                     │  ├── vault.enc     │  AES-GCM encrypted
+                    │  ├── vault.key     │  Machine-local key
                     │  ├── ca.crt        │  Auto-generated
                     │  ├── ca.key        │  Per-machine
                     │  └── env.sh        │  Shell integration
@@ -118,7 +119,7 @@ Wraps a single CLI session with automatic proxy setup and teardown:
 ./target/release/keyclaw doctor
 ```
 
-`keyclaw doctor` is the first thing to run after changing local config or before debugging a failed `mitm` session. It checks the proxy bind address, proxy URL, CA readiness, vault path, custom gitleaks config, proxy-bypass risk, and other operator-facing safety knobs.
+`keyclaw doctor` is the first thing to run after changing local config or before debugging a failed `mitm` session. It checks the proxy bind address, proxy URL, CA readiness, vault path, vault key material, custom gitleaks config, proxy-bypass risk, and other operator-facing safety knobs.
 
 Interpret the output like this:
 
@@ -137,7 +138,7 @@ KeyClaw is configured via environment variables:
 | `KEYCLAW_PROXY_URL` | `http://127.0.0.1:8877` | Proxy URL exported to child processes |
 | `KEYCLAW_CA_CERT` | (auto-generated `~/.keyclaw/ca.crt`) | Override CA cert path passed to clients |
 | `KEYCLAW_VAULT_PATH` | `~/.keyclaw/vault.enc` | Encrypted vault location |
-| `KEYCLAW_VAULT_PASSPHRASE` | (built-in default) | Vault encryption passphrase |
+| `KEYCLAW_VAULT_PASSPHRASE` | (unset; KeyClaw creates `~/.keyclaw/vault.key`) | Explicit vault key override |
 | `KEYCLAW_CODEX_HOSTS` | `api.openai.com,chat.openai.com,chatgpt.com` | Codex/OpenAI hosts to intercept |
 | `KEYCLAW_CLAUDE_HOSTS` | `api.anthropic.com,claude.ai` | Claude/Anthropic hosts to intercept |
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` (2MB) | Maximum request body size |
@@ -148,6 +149,8 @@ KeyClaw is configured via environment variables:
 | `KEYCLAW_REQUIRE_MITM_EFFECTIVE` | `true` | Fail if proxy bypass is detected |
 
 KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`. Secret detection uses the bundled gitleaks rules compiled natively into the binary; set `KEYCLAW_GITLEAKS_CONFIG` only when you want to override those rules with your own TOML file.
+
+By default, KeyClaw creates a machine-local vault key next to the encrypted vault and reuses it on later runs. Set `KEYCLAW_VAULT_PASSPHRASE` only when you need to override that key material explicitly. Existing vaults written with the removed built-in default are migrated to a generated local key on the next successful write. If an existing vault cannot be decrypted or its key material is missing, KeyClaw fails closed and tells you how to recover.
 
 ## Error Codes
 
@@ -176,7 +179,7 @@ KeyClaw uses deterministic error codes for programmatic handling:
 
 ### Trust Boundary
 
-The trust boundary is your machine. KeyClaw's CA certificate is generated locally and never leaves your machine. The encrypted vault is local. All secret operations happen in-process.
+The trust boundary is your machine. KeyClaw's CA certificate is generated locally and never leaves your machine. The encrypted vault and its machine-local key stay on disk locally unless you explicitly override the key with `KEYCLAW_VAULT_PASSPHRASE`. All secret operations happen in-process.
 
 ## Project Structure
 

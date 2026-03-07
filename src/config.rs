@@ -2,15 +2,13 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const DEFAULT_VAULT_PASSPHRASE: &str = "keyclaw-default-passphrase";
-
 #[derive(Debug, Clone)]
 pub struct Config {
     pub proxy_listen_addr: String,
     pub proxy_url: String,
     pub ca_cert_path: String,
     pub vault_path: PathBuf,
-    pub vault_passphrase: String,
+    pub vault_passphrase: Option<String>,
     pub fail_closed: bool,
     pub max_body_bytes: i64,
     pub detector_timeout: Duration,
@@ -28,7 +26,7 @@ impl Config {
             proxy_url: env_or("KEYCLAW_PROXY_URL", "http://127.0.0.1:8877"),
             ca_cert_path: env_or("KEYCLAW_CA_CERT", ""),
             vault_path: path_env("KEYCLAW_VAULT_PATH").unwrap_or_else(default_vault_path),
-            vault_passphrase: env_or("KEYCLAW_VAULT_PASSPHRASE", DEFAULT_VAULT_PASSPHRASE),
+            vault_passphrase: optional_env("KEYCLAW_VAULT_PASSPHRASE"),
             fail_closed: bool_env("KEYCLAW_FAIL_CLOSED", true),
             max_body_bytes: int64_env("KEYCLAW_MAX_BODY_BYTES", 2 * 1024 * 1024),
             detector_timeout: duration_env("KEYCLAW_DETECTOR_TIMEOUT", Duration::from_secs(4)),
@@ -91,6 +89,13 @@ fn int64_env(key: &str, fallback: i64) -> i64 {
 fn path_env(key: &str) -> Option<PathBuf> {
     match env::var(key) {
         Ok(v) if !v.trim().is_empty() => Some(PathBuf::from(v.trim())),
+        _ => None,
+    }
+}
+
+fn optional_env(key: &str) -> Option<String> {
+    match env::var(key) {
+        Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
         _ => None,
     }
 }
@@ -218,7 +223,7 @@ mod tests {
         assert_eq!(cfg.proxy_url, "http://127.0.0.1:9999");
         assert_eq!(cfg.ca_cert_path, "/tmp/keyclaw-ca.crt");
         assert_eq!(cfg.vault_path, PathBuf::from("/tmp/keyclaw-vault.enc"));
-        assert_eq!(cfg.vault_passphrase, "test-passphrase");
+        assert_eq!(cfg.vault_passphrase.as_deref(), Some("test-passphrase"));
         assert_eq!(
             cfg.gitleaks_config_path.as_deref(),
             Some(Path::new("/tmp/keyclaw-gitleaks.toml"))
@@ -257,7 +262,7 @@ mod tests {
                 .join(".keyclaw")
                 .join("vault.enc")
         );
-        assert_eq!(cfg.vault_passphrase, "keyclaw-default-passphrase");
+        assert_eq!(cfg.vault_passphrase, None);
         assert_eq!(cfg.gitleaks_config_path, None);
         assert!(!cfg.unsafe_log);
         assert_eq!(cfg.detector_timeout, Duration::from_secs(4));

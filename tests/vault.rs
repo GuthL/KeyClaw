@@ -44,15 +44,77 @@ fn vault_atomic_write_no_temp_files_left() {
 }
 
 #[test]
-fn vault_store_secret_recovers_from_unreadable_file() {
+fn vault_generated_key_is_created_and_reused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vault.enc");
+
+    let first = keyclaw::vault::resolve_vault_passphrase(&path, None).expect("create key");
+    let second = keyclaw::vault::resolve_vault_passphrase(&path, None).expect("reuse key");
+
+    assert_eq!(first, second);
+    assert_ne!(first, keyclaw::vault::LEGACY_DEFAULT_VAULT_PASSPHRASE);
+    assert!(
+        path.with_extension("key").exists(),
+        "vault key file missing"
+    );
+}
+
+#[test]
+fn vault_generated_key_migrates_legacy_default_vault() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vault.enc");
+    let legacy = keyclaw::vault::Store::new(
+        path.clone(),
+        keyclaw::vault::LEGACY_DEFAULT_VAULT_PASSPHRASE.to_string(),
+    );
+
+    let mut entries = HashMap::new();
+    entries.insert(
+        "legacy".to_string(),
+        "sk-ABCDEF0123456789ABCDEF0123456789".to_string(),
+    );
+    legacy.save(&entries).expect("save legacy vault");
+
+    let migrated = keyclaw::vault::resolve_vault_passphrase(&path, None).expect("migrate key");
+    let store = keyclaw::vault::Store::new(path, migrated);
+    let loaded = store.load().expect("load migrated vault");
+
+    assert_eq!(loaded, entries);
+    assert!(
+        dir.path().join("vault.key").exists(),
+        "vault key file missing"
+    );
+}
+
+#[test]
+fn vault_existing_file_without_key_material_fails_loudly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vault.enc");
+    let store = keyclaw::vault::Store::new(path.clone(), "custom-passphrase".to_string());
+
+    let mut entries = HashMap::new();
+    entries.insert(
+        "custom".to_string(),
+        "sk-ABCDEF0123456789ABCDEF0123456789".to_string(),
+    );
+    store.save(&entries).expect("save");
+
+    let err = keyclaw::vault::resolve_vault_passphrase(&path, None).expect_err("missing key");
+    let msg = err.to_string();
+    assert!(msg.contains("vault.key") || msg.contains("KEYCLAW_VAULT_PASSPHRASE"));
+}
+
+#[test]
+fn vault_store_secret_fails_on_corrupt_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("vault.enc");
     fs::write(&path, b"not-a-valid-vault").expect("seed corrupt file");
 
     let store = keyclaw::vault::Store::new(path, "test-passphrase".to_string());
     let secret = "sk-ABCDEF0123456789ABCDEF0123456789";
-    let id = store.store_secret(secret).expect("store secret");
+    let err = store
+        .store_secret(secret)
+        .expect_err("corrupt vault should fail");
 
-    let loaded = store.load().expect("load recovered vault");
-    assert_eq!(loaded.get(&id), Some(&secret.to_string()));
+    assert!(err.to_string().contains("vault"));
 }
