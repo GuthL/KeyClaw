@@ -52,6 +52,16 @@ cargo test              # Run all tests
 cargo test -- --nocapture  # See println output
 ```
 
+### CI
+
+GitHub Actions is the release gate for this repository. The workflow runs on pushes to `master` and on pull requests targeting `master`.
+
+- `lint` runs `cargo fmt --check` and `cargo clippy --all-targets --all-features -- -D warnings` on `ubuntu-latest` and `macos-latest`
+- `test` runs `cargo test --locked` on `ubuntu-latest` and `macos-latest`
+- `release-build` runs `cargo build --release --locked` on `ubuntu-latest` and `macos-latest`
+
+If CI fails, reproduce the same commands locally before pushing a fix so the failure mode stays comparable to GitHub Actions.
+
 When adding new secret patterns, include test cases in `tests/placeholder.rs` that cover:
 - Basic detection and replacement
 - Edge cases (partial matches, embedded in URLs, etc.)
