@@ -11,7 +11,8 @@ pub const CONTRACT_MARKER_VALUE: &str = "placeholder:v1";
 const PREFIX_LEN: usize = 5;
 
 static PLACEHOLDER_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\{\{KEYCLAW_SECRET_([A-Za-z0-9*_-]{1,5})_([a-f0-9]{16})\}\}").expect("valid placeholder regex")
+    Regex::new(r"\{\{KEYCLAW_SECRET_([A-Za-z0-9*_-]{1,5})_([a-f0-9]{16})\}\}")
+        .expect("valid placeholder regex")
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +28,11 @@ pub fn make_id(secret: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric() || *c == '*' || *c == '_' || *c == '-')
         .take(PREFIX_LEN)
         .collect();
-    let prefix = if prefix.is_empty() { "*".to_string() } else { prefix };
+    let prefix = if prefix.is_empty() {
+        "*".to_string()
+    } else {
+        prefix
+    };
     let digest = Sha256::digest(secret.as_bytes());
     format!("{}_{}", prefix, hex::encode(&digest[..8]))
 }

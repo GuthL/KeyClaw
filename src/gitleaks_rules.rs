@@ -61,7 +61,10 @@ impl RuleSet {
                 skipped += 1;
                 continue;
             }
-            match regex::RegexBuilder::new(&r.regex).size_limit(50 * 1024 * 1024).build() {
+            match regex::RegexBuilder::new(&r.regex)
+                .size_limit(50 * 1024 * 1024)
+                .build()
+            {
                 Ok(compiled) => {
                     rules.push(Rule {
                         id: r.id,
@@ -97,15 +100,15 @@ impl RuleSet {
 
         for rule in &self.rules {
             // Fast keyword pre-filter: skip rule if none of its keywords appear
-            if !rule.keywords.is_empty()
-                && !rule.keywords.iter().any(|kw| input_lower.contains(kw))
+            if !rule.keywords.is_empty() && !rule.keywords.iter().any(|kw| input_lower.contains(kw))
             {
                 continue;
             }
 
             for caps in rule.regex.captures_iter(input) {
                 let secret_match = if rule.secret_group > 0 {
-                    caps.get(rule.secret_group).unwrap_or_else(|| caps.get(0).unwrap())
+                    caps.get(rule.secret_group)
+                        .unwrap_or_else(|| caps.get(0).unwrap())
                 } else {
                     caps.get(0).unwrap()
                 };

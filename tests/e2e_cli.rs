@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -31,8 +32,14 @@ fn mitm_codex_intercepts_and_sanitizes() {
     let body = rx
         .recv_timeout(Duration::from_secs(2))
         .expect("upstream body");
-    assert!(!body.contains(TEST_SECRET_CODEX), "secret leaked to upstream: {body}");
-    assert!(body.contains("{{KEYCLAW_SECRET_"), "no placeholder in upstream body: {body}");
+    assert!(
+        !body.contains(TEST_SECRET_CODEX),
+        "secret leaked to upstream: {body}"
+    );
+    assert!(
+        body.contains("{{KEYCLAW_SECRET_"),
+        "no placeholder in upstream body: {body}"
+    );
     assert!(!stderr.contains(TEST_SECRET_CODEX));
 }
 
@@ -51,24 +58,146 @@ fn mitm_claude_intercepts_and_sanitizes() {
     let body = rx
         .recv_timeout(Duration::from_secs(2))
         .expect("upstream body");
-    assert!(!body.contains(TEST_SECRET_CLAUDE), "secret leaked to upstream: {body}");
-    assert!(body.contains("{{KEYCLAW_SECRET_"), "no placeholder in upstream body: {body}");
+    assert!(
+        !body.contains(TEST_SECRET_CLAUDE),
+        "secret leaked to upstream: {body}"
+    );
+    assert!(
+        body.contains("{{KEYCLAW_SECRET_"),
+        "no placeholder in upstream body: {body}"
+    );
     assert!(!stderr.contains(TEST_SECRET_CLAUDE));
 }
 
 #[test]
 fn doctor_detects_proxy_bypass_attempt() {
-    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
-    let output = Command::new(bin)
-        .arg("doctor")
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = doctor_command(temp.path())
         .env("NO_PROXY", "*")
-        .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true")
         .output()
         .expect("run doctor");
 
     assert_ne!(output.status.code(), Some(0));
     let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("FAIL proxy-bypass"), "output={out}");
     assert!(out.contains("mitm_not_effective"), "output={out}");
+    assert!(out.contains("hint:"), "output={out}");
+}
+
+#[test]
+fn doctor_warns_on_unsafe_log_but_exits_zero() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = doctor_command(temp.path())
+        .env("KEYCLAW_UNSAFE_LOG", "true")
+        .output()
+        .expect("run doctor");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("WARN unsafe-log"), "output={out}");
+    assert!(out.contains("hint:"), "output={out}");
+    assert!(!out.contains("FAIL "), "output={out}");
+}
+
+#[test]
+fn doctor_fails_on_invalid_custom_gitleaks_config() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let missing = temp.path().join("missing-gitleaks.toml");
+    let output = doctor_command(temp.path())
+        .env("KEYCLAW_GITLEAKS_CONFIG", &missing)
+        .output()
+        .expect("run doctor");
+
+    assert_ne!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("FAIL ruleset"), "output={out}");
+    assert!(out.contains("missing-gitleaks.toml"), "output={out}");
+    assert!(out.contains("hint:"), "output={out}");
+}
+
+#[test]
+fn doctor_reports_clean_healthcheck() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = doctor_command(temp.path()).output().expect("run doctor");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("PASS proxy-bind"), "output={out}");
+    assert!(out.contains("PASS ca-cert"), "output={out}");
+    assert!(out.contains("PASS ruleset"), "output={out}");
+    assert!(out.contains("doctor: summary:"), "output={out}");
+    assert!(!out.contains("WARN "), "output={out}");
+    assert!(!out.contains("FAIL "), "output={out}");
+}
+
+#[test]
+fn doctor_fails_on_broken_generated_ca_pair() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ca_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&ca_dir).expect("create keyclaw dir");
+    std::fs::write(ca_dir.join("ca.crt"), "not-a-cert").expect("write malformed cert");
+    std::fs::write(ca_dir.join("ca.key"), "not-a-key").expect("write malformed key");
+
+    let output = doctor_command(temp.path()).output().expect("run doctor");
+
+    assert_ne!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("FAIL ca-cert"), "output={out}");
+    assert!(out.contains("hint:"), "output={out}");
+    assert!(out.contains("remove the broken CA files"), "output={out}");
+}
+
+#[test]
+fn proxy_fails_fast_on_broken_generated_ca_pair() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ca_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&ca_dir).expect("create keyclaw dir");
+    std::fs::write(ca_dir.join("ca.crt"), "not-a-cert").expect("write malformed cert");
+    std::fs::write(ca_dir.join("ca.key"), "not-a-key").expect("write malformed key");
+
+    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
+    let output = Command::new(bin)
+        .arg("proxy")
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("KEYCLAW_PROXY_ADDR", "127.0.0.1:0")
+        .env("KEYCLAW_PROXY_URL", "http://127.0.0.1:0")
+        .output()
+        .expect("run proxy");
+
+    assert_ne!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("remove the broken CA files"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn rewrite_json_respects_custom_gitleaks_config() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let gitleaks_config = temp.path().join("gitleaks.toml");
+    std::fs::write(&gitleaks_config, "rules = []\n").expect("write gitleaks config");
+    let payload = format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX);
+
+    let mut child = rewrite_json_command(temp.path())
+        .env("KEYCLAW_GITLEAKS_CONFIG", &gitleaks_config)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn rewrite-json");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+    let output = child.wait_with_output().expect("wait rewrite-json");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(out, payload);
 }
 
 #[test]
@@ -87,7 +216,10 @@ fn logs_contain_no_raw_secrets() {
         .recv_timeout(Duration::from_secs(2))
         .expect("upstream body");
     assert!(!stderr.contains(TEST_SECRET_CODEX));
-    assert!(stderr.contains("replaced"), "expected 'replaced' in stderr: {stderr}");
+    assert!(
+        stderr.contains("replaced"),
+        "expected 'replaced' in stderr: {stderr}"
+    );
 }
 
 #[cfg(unix)]
@@ -300,8 +432,39 @@ fn run_mitm(tool: &str, addr: String, upstream_url: &str, payload: &str) -> (Str
     (stderr, output.status.code().unwrap_or(1))
 }
 
+fn doctor_command(home: &std::path::Path) -> Command {
+    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
+    let vault_path = home.join("vault.enc");
+
+    let mut cmd = Command::new(bin);
+    cmd.arg("doctor")
+        .env_clear()
+        .env("HOME", home)
+        .env("KEYCLAW_PROXY_ADDR", "127.0.0.1:0")
+        .env("KEYCLAW_PROXY_URL", "http://127.0.0.1:0")
+        .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true")
+        .env("KEYCLAW_VAULT_PATH", vault_path)
+        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
+    cmd
+}
+
+fn rewrite_json_command(home: &std::path::Path) -> Command {
+    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
+    let vault_path = home.join("vault.enc");
+
+    let mut cmd = Command::new(bin);
+    cmd.arg("rewrite-json")
+        .env_clear()
+        .env("HOME", home)
+        .env("KEYCLAW_VAULT_PATH", vault_path)
+        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
+    cmd
+}
+
 fn can_bind(addr: SocketAddr) -> bool {
-    TcpListener::bind(addr).map(|listener| drop(listener)).is_ok()
+    TcpListener::bind(addr)
+        .map(|listener| drop(listener))
+        .is_ok()
 }
 
 fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {

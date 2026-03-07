@@ -118,6 +118,15 @@ Wraps a single CLI session with automatic proxy setup and teardown:
 ./target/release/keyclaw doctor
 ```
 
+`keyclaw doctor` is the first thing to run after changing local config or before debugging a failed `mitm` session. It checks the proxy bind address, proxy URL, CA readiness, vault path, custom gitleaks config, proxy-bypass risk, and other operator-facing safety knobs.
+
+Interpret the output like this:
+
+- `PASS` — the check is ready for normal use
+- `WARN` — KeyClaw can still run, but the config is risky or non-standard
+- `FAIL` — fix this before relying on the proxy; `doctor` exits non-zero
+- `hint:` — the next operator action to take for that specific check
+
 ## Configuration
 
 KeyClaw is configured via environment variables:
@@ -132,10 +141,13 @@ KeyClaw is configured via environment variables:
 | `KEYCLAW_CODEX_HOSTS` | `api.openai.com,chat.openai.com,chatgpt.com` | Codex/OpenAI hosts to intercept |
 | `KEYCLAW_CLAUDE_HOSTS` | `api.anthropic.com,claude.ai` | Claude/Anthropic hosts to intercept |
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` (2MB) | Maximum request body size |
+| `KEYCLAW_DETECTOR_TIMEOUT` | `4s` | Timeout for request-body secret detection and streamed body reads (`250ms`, `4s`, `1m` formats supported) |
 | `KEYCLAW_GITLEAKS_CONFIG` | (bundled rules) | Path to custom gitleaks.toml rule file |
-| `KEYCLAW_UNSAFE_LOG` | `false` | Log actual secrets (for debugging only!) |
+| `KEYCLAW_UNSAFE_LOG` | `false` | Log actual secrets for debugging only; unsafe and opt-in |
 | `KEYCLAW_FAIL_CLOSED` | `true` | Fail closed on errors |
 | `KEYCLAW_REQUIRE_MITM_EFFECTIVE` | `true` | Fail if proxy bypass is detected |
+
+KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`. Secret detection uses the bundled gitleaks rules compiled natively into the binary; set `KEYCLAW_GITLEAKS_CONFIG` only when you want to override those rules with your own TOML file.
 
 ## Error Codes
 

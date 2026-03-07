@@ -19,7 +19,6 @@ pub fn inject_contract_marker(input: &[u8]) -> Result<Vec<u8>, KeyclawError> {
     Ok(input.to_vec())
 }
 
-
 pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, KeyclawError> {
     let mut parsed: serde_json::Value = serde_json::from_slice(input)
         .map_err(|e| KeyclawError::uncoded_with_source("decode json for notice injection", e))?;
@@ -41,12 +40,15 @@ pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, Ke
 
     let obj = match parsed.as_object_mut() {
         Some(o) => o,
-        None => return serde_json::to_vec(&parsed)
-            .map_err(|e| KeyclawError::uncoded_with_source("encode json", e)),
+        None => {
+            return serde_json::to_vec(&parsed)
+                .map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
+        }
     };
 
     // Check model before taking mutable refs
-    let is_anthropic = obj.get("model")
+    let is_anthropic = obj
+        .get("model")
         .and_then(|v| v.as_str())
         .map(|m| m.contains("claude"))
         .unwrap_or(false);
@@ -67,9 +69,10 @@ pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, Ke
                 obj.insert("system".to_string(), serde_json::Value::Array(new_arr));
             }
             _ => {
-                obj.insert("system".to_string(), serde_json::Value::String(
-                    format!("[KEYCLAW] {}", notice)
-                ));
+                obj.insert(
+                    "system".to_string(),
+                    serde_json::Value::String(format!("[KEYCLAW] {}", notice)),
+                );
             }
         }
     } else {
@@ -88,7 +91,6 @@ pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, Ke
     serde_json::to_vec(&parsed)
         .map_err(|e| KeyclawError::uncoded_with_source("encode json after notice", e))
 }
-
 
 /// Walk only user message content strings in chat API payloads.
 ///
@@ -118,15 +120,17 @@ where
         // redaction notices.
     }
 
-    serde_json::to_vec(&parsed)
-        .map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
+    serde_json::to_vec(&parsed).map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
 }
 
 /// Walk only message-array content for Responses/Chat payloads.
 ///
 /// This intentionally skips top-level `instructions` / `system` fields, which
 /// may contain client-provided hidden prompts rather than user-authored input.
-pub fn walk_input_message_content<F>(input: &[u8], mut transform: F) -> Result<Vec<u8>, KeyclawError>
+pub fn walk_input_message_content<F>(
+    input: &[u8],
+    mut transform: F,
+) -> Result<Vec<u8>, KeyclawError>
 where
     F: FnMut(&str) -> Result<String, KeyclawError>,
 {
@@ -137,8 +141,7 @@ where
         walk_input_message_arrays(obj, &mut transform)?;
     }
 
-    serde_json::to_vec(&parsed)
-        .map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
+    serde_json::to_vec(&parsed).map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
 }
 
 fn walk_message_arrays<F>(
@@ -228,7 +231,6 @@ where
 
     walk_msg_content_field(msg, transform)
 }
-
 
 pub fn resolve_json_placeholders<F>(
     input: &[u8],

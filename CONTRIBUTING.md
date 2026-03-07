@@ -14,7 +14,8 @@ cargo test
 ### Prerequisites
 
 - **Rust 1.75+** (install via [rustup](https://rustup.rs))
-- **Gitleaks** (optional, for full detection coverage) — `brew install gitleaks` or [download](https://github.com/gitleaks/gitleaks/releases)
+
+No external `gitleaks` binary is required. KeyClaw ships with the bundled ruleset compiled into native Rust regexes; if you want custom detection behavior, point `KEYCLAW_GITLEAKS_CONFIG` at your own `gitleaks.toml`.
 
 ## Project Structure
 

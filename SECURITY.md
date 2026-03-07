@@ -40,3 +40,4 @@ Out of scope:
 3. **Encrypted at rest** — The vault uses AES-256-GCM with scrypt key derivation
 4. **Log sanitization** — All log output is scrubbed for known secret patterns
 5. **Minimal trust** — The proxy only intercepts configured hosts; all other traffic passes through untouched
+6. **In-process detection** — Secret detection uses the bundled gitleaks rules compiled into the binary; there is no external gitleaks subprocess in the runtime trust boundary

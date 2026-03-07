@@ -51,7 +51,10 @@ impl Processor {
         self.finalize_rewrite(rewritten, replacements)
     }
 
-    pub fn rewrite_and_evaluate_input_only(&self, body: &[u8]) -> Result<RewriteResult, KeyclawError> {
+    pub fn rewrite_and_evaluate_input_only(
+        &self,
+        body: &[u8],
+    ) -> Result<RewriteResult, KeyclawError> {
         if self.max_body_size > 0 && (body.len() as i64) > self.max_body_size {
             return Err(KeyclawError::coded(
                 CODE_BODY_TOO_LARGE,
@@ -77,7 +80,10 @@ impl Processor {
         self.finalize_rewrite(rewritten, replacements)
     }
 
-    pub fn rewrite_and_evaluate_codex_ws(&self, body: &[u8]) -> Result<RewriteResult, KeyclawError> {
+    pub fn rewrite_and_evaluate_codex_ws(
+        &self,
+        body: &[u8],
+    ) -> Result<RewriteResult, KeyclawError> {
         if self.max_body_size > 0 && (body.len() as i64) > self.max_body_size {
             return Err(KeyclawError::coded(
                 CODE_BODY_TOO_LARGE,
@@ -97,7 +103,12 @@ impl Processor {
                     let last_user_index = arr.iter().rposition(is_user_message);
                     for (idx, item) in arr.iter_mut().enumerate() {
                         let before = replacements.len();
-                        rewrite_message_item(item, ruleset, self.vault.as_ref(), &mut replacements)?;
+                        rewrite_message_item(
+                            item,
+                            ruleset,
+                            self.vault.as_ref(),
+                            &mut replacements,
+                        )?;
                         if Some(idx) == last_user_index {
                             notice_replacements += replacements.len() - before;
                         }
@@ -106,9 +117,8 @@ impl Processor {
             }
         }
 
-        let rewritten = serde_json::to_vec(&parsed).map_err(|e| {
-            KeyclawError::coded_with_source(CODE_INVALID_JSON, "rewrite failed", e)
-        })?;
+        let rewritten = serde_json::to_vec(&parsed)
+            .map_err(|e| KeyclawError::coded_with_source(CODE_INVALID_JSON, "rewrite failed", e))?;
 
         self.finalize_rewrite_with_notice_count(rewritten, replacements, notice_replacements)
     }
@@ -174,7 +184,9 @@ impl Processor {
             return Ok(body.to_vec());
         }
 
-        match crate::placeholder::resolve_placeholders(&text, self.strict_mode, |id| vault.resolve(id)) {
+        match crate::placeholder::resolve_placeholders(&text, self.strict_mode, |id| {
+            vault.resolve(id)
+        }) {
             Ok(resolved) => Ok(resolved.into_bytes()),
             Err(err) if self.strict_mode => Err(KeyclawError::coded_with_source(
                 CODE_STRICT_RESOLVE_FAILED,

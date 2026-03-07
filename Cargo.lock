@@ -1196,6 +1196,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wait-timeout",
+ "x509-parser",
 ]
 
 [[package]]
