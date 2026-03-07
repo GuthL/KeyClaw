@@ -27,6 +27,7 @@ pub fn run_cli(args: Vec<String>) -> i32 {
     }
 
     let cfg = Config::from_env();
+    crate::logging::configure(cfg.log_level);
 
     match args[0].as_str() {
         "doctor" => run_doctor(&cfg),
@@ -69,13 +70,13 @@ pub fn run_cli(args: Vec<String>) -> i32 {
 
 fn run_mitm(cfg: &Config, processor: Arc<Processor>, args: &[String]) -> i32 {
     if args.is_empty() {
-        eprintln!("usage: keyclaw mitm <codex|claude> [-- child args]");
+        crate::logging::error("usage: keyclaw mitm <codex|claude> [-- child args]");
         return 2;
     }
 
     let tool = args[0].trim().to_lowercase();
     if tool != "codex" && tool != "claude" {
-        eprintln!("unsupported tool \"{}\"", tool);
+        crate::logging::error(&format!("unsupported tool \"{tool}\""));
         return 2;
     }
 
@@ -101,7 +102,7 @@ fn run_proxy(cfg: &Config, processor: Arc<Processor>) -> i32 {
     let ca = match crate::certgen::ensure_ca() {
         Ok(ca) => ca,
         Err(e) => {
-            eprintln!("keyclaw: {e}");
+            crate::logging::error(&e.to_string());
             return 1;
         }
     };
@@ -137,13 +138,13 @@ fn run_proxy(cfg: &Config, processor: Arc<Processor>) -> i32 {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("keyclaw"));
     let env_content = render_proxy_env_script(pid, &proxy_url, &ca_path, &current_exe, &pid_path);
     if let Err(e) = fs::write(&env_path, &env_content) {
-        eprintln!("keyclaw: failed to write env file: {e}");
+        crate::logging::error(&format!("failed to write env file: {e}"));
         return 1;
     }
 
-    eprintln!("keyclaw: proxy listening on {}", running_proxy.addr);
-    eprintln!("keyclaw: source ~/.keyclaw/env.sh in any shell to route through keyclaw");
-    eprintln!("keyclaw: press Ctrl-C to stop");
+    crate::logging::info(&format!("proxy listening on {}", running_proxy.addr));
+    crate::logging::info("source ~/.keyclaw/env.sh in any shell to route through keyclaw");
+    crate::logging::info("press Ctrl-C to stop");
 
     let mut signals = match signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,
@@ -151,7 +152,7 @@ fn run_proxy(cfg: &Config, processor: Arc<Processor>) -> i32 {
     ]) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("keyclaw: failed to register signals: {e}");
+            crate::logging::error(&format!("failed to register signals: {e}"));
             return 1;
         }
     };
@@ -161,7 +162,7 @@ fn run_proxy(cfg: &Config, processor: Arc<Processor>) -> i32 {
     let _ = fs::remove_file(&pid_path);
     drop(running_proxy);
 
-    eprintln!("\nkeyclaw: proxy stopped");
+    crate::logging::info("proxy stopped");
     0
 }
 
@@ -240,14 +241,14 @@ fn shell_single_quote(value: &str) -> String {
 fn run_rewrite_json(processor: Arc<Processor>) -> i32 {
     let mut input = Vec::new();
     if io::stdin().read_to_end(&mut input).is_err() {
-        eprintln!("failed to read stdin");
+        crate::logging::error("failed to read stdin");
         return 1;
     }
 
     match processor.rewrite_and_evaluate(&input) {
         Ok(result) => {
             if io::stdout().write_all(&result.body).is_err() {
-                eprintln!("failed to write stdout");
+                crate::logging::error("failed to write stdout");
                 return 1;
             }
             0
@@ -334,10 +335,10 @@ impl Runner {
         if unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
             let log_path = crate::certgen::keyclaw_dir().join("mitm.log");
             if let Err(e) = crate::proxy::set_log_file(&log_path) {
-                eprintln!(
-                    "keyclaw: failed to open log file {}: {e}",
+                crate::logging::warn(&format!(
+                    "failed to open log file {}: {e}",
                     log_path.display()
-                );
+                ));
             }
         }
 
@@ -345,7 +346,7 @@ impl Runner {
             &std::env::var("NO_PROXY").unwrap_or_default(),
             &allowed_hosts,
         ) {
-            eprintln!("keyclaw warning: {} ({})", CODE_MITM_NOT_EFFECTIVE, reason);
+            crate::logging::warn_with_code(CODE_MITM_NOT_EFFECTIVE, &reason);
             if self.config.require_mitm_effective {
                 return Err(KeyclawError::coded(CODE_MITM_NOT_EFFECTIVE, reason));
             }
@@ -496,7 +497,7 @@ impl Runner {
 
         if intercept_count == 0 {
             let reason = "no intercepted requests observed; traffic may be bypassing proxy";
-            eprintln!("keyclaw warning: {} ({})", CODE_MITM_NOT_EFFECTIVE, reason);
+            crate::logging::warn_with_code(CODE_MITM_NOT_EFFECTIVE, reason);
             if self.config.require_mitm_effective {
                 if let Some(code) = status.code() {
                     return Ok(code);
@@ -521,9 +522,9 @@ impl Runner {
 }
 
 fn configure_unsafe_logging(cfg: &Config) {
+    crate::proxy::set_unsafe_log(cfg.unsafe_log);
     if cfg.unsafe_log {
-        crate::proxy::set_unsafe_log(true);
-        eprintln!("keyclaw: WARNING unsafe logging enabled; secrets may appear in logs");
+        crate::logging::warn("unsafe logging enabled; secrets may appear in logs");
     }
 }
 
@@ -664,6 +665,16 @@ fn check_vault_path(cfg: &Config) -> DoctorCheck {
 fn check_ruleset(cfg: &Config) -> DoctorCheck {
     match cfg.gitleaks_config_path.as_deref() {
         Some(path) => match RuleSet::from_file(path) {
+            Ok(ruleset) if ruleset.skipped_rules > 0 => warn_check(
+                "ruleset",
+                format!(
+                    "loaded {} custom gitleaks rules from {}, skipped {} invalid rule(s)",
+                    ruleset.rules.len(),
+                    path.display(),
+                    ruleset.skipped_rules
+                ),
+                "fix the invalid rules in KEYCLAW_GITLEAKS_CONFIG or unset it to use the bundled rules".to_string(),
+            ),
             Ok(ruleset) => pass_check(
                 "ruleset",
                 format!(
@@ -772,7 +783,7 @@ fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawError> {
 
     let ruleset = load_runtime_ruleset(cfg);
 
-    eprintln!("keyclaw: {} gitleaks rules loaded", ruleset.rules.len());
+    crate::logging::info(&format!("{} gitleaks rules loaded", ruleset.rules.len()));
 
     Ok(Arc::new(Processor {
         vault: Some(vault),
@@ -784,15 +795,46 @@ fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawError> {
 
 fn load_runtime_ruleset(cfg: &Config) -> RuleSet {
     match cfg.gitleaks_config_path.as_deref() {
-        Some(path) => RuleSet::from_file(path).unwrap_or_else(|err| {
-            eprintln!(
-                "keyclaw: failed to load custom rules from {}: {err}",
-                path.display()
-            );
-            eprintln!("keyclaw: falling back to bundled rules");
-            RuleSet::bundled().expect("bundled gitleaks rules must compile")
-        }),
-        None => RuleSet::bundled().expect("bundled gitleaks rules must compile"),
+        Some(path) => match RuleSet::from_file(path) {
+            Ok(ruleset) => {
+                if ruleset.skipped_rules > 0 {
+                    crate::logging::warn(&format!(
+                        "loaded {} custom gitleaks rules from {}, skipped {} invalid rule(s)",
+                        ruleset.rules.len(),
+                        path.display(),
+                        ruleset.skipped_rules
+                    ));
+                }
+                ruleset
+            }
+            Err(err) => {
+                crate::logging::warn(&format!(
+                    "failed to load custom rules from {}: {err}",
+                    path.display()
+                ));
+                crate::logging::warn("falling back to bundled rules");
+                let ruleset = RuleSet::bundled().expect("bundled gitleaks rules must compile");
+                if ruleset.skipped_rules > 0 {
+                    crate::logging::info(&format!(
+                        "loaded {} bundled gitleaks rules, skipped {} invalid rule(s)",
+                        ruleset.rules.len(),
+                        ruleset.skipped_rules
+                    ));
+                }
+                ruleset
+            }
+        },
+        None => {
+            let ruleset = RuleSet::bundled().expect("bundled gitleaks rules must compile");
+            if ruleset.skipped_rules > 0 {
+                crate::logging::info(&format!(
+                    "loaded {} bundled gitleaks rules, skipped {} invalid rule(s)",
+                    ruleset.rules.len(),
+                    ruleset.skipped_rules
+                ));
+            }
+            ruleset
+        }
     }
 }
 
@@ -1058,11 +1100,11 @@ fn split_host_port(value: &str) -> (&str, bool) {
 
 fn print_error(err: &KeyclawError) {
     let code = code_of(err);
-    let msg = crate::logscrub::scrub(&err.to_string());
+    let msg = err.display_without_code();
     if let Some(code) = code {
-        eprintln!("{}: {}", code, msg);
+        crate::logging::error_with_code(code, &msg);
     } else {
-        eprintln!("{}", msg);
+        crate::logging::error(&msg);
     }
 }
 

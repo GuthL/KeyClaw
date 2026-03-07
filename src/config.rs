@@ -2,6 +2,8 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::logging::LogLevel;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub proxy_listen_addr: String,
@@ -15,6 +17,7 @@ pub struct Config {
     pub known_codex_hosts: Vec<String>,
     pub known_claude_hosts: Vec<String>,
     pub gitleaks_config_path: Option<PathBuf>,
+    pub log_level: LogLevel,
     pub unsafe_log: bool,
     pub require_mitm_effective: bool,
 }
@@ -39,6 +42,7 @@ impl Config {
                 "api.anthropic.com,claude.ai",
             )),
             gitleaks_config_path: path_env("KEYCLAW_GITLEAKS_CONFIG"),
+            log_level: log_level_env("KEYCLAW_LOG_LEVEL", LogLevel::Info),
             unsafe_log: bool_env("KEYCLAW_UNSAFE_LOG", false),
             require_mitm_effective: bool_env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", true),
         }
@@ -82,6 +86,13 @@ fn bool_env(key: &str, fallback: bool) -> bool {
 fn int64_env(key: &str, fallback: i64) -> i64 {
     match env::var(key) {
         Ok(v) => v.trim().parse::<i64>().unwrap_or(fallback),
+        Err(_) => fallback,
+    }
+}
+
+fn log_level_env(key: &str, fallback: LogLevel) -> LogLevel {
+    match env::var(key) {
+        Ok(v) => LogLevel::parse(v.trim()).unwrap_or(fallback),
         Err(_) => fallback,
     }
 }
@@ -201,6 +212,7 @@ mod tests {
             "KEYCLAW_VAULT_PATH",
             "KEYCLAW_VAULT_PASSPHRASE",
             "KEYCLAW_GITLEAKS_CONFIG",
+            "KEYCLAW_LOG_LEVEL",
             "KEYCLAW_UNSAFE_LOG",
             "KEYCLAW_DETECTOR_TIMEOUT",
             "KEYCLAW_GITLEAKS_BIN",
@@ -213,6 +225,7 @@ mod tests {
         env::set_var("KEYCLAW_VAULT_PATH", "/tmp/keyclaw-vault.enc");
         env::set_var("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
         env::set_var("KEYCLAW_GITLEAKS_CONFIG", "/tmp/keyclaw-gitleaks.toml");
+        env::set_var("KEYCLAW_LOG_LEVEL", "debug");
         env::set_var("KEYCLAW_UNSAFE_LOG", "true");
         env::set_var("KEYCLAW_DETECTOR_TIMEOUT", "250ms");
         env::set_var("KEYCLAW_GITLEAKS_BIN", "/tmp/ignored-gitleaks");
@@ -228,6 +241,7 @@ mod tests {
             cfg.gitleaks_config_path.as_deref(),
             Some(Path::new("/tmp/keyclaw-gitleaks.toml"))
         );
+        assert_eq!(cfg.log_level, LogLevel::Debug);
         assert!(cfg.unsafe_log);
         assert_eq!(cfg.detector_timeout, Duration::from_millis(250));
 
@@ -242,6 +256,7 @@ mod tests {
             "KEYCLAW_VAULT_PATH",
             "KEYCLAW_VAULT_PASSPHRASE",
             "KEYCLAW_GITLEAKS_CONFIG",
+            "KEYCLAW_LOG_LEVEL",
             "KEYCLAW_UNSAFE_LOG",
             "KEYCLAW_DETECTOR_TIMEOUT",
         ];
@@ -251,6 +266,7 @@ mod tests {
         env::remove_var("KEYCLAW_VAULT_PATH");
         env::remove_var("KEYCLAW_VAULT_PASSPHRASE");
         env::remove_var("KEYCLAW_GITLEAKS_CONFIG");
+        env::remove_var("KEYCLAW_LOG_LEVEL");
         env::remove_var("KEYCLAW_UNSAFE_LOG");
         env::remove_var("KEYCLAW_DETECTOR_TIMEOUT");
 
@@ -264,6 +280,7 @@ mod tests {
         );
         assert_eq!(cfg.vault_passphrase, None);
         assert_eq!(cfg.gitleaks_config_path, None);
+        assert_eq!(cfg.log_level, LogLevel::Info);
         assert!(!cfg.unsafe_log);
         assert_eq!(cfg.detector_timeout, Duration::from_secs(4));
 

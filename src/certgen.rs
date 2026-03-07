@@ -32,7 +32,7 @@ pub fn ensure_ca() -> Result<CaPair, KeyclawError> {
 
     if cert_path.exists() || key_path.exists() {
         let pair = validate_generated_ca_pair(&cert_path, &key_path)?;
-        eprintln!("keyclaw: using existing CA from {}", dir.display());
+        crate::logging::info(&format!("using existing CA from {}", dir.display()));
         return Ok(pair);
     }
 
@@ -151,7 +151,7 @@ fn generate_and_save(
     fs::create_dir_all(dir)
         .map_err(|e| KeyclawError::uncoded(format!("create {}: {e}", dir.display())))?;
 
-    eprintln!("keyclaw: generating new CA certificate...");
+    crate::logging::info("generating new CA certificate...");
 
     let mut params = rcgen::CertificateParams::default();
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -186,8 +186,8 @@ fn generate_and_save(
 
     write_ca_pair_atomically(dir, cert_path, key_path, &cert_pem, &key_pem)?;
 
-    eprintln!("keyclaw: CA cert written to {}", cert_path.display());
-    eprintln!("keyclaw: CA key written to {}", key_path.display());
+    crate::logging::info(&format!("CA cert written to {}", cert_path.display()));
+    crate::logging::info(&format!("CA key written to {}", key_path.display()));
 
     validate_generated_ca_pair(cert_path, key_path)
 }

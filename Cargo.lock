@@ -1192,8 +1192,6 @@ dependencies = [
  "tiny_http",
  "tokio",
  "toml",
- "tracing",
- "tracing-subscriber",
  "url",
  "wait-timeout",
  "x509-parser",
