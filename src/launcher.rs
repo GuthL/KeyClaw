@@ -229,6 +229,15 @@ impl Runner {
 
     pub fn launch(&mut self, tool: &str, child_args: Vec<String>) -> Result<i32, KeyclawError> {
         let allowed_hosts = Config::allowed_hosts(tool, &self.config);
+        // In mitm mode with a TTY, redirect proxy logs to a file so they
+        // do not interleave with the child CLI's TUI output.
+        if unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
+            let log_path = crate::certgen::keyclaw_dir().join("mitm.log");
+            if let Err(e) = crate::proxy::set_log_file(&log_path) {
+                eprintln!("keyclaw: failed to open log file {}: {e}", log_path.display());
+            }
+        }
+
 
         if let Some(reason) = launcher_bypass_risk(
             &std::env::var("NO_PROXY").unwrap_or_default(),
@@ -290,6 +299,19 @@ impl Runner {
             .spawn()
             .map_err(|e| KeyclawError::uncoded(format!("start child process: {e}")))?;
 
+        // Give the child process group foreground terminal access so interactive
+        // CLIs (codex, claude) can read from stdin without receiving SIGTTIN.
+        #[cfg(unix)]
+        let original_pgrp = unsafe {
+            let child_pid = child.id() as libc::pid_t;
+            let original = libc::tcgetpgrp(libc::STDIN_FILENO);
+            // Only set foreground if stdin is a TTY (tcgetpgrp returns -1 otherwise)
+            if original >= 0 {
+                set_foreground_process_group(libc::STDIN_FILENO, child_pid);
+            }
+            original
+        };
+
         #[cfg(unix)]
         let signal_thread = {
             let pid = child.id() as i32;
@@ -350,6 +372,11 @@ impl Runner {
         #[cfg(unix)]
         {
             signal_thread.store(true, Ordering::SeqCst);
+            // Restore keyclaw as the foreground process group so we can
+            // print post-run diagnostics without SIGTTOU.
+            if original_pgrp >= 0 {
+                set_foreground_process_group(libc::STDIN_FILENO, original_pgrp);
+            }
         }
 
         std::thread::sleep(Duration::from_millis(50));
@@ -471,6 +498,18 @@ fn resolve_ca_cert_path(
         .map_err(|e| KeyclawError::uncoded(format!("write temp CA file: {e}")))?;
 
     Ok((Some(temp.path().to_string_lossy().to_string()), Some(temp)))
+}
+
+#[cfg(unix)]
+fn set_foreground_process_group(fd: libc::c_int, pgrp: libc::pid_t) {
+    unsafe {
+        // After handing the TTY to the child, keyclaw is in a background
+        // process group. Restoring the original foreground group would
+        // otherwise stop us with SIGTTOU before cleanup can run.
+        let previous = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+        libc::tcsetpgrp(fd, pgrp);
+        libc::signal(libc::SIGTTOU, previous);
+    }
 }
 
 fn build_command(tool: &str, child_args: Vec<String>) -> (String, Vec<String>) {

@@ -90,6 +90,146 @@ pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, Ke
 }
 
 
+/// Walk only user message content strings in chat API payloads.
+///
+/// Scans `content` fields inside message arrays (`messages`, `input`) and the
+/// `instructions` top-level string.  All other strings (auth tokens, model
+/// names, tool definitions, etc.) are left untouched.
+pub fn walk_message_content<F>(input: &[u8], mut transform: F) -> Result<Vec<u8>, KeyclawError>
+where
+    F: FnMut(&str) -> Result<String, KeyclawError>,
+{
+    let mut parsed: Value = serde_json::from_slice(input)
+        .map_err(|e| KeyclawError::uncoded_with_source("decode json", e))?;
+
+    if let Some(obj) = parsed.as_object_mut() {
+        walk_message_arrays(obj, &mut transform)?;
+
+        // Walk top-level string fields that contain user content
+        for field in &["instructions", "prompt"] {
+            if let Some(Value::String(s)) = obj.get(*field) {
+                let rewritten = transform(s)?;
+                obj.insert(field.to_string(), Value::String(rewritten));
+            }
+        }
+
+        // Skip top-level "system" because CLI clients commonly populate it
+        // with hidden prompt/context that should not trigger user-facing
+        // redaction notices.
+    }
+
+    serde_json::to_vec(&parsed)
+        .map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
+}
+
+/// Walk only message-array content for Responses/Chat payloads.
+///
+/// This intentionally skips top-level `instructions` / `system` fields, which
+/// may contain client-provided hidden prompts rather than user-authored input.
+pub fn walk_input_message_content<F>(input: &[u8], mut transform: F) -> Result<Vec<u8>, KeyclawError>
+where
+    F: FnMut(&str) -> Result<String, KeyclawError>,
+{
+    let mut parsed: Value = serde_json::from_slice(input)
+        .map_err(|e| KeyclawError::uncoded_with_source("decode json", e))?;
+
+    if let Some(obj) = parsed.as_object_mut() {
+        walk_input_message_arrays(obj, &mut transform)?;
+    }
+
+    serde_json::to_vec(&parsed)
+        .map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
+}
+
+fn walk_message_arrays<F>(
+    obj: &mut serde_json::Map<String, Value>,
+    transform: &mut F,
+) -> Result<(), KeyclawError>
+where
+    F: FnMut(&str) -> Result<String, KeyclawError>,
+{
+    // Walk message arrays: "messages" (OpenAI/Anthropic) and "input"
+    // (Responses/Codex API).
+    for key in &["messages", "input"] {
+        if let Some(arr) = obj.get_mut(*key).and_then(|v| v.as_array_mut()) {
+            for msg in arr.iter_mut() {
+                walk_msg_content_field(msg, transform)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn walk_input_message_arrays<F>(
+    obj: &mut serde_json::Map<String, Value>,
+    transform: &mut F,
+) -> Result<(), KeyclawError>
+where
+    F: FnMut(&str) -> Result<String, KeyclawError>,
+{
+    for key in &["messages", "input"] {
+        if let Some(arr) = obj.get_mut(*key).and_then(|v| v.as_array_mut()) {
+            for msg in arr.iter_mut() {
+                walk_input_msg_content_field(msg, transform)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Walk the `content` field of a single message object.
+fn walk_msg_content_field<F>(msg: &mut Value, transform: &mut F) -> Result<(), KeyclawError>
+where
+    F: FnMut(&str) -> Result<String, KeyclawError>,
+{
+    let obj = match msg.as_object_mut() {
+        Some(o) => o,
+        None => return Ok(()),
+    };
+
+    match obj.get("content") {
+        Some(Value::String(s)) => {
+            let rewritten = transform(s)?;
+            obj.insert("content".to_string(), Value::String(rewritten));
+        }
+        Some(Value::Array(_)) => {
+            // Anthropic content blocks: [{"type": "text", "text": "..."}, ...]
+            if let Some(Value::Array(arr)) = obj.get_mut("content") {
+                for block in arr.iter_mut() {
+                    if let Some(block_obj) = block.as_object_mut() {
+                        if let Some(Value::String(s)) = block_obj.get("text") {
+                            let rewritten = transform(s)?;
+                            block_obj.insert("text".to_string(), Value::String(rewritten));
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn walk_input_msg_content_field<F>(msg: &mut Value, transform: &mut F) -> Result<(), KeyclawError>
+where
+    F: FnMut(&str) -> Result<String, KeyclawError>,
+{
+    let role = msg
+        .as_object()
+        .and_then(|obj| obj.get("role"))
+        .and_then(Value::as_str);
+
+    if matches!(role, Some("developer" | "system")) {
+        return Ok(());
+    }
+
+    walk_msg_content_field(msg, transform)
+}
+
+
 pub fn resolve_json_placeholders<F>(
     input: &[u8],
     strict: bool,

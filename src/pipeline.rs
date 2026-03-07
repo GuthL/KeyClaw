@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use serde_json::Value;
+
 use crate::errors::{
     KeyclawError, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_STRICT_RESOLVE_FAILED,
 };
@@ -33,7 +35,7 @@ impl Processor {
 
         let ruleset = &self.ruleset;
         let mut replacements: Vec<Replacement> = Vec::new();
-        let rewritten = redaction::walk_json_strings(body, |s| {
+        let rewritten = redaction::walk_message_content(body, |s| {
             let (out, reps) = placeholder::replace_secrets(s, ruleset, |secret| {
                 if let Some(vault) = &self.vault {
                     vault.store_secret(secret)
@@ -46,6 +48,86 @@ impl Processor {
         })
         .map_err(|e| KeyclawError::coded_with_source(CODE_INVALID_JSON, "rewrite failed", e))?;
 
+        self.finalize_rewrite(rewritten, replacements)
+    }
+
+    pub fn rewrite_and_evaluate_input_only(&self, body: &[u8]) -> Result<RewriteResult, KeyclawError> {
+        if self.max_body_size > 0 && (body.len() as i64) > self.max_body_size {
+            return Err(KeyclawError::coded(
+                CODE_BODY_TOO_LARGE,
+                "request body exceeds max body size",
+            ));
+        }
+
+        let ruleset = &self.ruleset;
+        let mut replacements: Vec<Replacement> = Vec::new();
+        let rewritten = redaction::walk_input_message_content(body, |s| {
+            let (out, reps) = placeholder::replace_secrets(s, ruleset, |secret| {
+                if let Some(vault) = &self.vault {
+                    vault.store_secret(secret)
+                } else {
+                    Ok(placeholder::make_id(secret))
+                }
+            })?;
+            replacements.extend(reps);
+            Ok(out)
+        })
+        .map_err(|e| KeyclawError::coded_with_source(CODE_INVALID_JSON, "rewrite failed", e))?;
+
+        self.finalize_rewrite(rewritten, replacements)
+    }
+
+    pub fn rewrite_and_evaluate_codex_ws(&self, body: &[u8]) -> Result<RewriteResult, KeyclawError> {
+        if self.max_body_size > 0 && (body.len() as i64) > self.max_body_size {
+            return Err(KeyclawError::coded(
+                CODE_BODY_TOO_LARGE,
+                "request body exceeds max body size",
+            ));
+        }
+
+        let ruleset = &self.ruleset;
+        let mut parsed: Value = serde_json::from_slice(body)
+            .map_err(|e| KeyclawError::coded_with_source(CODE_INVALID_JSON, "rewrite failed", e))?;
+        let mut replacements = Vec::new();
+        let mut notice_replacements = 0usize;
+
+        if let Some(obj) = parsed.as_object_mut() {
+            for key in ["input", "messages"] {
+                if let Some(arr) = obj.get_mut(key).and_then(Value::as_array_mut) {
+                    let last_user_index = arr.iter().rposition(is_user_message);
+                    for (idx, item) in arr.iter_mut().enumerate() {
+                        let before = replacements.len();
+                        rewrite_message_item(item, ruleset, self.vault.as_ref(), &mut replacements)?;
+                        if Some(idx) == last_user_index {
+                            notice_replacements += replacements.len() - before;
+                        }
+                    }
+                }
+            }
+        }
+
+        let rewritten = serde_json::to_vec(&parsed).map_err(|e| {
+            KeyclawError::coded_with_source(CODE_INVALID_JSON, "rewrite failed", e)
+        })?;
+
+        self.finalize_rewrite_with_notice_count(rewritten, replacements, notice_replacements)
+    }
+
+    fn finalize_rewrite(
+        &self,
+        rewritten: Vec<u8>,
+        replacements: Vec<Replacement>,
+    ) -> Result<RewriteResult, KeyclawError> {
+        let notice_count = replacements.len();
+        self.finalize_rewrite_with_notice_count(rewritten, replacements, notice_count)
+    }
+
+    fn finalize_rewrite_with_notice_count(
+        &self,
+        rewritten: Vec<u8>,
+        replacements: Vec<Replacement>,
+        notice_count: usize,
+    ) -> Result<RewriteResult, KeyclawError> {
         let rewritten = redaction::inject_contract_marker(&rewritten).map_err(|e| {
             KeyclawError::coded_with_source(
                 CODE_INVALID_JSON,
@@ -55,8 +137,8 @@ impl Processor {
         })?;
 
         // Inject a notice telling the LLM that secrets were redacted
-        let rewritten = if !replacements.is_empty() {
-            redaction::inject_redaction_notice(&rewritten, replacements.len()).unwrap_or(rewritten)
+        let rewritten = if notice_count > 0 {
+            redaction::inject_redaction_notice(&rewritten, notice_count).unwrap_or(rewritten)
         } else {
             rewritten
         };
@@ -110,4 +192,61 @@ impl Processor {
             format!("replaced {} secrets", replacements.len())
         }
     }
+}
+
+fn is_user_message(item: &Value) -> bool {
+    item.as_object()
+        .and_then(|obj| obj.get("role"))
+        .and_then(Value::as_str)
+        == Some("user")
+}
+
+fn rewrite_message_item(
+    item: &mut Value,
+    ruleset: &RuleSet,
+    vault: Option<&Arc<Store>>,
+    replacements: &mut Vec<Replacement>,
+) -> Result<(), KeyclawError> {
+    let obj = match item.as_object_mut() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    match obj.get("content") {
+        Some(Value::String(s)) => {
+            let (rewritten, reps) = rewrite_string(s, ruleset, vault)?;
+            replacements.extend(reps);
+            obj.insert("content".to_string(), Value::String(rewritten));
+        }
+        Some(Value::Array(_)) => {
+            if let Some(Value::Array(arr)) = obj.get_mut("content") {
+                for block in arr.iter_mut() {
+                    if let Some(block_obj) = block.as_object_mut() {
+                        if let Some(Value::String(s)) = block_obj.get("text") {
+                            let (rewritten, reps) = rewrite_string(s, ruleset, vault)?;
+                            replacements.extend(reps);
+                            block_obj.insert("text".to_string(), Value::String(rewritten));
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn rewrite_string(
+    input: &str,
+    ruleset: &RuleSet,
+    vault: Option<&Arc<Store>>,
+) -> Result<(String, Vec<Replacement>), KeyclawError> {
+    placeholder::replace_secrets(input, ruleset, |secret| {
+        if let Some(vault) = vault {
+            vault.store_secret(secret)
+        } else {
+            Ok(placeholder::make_id(secret))
+        }
+    })
 }
