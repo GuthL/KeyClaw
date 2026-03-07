@@ -54,6 +54,14 @@ cargo test              # Run all tests
 cargo test -- --nocapture  # See println output
 ```
 
+### Docs Consistency
+
+When you change public behavior, keep the launch-facing docs aligned:
+
+- README, `SECURITY.md`, and `CONTRIBUTING.md` should agree on the trust boundary, non-goals, setup assumptions, and troubleshooting guidance
+- Check `cargo run -- --help` and `cargo run -- --version` when CLI examples or command text change
+- Rerun the relevant CLI integration tests when changing command examples, stderr/stdout contracts, or operator guidance
+
 ### CI
 
 GitHub Actions is the release gate for this repository. The workflow runs on pushes to `master` and on pull requests targeting `master`.
