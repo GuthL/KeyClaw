@@ -48,6 +48,54 @@ fn release_ci_workflow_covers_supported_matrix_and_gates() {
     );
 }
 
+#[test]
+fn release_docs_define_artifacts_and_maintainer_checklist() {
+    let checklist = std::fs::read_to_string("docs/release/maintainer-checklist.md")
+        .expect("read docs/release/maintainer-checklist.md");
+    let contributing = std::fs::read_to_string("CONTRIBUTING.md").expect("read CONTRIBUTING.md");
+
+    assert!(
+        checklist.contains("x86_64-unknown-linux-gnu"),
+        "checklist should name the Linux target: {checklist}"
+    );
+    assert!(
+        checklist.contains("x86_64-apple-darwin"),
+        "checklist should name the Intel macOS target: {checklist}"
+    );
+    assert!(
+        checklist.contains("aarch64-apple-darwin"),
+        "checklist should name the Apple Silicon macOS target: {checklist}"
+    );
+    assert!(
+        checklist.contains("keyclaw-v"),
+        "checklist should define artifact naming: {checklist}"
+    );
+    assert!(
+        checklist.contains("SHA256SUMS"),
+        "checklist should require published checksums: {checklist}"
+    );
+    assert!(
+        checklist.contains("Versioning")
+            && checklist.contains("Verification")
+            && checklist.contains("Publication"),
+        "checklist should cover the release flow: {checklist}"
+    );
+    assert!(
+        checklist.contains("Rollback")
+            || checklist.contains("Known Issues")
+            || checklist.contains("known issues"),
+        "checklist should cover rollback or known-issues handling: {checklist}"
+    );
+    assert!(
+        checklist.contains("docs/plans/2026-03-07-release-candidate-verification.md"),
+        "checklist should link to a documented dry run: {checklist}"
+    );
+    assert!(
+        contributing.contains("docs/release/maintainer-checklist.md"),
+        "CONTRIBUTING should link to the release checklist: {contributing}"
+    );
+}
+
 fn job_section<'a>(workflow: &'a str, job: &str, next_job: Option<&str>) -> &'a str {
     let marker = format!("\n  {job}:\n");
     let start = workflow.find(&marker).expect("job section start") + 1;

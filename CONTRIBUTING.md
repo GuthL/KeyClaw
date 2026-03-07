@@ -72,6 +72,10 @@ GitHub Actions is the release gate for this repository. The workflow runs on pus
 
 If CI fails, reproduce the same commands locally before pushing a fix so the failure mode stays comparable to GitHub Actions.
 
+### Releases
+
+Maintainers should use [docs/release/maintainer-checklist.md](docs/release/maintainer-checklist.md) as the release source of truth for artifact naming, verification, publication, and rollback handling.
+
 When adding new secret patterns, include test cases in `tests/placeholder.rs` that cover:
 - Basic detection and replacement
 - Edge cases (partial matches, embedded in URLs, etc.)
