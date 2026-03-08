@@ -24,7 +24,7 @@ redacts secrets before they reach the cloud, and reinjects them on the way back.
 
 AI coding assistants like **Claude Code** and **OpenAI Codex** are incredibly powerful — but they see everything. API keys, tokens, credentials, and secrets in your codebase get sent to remote servers as part of every request.
 
-**KeyClaw fixes this.** It sits between your CLI tool and the API, automatically detecting and replacing secrets with safe placeholders before they leave your machine. The AI never sees your real credentials, but everything still works — because KeyClaw reinjects the real values on the fly.
+**KeyClaw fixes this.** It sits between your CLI tool or API client and the upstream API, automatically detecting and replacing secrets with safe placeholders before they leave your machine. The AI never sees your real credentials, but everything still works — because KeyClaw reinjects the real values on the fly.
 
 ## How It Works
 
@@ -97,8 +97,10 @@ keyclaw --version
 KeyClaw's first public release intentionally keeps the support matrix narrow:
 
 - Official release binaries: `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`
-- Supported client flows: local Claude Code and Codex traffic that actually routes through the KeyClaw proxy
+- Supported client flows: local Claude Code and Codex traffic, plus direct OpenAI and Anthropic API traffic, that actually routes through the KeyClaw proxy and trusts the local CA
 - Deferred from v0.x: Windows support and extra protocol families
+
+Direct OpenAI and Anthropic API clients are in scope for v0.x as long as they honor `HTTP_PROXY` / `HTTPS_PROXY` and trust the KeyClaw-generated CA. KeyClaw does not rely on a wrapper SDK; it protects the traffic that actually traverses the local MITM proxy.
 
 ### Quick Start — Global Proxy
 
