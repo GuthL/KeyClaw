@@ -92,6 +92,14 @@ Check the installed entrypoint before wiring it into your shell:
 ./target/release/keyclaw --version
 ```
 
+### Supported Surface (v0.x)
+
+KeyClaw's first public release intentionally keeps the support matrix narrow:
+
+- Official release binaries: `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`
+- Supported client flows: local Claude Code and Codex traffic that actually routes through the KeyClaw proxy
+- Deferred from v0.x: Windows support, extra protocol families, and configurable notice-injection modes
+
 ### Quick Start — Global Proxy
 
 The simplest way to use KeyClaw. Start the proxy, source the env, and use your CLI tools as normal:
