@@ -36,15 +36,10 @@ fn production_readiness_plan_locks_v0x_release_decisions() {
 }
 
 #[test]
-fn production_readiness_project_marks_issue_one_done() {
+fn production_readiness_project_records_issue_one_decisions() {
     let project = std::fs::read_to_string("docs/plans/2026-03-07-production-readiness-project.md")
         .expect("read docs/plans/2026-03-07-production-readiness-project.md");
     let issue_one = issue_section(&project, "### Issue #1", "### Issue #2");
-
-    assert!(
-        issue_one.contains("Status: Done"),
-        "issue #1 should be marked done in the project mirror: {issue_one}"
-    );
 
     for criterion in [
         "- [x] The supported platform matrix is explicitly documented.",
@@ -59,6 +54,40 @@ fn production_readiness_project_marks_issue_one_done() {
             "issue #1 acceptance should be checked off for `{criterion}`: {issue_one}"
         );
     }
+
+    assert!(
+        issue_one.contains("Decision summary:"),
+        "issue #1 should preserve the locked-scope summary in the project mirror: {issue_one}"
+    );
+}
+
+#[test]
+fn production_readiness_project_mirror_defers_live_status_to_github() {
+    let project = std::fs::read_to_string("docs/plans/2026-03-07-production-readiness-project.md")
+        .expect("read docs/plans/2026-03-07-production-readiness-project.md");
+    let sync_script = std::fs::read_to_string("scripts/sync-production-readiness-project.py")
+        .expect("read scripts/sync-production-readiness-project.py");
+
+    assert!(
+        project.contains("GitHub is the source of truth for live issue state"),
+        "project mirror should explicitly defer live issue state to GitHub: {project}"
+    );
+    assert!(
+        project.contains("scripts/sync-production-readiness-project.py"),
+        "project mirror should document the refresh script: {project}"
+    );
+    assert!(
+        !project.contains("| Issue | Milestone | Status |"),
+        "project mirror should not keep a manual status column that can drift: {project}"
+    );
+    assert!(
+        !project.contains("\nStatus: "),
+        "project mirror should not keep per-issue status fields that can drift: {project}"
+    );
+    assert!(
+        sync_script.contains("docs/plans/2026-03-07-production-readiness-project.md"),
+        "sync script should target the production-readiness mirror: {sync_script}"
+    );
 }
 
 fn issue_section<'a>(project: &'a str, start_marker: &str, end_marker: &str) -> &'a str {
