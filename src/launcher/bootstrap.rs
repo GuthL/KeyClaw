@@ -373,7 +373,7 @@ pub(super) fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawErr
         crate::vault::resolve_vault_passphrase(&cfg.vault_path, cfg.vault_passphrase.as_deref())?;
     let vault = Arc::new(Store::new(cfg.vault_path.clone(), passphrase));
 
-    let ruleset = load_runtime_ruleset(cfg);
+    let ruleset = load_runtime_ruleset(cfg)?;
 
     crate::logging::info(&format!("{} gitleaks rules loaded", ruleset.rules.len()));
 
@@ -385,7 +385,7 @@ pub(super) fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawErr
     }))
 }
 
-fn load_runtime_ruleset(cfg: &Config) -> RuleSet {
+fn load_runtime_ruleset(cfg: &Config) -> Result<RuleSet, KeyclawError> {
     match cfg.gitleaks_config_path.as_deref() {
         Some(path) => match RuleSet::from_file(path) {
             Ok(ruleset) => {
@@ -397,7 +397,7 @@ fn load_runtime_ruleset(cfg: &Config) -> RuleSet {
                         ruleset.skipped_rules
                     ));
                 }
-                ruleset
+                Ok(ruleset)
             }
             Err(err) => {
                 crate::logging::warn(&format!(
@@ -405,29 +405,24 @@ fn load_runtime_ruleset(cfg: &Config) -> RuleSet {
                     path.display()
                 ));
                 crate::logging::warn("falling back to bundled rules");
-                let ruleset = RuleSet::bundled().expect("bundled gitleaks rules must compile");
-                if ruleset.skipped_rules > 0 {
-                    crate::logging::info(&format!(
-                        "loaded {} bundled gitleaks rules, skipped {} invalid rule(s)",
-                        ruleset.rules.len(),
-                        ruleset.skipped_rules
-                    ));
-                }
-                ruleset
+                load_bundled_ruleset()
             }
         },
-        None => {
-            let ruleset = RuleSet::bundled().expect("bundled gitleaks rules must compile");
-            if ruleset.skipped_rules > 0 {
-                crate::logging::info(&format!(
-                    "loaded {} bundled gitleaks rules, skipped {} invalid rule(s)",
-                    ruleset.rules.len(),
-                    ruleset.skipped_rules
-                ));
-            }
-            ruleset
-        }
+        None => load_bundled_ruleset(),
     }
+}
+
+fn load_bundled_ruleset() -> Result<RuleSet, KeyclawError> {
+    let ruleset = RuleSet::bundled()
+        .map_err(|err| KeyclawError::uncoded(format!("load bundled gitleaks rules: {err}")))?;
+    if ruleset.skipped_rules > 0 {
+        crate::logging::info(&format!(
+            "loaded {} bundled gitleaks rules, skipped {} invalid rule(s)",
+            ruleset.rules.len(),
+            ruleset.skipped_rules
+        ));
+    }
+    Ok(ruleset)
 }
 
 fn with_proxy_env(proxy_url: String, ca_path: Option<&str>) -> Vec<(String, String)> {
@@ -593,4 +588,46 @@ fn split_host_port(value: &str) -> (&str, bool) {
         }
     }
     (value, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use crate::config::Config;
+    use crate::logging::LogLevel;
+
+    fn test_config(vault_path: PathBuf) -> Config {
+        Config {
+            proxy_listen_addr: "127.0.0.1:8877".into(),
+            proxy_url: "http://127.0.0.1:8877".into(),
+            ca_cert_path: String::new(),
+            vault_path,
+            vault_passphrase: None,
+            fail_closed: true,
+            max_body_bytes: 2 * 1024 * 1024,
+            detector_timeout: Duration::from_secs(4),
+            known_codex_hosts: Vec::new(),
+            known_claude_hosts: Vec::new(),
+            gitleaks_config_path: None,
+            log_level: LogLevel::Info,
+            unsafe_log: false,
+            require_mitm_effective: true,
+        }
+    }
+
+    #[test]
+    fn load_runtime_ruleset_falls_back_to_bundled_rules_when_custom_file_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = test_config(temp.path().join("vault.enc"));
+        cfg.gitleaks_config_path = Some(temp.path().join("missing-gitleaks.toml"));
+
+        let ruleset = super::load_runtime_ruleset(&cfg).expect("fallback to bundled rules");
+
+        assert!(
+            !ruleset.rules.is_empty(),
+            "bundled fallback should still load shipped rules"
+        );
+    }
 }
