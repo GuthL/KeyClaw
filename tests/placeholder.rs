@@ -1,5 +1,5 @@
 use keyclaw::gitleaks_rules::RuleSet;
-use keyclaw::placeholder::{replace_secrets, resolve_placeholders};
+use keyclaw::placeholder::{find_partial_placeholder_start, replace_secrets, resolve_placeholders};
 
 fn bundled_rules() -> RuleSet {
     RuleSet::bundled().expect("bundled rules")
@@ -75,4 +75,18 @@ fn generic_api_key_rule_preserves_assignment_boundaries() {
     );
     assert!(rewritten.contains("}} in .env"), "rewritten={rewritten}");
     assert!(rewritten.ends_with("}}\n"), "rewritten={rewritten}");
+}
+
+#[test]
+fn partial_placeholder_detection_handles_short_marker_prefixes() {
+    assert_eq!(find_partial_placeholder_start("{"), Some(0));
+    assert_eq!(find_partial_placeholder_start("abc{{KE"), Some(3));
+    assert_eq!(
+        find_partial_placeholder_start("abc{{KEYCLAW_SECRET_prefx_0123456789abcde"),
+        Some(3)
+    );
+    assert_eq!(
+        find_partial_placeholder_start("{{KEYCLAW_SECRET_prefx_0123456789abcdef}}"),
+        None
+    );
 }

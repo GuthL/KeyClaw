@@ -86,34 +86,71 @@ where
 /// could continue in the next chunk.
 pub fn find_partial_placeholder_start(text: &str) -> Option<usize> {
     const MARKER: &str = "{{KEYCLAW_SECRET_";
-    // The maximum incomplete placeholder length: marker + prefix(5) + _ + hash(16) + "}" = 41 chars
-    // We only need to scan the last 41 bytes for a possible partial match.
+    // The maximum incomplete placeholder length: marker + prefix(5) + _ + hash(16) + "}" = 41 chars.
     let scan_start = text.len().saturating_sub(MARKER.len() + 5 + 1 + 16 + 1);
     let tail = &text[scan_start..];
 
-    // Look for the rightmost `{{KEYCLAW` that isn't part of a complete placeholder
-    let mut search_from = 0;
-    let mut candidate: Option<usize> = None;
-    while let Some(rel) = tail[search_from..].find("{{KEYCLAW") {
-        let abs = scan_start + search_from + rel;
-        // Check if this is a complete placeholder
-        let after = &text[abs..];
-        if PLACEHOLDER_RE.is_match(after) {
-            // Complete placeholder starting here — skip past it
-            let m = PLACEHOLDER_RE.find(after).unwrap();
-            search_from += rel + m.end();
-        } else {
-            candidate = Some(abs);
-            search_from += rel + 1;
+    tail.char_indices().rev().find_map(|(rel, ch)| {
+        if ch != '{' {
+            return None;
         }
+
+        let abs = scan_start + rel;
+        is_partial_placeholder_prefix(&text[abs..]).then_some(abs)
+    })
+}
+
+fn is_partial_placeholder_prefix(text: &str) -> bool {
+    const MARKER: &str = "{{KEYCLAW_SECRET_";
+
+    if text.is_empty() {
+        return false;
+    }
+    if text.len() < MARKER.len() {
+        return MARKER.starts_with(text);
+    }
+    if !text.starts_with(MARKER) {
+        return false;
     }
 
-    // Also check for a trailing `{` that could be the start of `{{`
-    if candidate.is_none() && text.ends_with('{') {
-        candidate = Some(text.len() - 1);
+    let bytes = text.as_bytes();
+    let mut idx = MARKER.len();
+    let prefix_start = idx;
+
+    while idx < bytes.len()
+        && idx < prefix_start + 5
+        && (bytes[idx].is_ascii_alphanumeric() || matches!(bytes[idx], b'*' | b'_' | b'-'))
+    {
+        idx += 1;
+    }
+    if idx == bytes.len() {
+        return true;
+    }
+    if bytes[idx] != b'_' || idx == prefix_start {
+        return false;
     }
 
-    candidate
+    idx += 1;
+    let hash_start = idx;
+    while idx < bytes.len() && idx < hash_start + 16 && bytes[idx].is_ascii_hexdigit() {
+        idx += 1;
+    }
+    if idx == bytes.len() {
+        return true;
+    }
+    if idx != hash_start + 16 || bytes[idx] != b'}' {
+        return false;
+    }
+
+    idx += 1;
+    if idx == bytes.len() {
+        return true;
+    }
+    if bytes[idx] != b'}' {
+        return false;
+    }
+
+    idx + 1 != bytes.len()
 }
 
 pub fn resolve_placeholders<F>(
