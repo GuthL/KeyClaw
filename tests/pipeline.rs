@@ -3,7 +3,7 @@ use std::sync::Arc;
 use keyclaw::errors::{code_of, CODE_STRICT_RESOLVE_FAILED};
 use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::pipeline::Processor;
-use keyclaw::placeholder::{make, EXAMPLE_PLACEHOLDER};
+use keyclaw::placeholder::{contains_complete_placeholder, make, EXAMPLE_PLACEHOLDER};
 use keyclaw::vault::Store;
 
 fn make_processor(strict: bool) -> Processor {
@@ -52,7 +52,7 @@ fn rewrite_detects_and_replaces_secrets() {
 
     assert!(!result.replacements.is_empty());
     let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(rewritten.contains("KEYCLAW_SECRET_"));
+    assert!(contains_complete_placeholder(&rewritten), "{rewritten}");
     assert!(!rewritten.contains("aB3dE5fG"));
 }
 
@@ -114,7 +114,7 @@ fn rewrite_codex_ws_suppresses_notice_for_hidden_context_replacements() {
 
     assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
     let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(rewritten.contains("KEYCLAW_SECRET_"), "{rewritten}");
+    assert!(contains_complete_placeholder(&rewritten), "{rewritten}");
     assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
     assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
 }

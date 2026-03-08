@@ -124,7 +124,7 @@ fn codex_payload_rewritten_before_upstream() {
         capture.body
     );
     assert!(
-        capture.body.contains("{{KEYCLAW_SECRET_"),
+        placeholder::contains_complete_placeholder(&capture.body),
         "no placeholder: {}",
         capture.body
     );
@@ -178,7 +178,7 @@ fn claude_payload_rewritten_before_upstream() {
         capture.body
     );
     assert!(
-        capture.body.contains("{{KEYCLAW_SECRET_"),
+        placeholder::contains_complete_placeholder(&capture.body),
         "no placeholder: {}",
         capture.body
     );

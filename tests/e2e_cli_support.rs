@@ -5,6 +5,8 @@ use std::net::{SocketAddr, TcpListener};
 use std::thread;
 use std::time::Duration;
 
+use keyclaw::placeholder;
+
 #[test]
 fn upstream_guard_drop_releases_listener() {
     let (upstream_url, _rx, upstream_guard) = support::start_upstream();
@@ -46,7 +48,7 @@ fn run_mitm_ignores_ambient_no_proxy() {
         .recv_timeout(Duration::from_secs(2))
         .expect("upstream body");
     assert!(
-        body.contains("{{KEYCLAW_SECRET_"),
+        placeholder::contains_complete_placeholder(&body),
         "ambient NO_PROXY bypassed the proxy: {body}"
     );
 }

@@ -203,7 +203,10 @@ mod tests {
             .0;
 
         assert!(!text.contains(secret), "text={text}");
-        assert!(text.contains("{{KEYCLAW_SECRET_"), "text={text}");
+        assert!(
+            placeholder::contains_complete_placeholder(&text),
+            "text={text}"
+        );
     }
 
     #[test]
