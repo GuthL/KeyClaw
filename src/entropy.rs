@@ -1,8 +1,8 @@
-/// Shannon entropy calculation and high-entropy token detection.
-///
-/// This module provides a standalone entropy scorer that flags tokens with
-/// unusually high information density — a strong heuristic for API keys,
-/// passwords, and other machine-generated secrets that regex rules may miss.
+//! Shannon entropy calculation and high-entropy token detection.
+//!
+//! This module provides a standalone entropy scorer that flags tokens with
+//! unusually high information density — a strong heuristic for API keys,
+//! passwords, and other machine-generated secrets that regex rules may miss.
 
 /// Compute the Shannon entropy (bits per byte) of `input`.
 ///
@@ -59,15 +59,63 @@ pub struct EntropyMatch<'a> {
     pub entropy: f64,
 }
 
-/// Characters that act as token delimiters when splitting input.
-const DELIMITERS: &[char] = &[
-    ' ', '\t', '\n', '\r', '"', '\'', '`', '=', ':', ',', '{', '}', '[', ']', '(', ')', ';', '<',
-    '>', '|', '\\',
-];
+/// Returns true if `ch` is a token delimiter.
+fn is_delimiter(ch: char) -> bool {
+    matches!(
+        ch,
+        ' ' | '\t'
+            | '\n'
+            | '\r'
+            | '"'
+            | '\''
+            | '`'
+            | '='
+            | ':'
+            | ','
+            | '{'
+            | '}'
+            | '['
+            | ']'
+            | '('
+            | ')'
+            | ';'
+            | '<'
+            | '>'
+            | '|'
+            | '\\'
+    )
+}
 
 /// Returns true if `token` consists entirely of ASCII lowercase letters.
-fn is_all_ascii_lowercase(token: &str) -> bool {
+fn is_all_lowercase_alpha(token: &str) -> bool {
     !token.is_empty() && token.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+/// Evaluate a single candidate token and push it into `matches` if it qualifies.
+fn check_token<'a>(
+    input: &'a str,
+    start: usize,
+    end: usize,
+    min_len: usize,
+    threshold: f64,
+    matches: &mut Vec<EntropyMatch<'a>>,
+) {
+    let token = &input[start..end];
+    if token.len() < min_len {
+        return;
+    }
+    if is_all_lowercase_alpha(token) {
+        return;
+    }
+    let entropy = shannon_entropy(token);
+    if entropy >= threshold {
+        matches.push(EntropyMatch {
+            start,
+            end,
+            token,
+            entropy,
+        });
+    }
 }
 
 /// Find all tokens in `input` whose Shannon entropy meets or exceeds
@@ -81,36 +129,25 @@ pub fn find_high_entropy_tokens<'a>(
     min_len: usize,
     threshold: f64,
 ) -> Vec<EntropyMatch<'a>> {
-    let mut results = Vec::new();
-    let mut pos = 0usize;
+    let mut matches = Vec::new();
+    let mut token_start: Option<usize> = None;
 
-    for segment in input.split(|c: char| DELIMITERS.contains(&c)) {
-        // `split` yields the segment starting right after the previous delimiter.
-        // We need the byte offset of this segment within `input`.
-        let start = input[pos..].find(segment).map(|rel| pos + rel).unwrap_or(pos);
-        let end = start + segment.len();
-        pos = end;
-
-        if segment.len() < min_len {
-            continue;
-        }
-
-        if is_all_ascii_lowercase(segment) {
-            continue;
-        }
-
-        let entropy = shannon_entropy(segment);
-        if entropy >= threshold {
-            results.push(EntropyMatch {
-                start,
-                end,
-                token: segment,
-                entropy,
-            });
+    for (idx, ch) in input.char_indices() {
+        if is_delimiter(ch) {
+            if let Some(start) = token_start.take() {
+                check_token(input, start, idx, min_len, threshold, &mut matches);
+            }
+        } else if token_start.is_none() {
+            token_start = Some(idx);
         }
     }
 
-    results
+    // Handle trailing token (no trailing delimiter)
+    if let Some(start) = token_start {
+        check_token(input, start, input.len(), min_len, threshold, &mut matches);
+    }
+
+    matches
 }
 
 #[cfg(test)]
