@@ -235,3 +235,144 @@ fn drain_complete_sse_events(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
 
     events
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{drain_complete_sse_events, BufferedInputJsonDeltaEvent, SseStreamResolver};
+    use crate::gitleaks_rules::RuleSet;
+    use crate::pipeline::Processor;
+    use crate::placeholder;
+    use crate::vault::Store;
+
+    #[test]
+    fn buffered_input_json_delta_event_parses_fragment_and_metadata_lines() {
+        let event = format!(
+            "event: content_block_delta\nid: 7\ndata: {}\n\n",
+            serde_json::json!({
+                "type": "content_block_delta",
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": "{\"alpha\":\"beta"
+                }
+            })
+        );
+
+        let parsed = BufferedInputJsonDeltaEvent::parse(&event).expect("parse input_json_delta");
+
+        assert_eq!(
+            parsed.other_lines,
+            vec![
+                "event: content_block_delta".to_string(),
+                "id: 7".to_string()
+            ]
+        );
+        assert_eq!(parsed.fragment, "{\"alpha\":\"beta");
+    }
+
+    #[test]
+    fn drain_complete_sse_events_leaves_partial_tail_buffered() {
+        let mut buffer = format!(
+            "{}event: ping\ndata: [DONE]\n\ndata: partial",
+            input_json_delta_event("prefix")
+        )
+        .into_bytes();
+
+        let events = drain_complete_sse_events(&mut buffer);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            String::from_utf8(events[1].clone()).expect("utf8"),
+            "event: ping\ndata: [DONE]\n\n"
+        );
+        assert_eq!(buffer, b"data: partial");
+    }
+
+    #[test]
+    fn sse_resolver_passes_through_non_json_events() {
+        let mut resolver = SseStreamResolver::new(test_processor());
+        let event = b"event: ping\ndata: [DONE]\n\n";
+
+        assert_eq!(resolver.process_frame(event), event);
+    }
+
+    #[test]
+    fn sse_resolver_resolves_split_placeholder_without_breaking_utf8_boundaries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = Arc::new(Store::new(
+            temp.path().join("vault.enc"),
+            "test-passphrase".to_string(),
+        ));
+        let secret = "é漢";
+        let id = vault.store_secret(secret).expect("store secret");
+        let placeholder = placeholder::make(&id);
+        let mut resolver = SseStreamResolver::new(test_processor_with_vault(Arc::clone(&vault)));
+
+        let out1 = resolver.process_frame(input_json_delta_event(&placeholder[..1]).as_bytes());
+        let out2 = resolver.process_frame(input_json_delta_event(&placeholder[1..4]).as_bytes());
+        let out3 = resolver.process_frame(input_json_delta_event(&placeholder[4..]).as_bytes());
+
+        assert!(out1.is_empty());
+        assert_eq!(output_fragments(&out2), vec!["".to_string()]);
+
+        let fragments = [output_fragments(&out2), output_fragments(&out3)].concat();
+        assert_eq!(
+            fragments,
+            vec!["".to_string(), "é".to_string(), "漢".to_string()]
+        );
+        assert_eq!(fragments.concat(), secret);
+        assert!(!String::from_utf8(out2)
+            .expect("utf8")
+            .contains(&placeholder));
+        assert!(!String::from_utf8(out3)
+            .expect("utf8")
+            .contains(&placeholder));
+    }
+
+    fn input_json_delta_event(fragment: &str) -> String {
+        format!(
+            "event: content_block_delta\ndata: {}\n\n",
+            serde_json::json!({
+                "type": "content_block_delta",
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": fragment,
+                }
+            })
+        )
+    }
+
+    fn output_fragments(output: &[u8]) -> Vec<String> {
+        String::from_utf8(output.to_vec())
+            .expect("utf8")
+            .split("\n\n")
+            .filter(|event| !event.is_empty())
+            .map(|event| {
+                let mut text = event.to_string();
+                text.push_str("\n\n");
+                BufferedInputJsonDeltaEvent::parse(&text)
+                    .expect("parse output event")
+                    .fragment
+            })
+            .collect()
+    }
+
+    fn test_processor() -> Arc<Processor> {
+        Arc::new(Processor {
+            vault: None,
+            ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
+            max_body_size: 1 << 20,
+            strict_mode: true,
+        })
+    }
+
+    fn test_processor_with_vault(vault: Arc<Store>) -> Arc<Processor> {
+        Arc::new(Processor {
+            vault: Some(vault),
+            ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
+            max_body_size: 1 << 20,
+            strict_mode: true,
+        })
+    }
+}
