@@ -46,6 +46,20 @@ pub fn is_placeholder(s: &str) -> bool {
     )
 }
 
+pub fn contains_complete_placeholder(text: &str) -> bool {
+    let mut cursor = 0usize;
+
+    while let Some(rel) = text[cursor..].find(PLACEHOLDER_MARKER) {
+        let start = cursor + rel;
+        if complete_placeholder_len(&text[start..]).is_some() {
+            return true;
+        }
+        cursor = start + PLACEHOLDER_MARKER.len();
+    }
+
+    false
+}
+
 pub fn replace_secrets<F>(
     input: &str,
     ruleset: &RuleSet,
