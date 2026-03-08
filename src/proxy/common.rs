@@ -229,3 +229,67 @@ fn log_with_level(level: crate::logging::LogLevel, line: String) {
     }
     eprintln!("{}", msg);
 }
+
+#[cfg(test)]
+mod tests {
+    use hudsucker::hyper::{header::HOST, Request, Uri};
+    use hudsucker::Body;
+
+    use super::{allowed, normalize_hosts, request_host};
+
+    #[test]
+    fn request_host_prefers_uri_authority_over_host_header() {
+        let req = Request::builder()
+            .uri("https://Api.OpenAI.com:443/v1/responses")
+            .header(HOST, "ignored.example.com")
+            .body(Body::empty())
+            .expect("request");
+
+        assert_eq!(request_host(&req).as_deref(), Some("api.openai.com"));
+    }
+
+    #[test]
+    fn request_host_falls_back_to_host_header_and_normalizes_ipv6() {
+        let req = Request::builder()
+            .uri(Uri::from_static("/v1/responses"))
+            .header(HOST, " [2001:db8::1]:443 ")
+            .body(Body::empty())
+            .expect("request");
+
+        assert_eq!(request_host(&req).as_deref(), Some("2001:db8::1"));
+    }
+
+    #[test]
+    fn normalize_hosts_trims_case_ports_and_empty_entries() {
+        let hosts = vec![
+            " Api.OpenAI.com ".to_string(),
+            "localhost:8080".to_string(),
+            " [2001:db8::1]:443 ".to_string(),
+            "   ".to_string(),
+        ];
+
+        assert_eq!(
+            normalize_hosts(&hosts),
+            vec![
+                "api.openai.com".to_string(),
+                "localhost".to_string(),
+                "2001:db8::1".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn allowed_matches_exact_suffix_localhost_and_ipv6_hosts() {
+        let allowed_hosts = normalize_hosts(&[
+            "api.openai.com".to_string(),
+            "localhost".to_string(),
+            "[2001:db8::1]:443".to_string(),
+        ]);
+
+        assert!(allowed(&allowed_hosts, "api.openai.com"));
+        assert!(allowed(&allowed_hosts, "chat.api.openai.com"));
+        assert!(allowed(&allowed_hosts, "LOCALHOST:8877"));
+        assert!(allowed(&allowed_hosts, "[2001:db8::1]:443"));
+        assert!(!allowed(&allowed_hosts, "badopenai.com"));
+    }
+}
