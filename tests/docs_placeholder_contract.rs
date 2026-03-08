@@ -28,6 +28,25 @@ fn normalized_agent_guide(path: &str, expected_title: &str) -> String {
     guide.replacen(expected_title, "# AGENT_GUIDE — Agent Guide to KeyClaw", 1)
 }
 
+fn documented_error_codes() -> Vec<String> {
+    let errors = std::fs::read_to_string("src/errors.rs").expect("read src/errors.rs");
+
+    errors
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("pub const CODE_") {
+                return None;
+            }
+
+            let first_quote = trimmed.find('"')?;
+            let rest = &trimmed[first_quote + 1..];
+            let second_quote = rest.find('"')?;
+            Some(rest[..second_quote].to_string())
+        })
+        .collect()
+}
+
 #[test]
 fn docs_describe_the_current_placeholder_shape() {
     let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
@@ -41,24 +60,35 @@ fn docs_describe_the_current_placeholder_shape() {
 #[test]
 fn agent_guides_describe_current_error_codes() {
     let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
+    let claude = std::fs::read_to_string("CLAUDE.md").expect("read CLAUDE.md");
+    let readme = std::fs::read_to_string("README.md").expect("read README.md");
 
-    for expected in [
-        "`mitm_not_effective`",
-        "`body_too_large`",
-        "`invalid_json`",
-        "`request_timeout`",
-        "`strict_resolve_failed`",
-    ] {
+    let expected_codes = documented_error_codes();
+    assert!(
+        !expected_codes.is_empty(),
+        "src/errors.rs should define at least one documented error code"
+    );
+
+    for expected in expected_codes {
+        let rendered = format!("`{expected}`");
         assert!(
-            agents.contains(expected),
-            "AGENTS.md should document shipped error code {expected}: {agents}"
+            agents.contains(&rendered),
+            "AGENTS.md should document shipped error code {rendered}: {agents}"
+        );
+        assert!(
+            claude.contains(&rendered),
+            "CLAUDE.md should document shipped error code {rendered}: {claude}"
+        );
+        assert!(
+            readme.contains(&rendered),
+            "README.md should document shipped error code {rendered}: {readme}"
         );
     }
 
     for stale in ["`blocked_by_leak_policy`", "`gitleaks_unavailable`"] {
         assert!(
-            !agents.contains(stale),
-            "AGENTS.md should not document stale error code {stale}: {agents}"
+            !agents.contains(stale) && !claude.contains(stale) && !readme.contains(stale),
+            "Published docs should not document stale error code {stale}"
         );
     }
 }

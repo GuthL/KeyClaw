@@ -5,6 +5,7 @@ use std::sync::Arc;
 pub const CODE_MITM_NOT_EFFECTIVE: &str = "mitm_not_effective";
 pub const CODE_BODY_TOO_LARGE: &str = "body_too_large";
 pub const CODE_INVALID_JSON: &str = "invalid_json";
+pub const CODE_REQUEST_TIMEOUT: &str = "request_timeout";
 pub const CODE_STRICT_RESOLVE_FAILED: &str = "strict_resolve_failed";
 
 #[derive(Debug, Clone)]
@@ -108,4 +109,3 @@ pub fn code_of<'a>(err: &'a (dyn Error + 'static)) -> Option<&'a str> {
     }
     None
 }
-pub const CODE_REQUEST_TIMEOUT: &str = "request_timeout";
