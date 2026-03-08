@@ -128,10 +128,9 @@ fn codex_payload_rewritten_before_upstream() {
         "no placeholder: {}",
         capture.body
     );
-    assert!(capture
-        .headers
-        .iter()
-        .any(|(k, v)| k == "x-keyclaw-contract" && v == "placeholder:v1"));
+    assert!(capture.headers.iter().any(|(k, v)| {
+        k == placeholder::CONTRACT_MARKER_KEY && v == placeholder::CONTRACT_MARKER_VALUE
+    }));
 }
 
 #[test]

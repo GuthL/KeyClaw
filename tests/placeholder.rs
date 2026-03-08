@@ -1,7 +1,7 @@
 use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::placeholder::{
     contains_complete_placeholder, find_partial_placeholder_start, is_placeholder, make, make_id,
-    replace_secrets, resolve_placeholders, EXAMPLE_PLACEHOLDER,
+    replace_secrets, resolve_placeholders, CONTRACT_MARKER_KEY, EXAMPLE_PLACEHOLDER,
 };
 
 fn bundled_rules() -> RuleSet {
@@ -168,4 +168,9 @@ fn example_placeholder_stays_marker_shaped_but_not_resolvable() {
         !contains_complete_placeholder(EXAMPLE_PLACEHOLDER),
         "example placeholder should not trigger strict response resolution"
     );
+}
+
+#[test]
+fn contract_header_name_matches_the_shipped_header() {
+    assert_eq!(CONTRACT_MARKER_KEY, "x-keyclaw-contract");
 }
