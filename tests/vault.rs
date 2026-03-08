@@ -3,6 +3,13 @@ use std::fs;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct VaultEnvelope {
+    salt: String,
+}
+
 #[test]
 fn vault_encrypts_and_loads() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -163,4 +170,36 @@ fn concurrent_store_secret_preserves_all_entries() {
     for (id, secret) in expected {
         assert_eq!(loaded.get(&id), Some(&secret));
     }
+}
+
+#[test]
+fn vault_reuses_the_same_salt_across_saves_and_restarts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vault.enc");
+    let first_store = keyclaw::vault::Store::new(path.clone(), "test-passphrase".to_string());
+
+    first_store.warm_up().expect("warm new vault");
+    first_store
+        .store_secret("sk-STABLESALT000000000000000000000001")
+        .expect("store first secret");
+    let first_salt = read_vault_salt(&path);
+
+    first_store
+        .store_secret("sk-STABLESALT000000000000000000000002")
+        .expect("store second secret");
+    assert_eq!(read_vault_salt(&path), first_salt);
+
+    let second_store = keyclaw::vault::Store::new(path.clone(), "test-passphrase".to_string());
+    second_store.warm_up().expect("warm existing vault");
+    second_store
+        .store_secret("sk-STABLESALT000000000000000000000003")
+        .expect("store third secret");
+
+    assert_eq!(read_vault_salt(&path), first_salt);
+}
+
+fn read_vault_salt(path: &std::path::Path) -> String {
+    let bytes = fs::read(path).expect("read vault");
+    let envelope: VaultEnvelope = serde_json::from_slice(&bytes).expect("decode envelope");
+    envelope.salt
 }

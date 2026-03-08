@@ -25,6 +25,13 @@ pub struct RewriteResult {
 }
 
 impl Processor {
+    pub fn warm_up(&self) -> Result<(), KeyclawError> {
+        if let Some(vault) = &self.vault {
+            vault.warm_up()?;
+        }
+        Ok(())
+    }
+
     pub fn rewrite_and_evaluate(&self, body: &[u8]) -> Result<RewriteResult, KeyclawError> {
         if self.max_body_size > 0 && (body.len() as i64) > self.max_body_size {
             return Err(KeyclawError::coded(
