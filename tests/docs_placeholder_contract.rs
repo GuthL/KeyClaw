@@ -234,3 +234,24 @@ fn proxy_docs_prefer_sourcing_env_script_and_describe_reboot_behavior() {
         "README.md should explain detached proxy reboot behavior: {readme}"
     );
 }
+
+#[test]
+fn readme_configuration_section_covers_inline_and_persistent_env_overrides() {
+    let readme = std::fs::read_to_string("README.md").expect("read README.md");
+
+    assert!(
+        readme.contains("### Setting Variables"),
+        "README.md should include a dedicated config-setting section: {readme}"
+    );
+    assert!(
+        readme.contains("Inline for one command:")
+            && readme.contains("Persistent for the current shell session:")
+            && readme.contains("Persistent across new shells:"),
+        "README.md should show inline, current-shell, and persistent-shell config flows: {readme}"
+    );
+    assert!(
+        readme.contains("daemon-side settings are read when that proxy process starts")
+            && readme.contains("restart the proxy so the running daemon picks them up"),
+        "README.md should explain that detached proxy config changes require a restart: {readme}"
+    );
+}
