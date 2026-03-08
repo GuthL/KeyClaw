@@ -76,6 +76,8 @@ If CI fails, reproduce the same commands locally before pushing a fix so the fai
 
 Maintainers should use [docs/release/maintainer-checklist.md](docs/release/maintainer-checklist.md) as the release source of truth for artifact naming, verification, publication, and rollback handling.
 
+Tagged releases (`v{version}`) also run `.github/workflows/release.yml`, which builds the supported targets, packages the documented `.tar.gz` archives, generates `SHA256SUMS`, and attaches those assets to a draft GitHub Release for maintainer verification.
+
 When adding new secret patterns, include test cases in `tests/placeholder.rs` that cover:
 - Basic detection and replacement
 - Edge cases (partial matches, embedded in URLs, etc.)
