@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 #[test]
 fn vault_encrypts_and_loads() {
@@ -117,4 +119,48 @@ fn vault_store_secret_fails_on_corrupt_file() {
         .expect_err("corrupt vault should fail");
 
     assert!(err.to_string().contains("vault"));
+}
+
+#[test]
+fn concurrent_store_secret_preserves_all_entries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vault.enc");
+    let store = Arc::new(keyclaw::vault::Store::new(
+        path,
+        "test-passphrase".to_string(),
+    ));
+    let barrier = Arc::new(Barrier::new(3));
+    let secrets = [
+        "sk-CONCURRENT000000000000000000000001",
+        "sk-CONCURRENT000000000000000000000002",
+    ];
+
+    let mut handles = Vec::new();
+    for secret in secrets {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            let id = store.store_secret(secret).expect("store secret");
+            (id, secret.to_string())
+        }));
+    }
+
+    barrier.wait();
+
+    let mut expected = HashMap::new();
+    for handle in handles {
+        let (id, secret) = handle.join().expect("join store thread");
+        expected.insert(id, secret);
+    }
+
+    let loaded = store.load().expect("load");
+    assert_eq!(
+        loaded.len(),
+        expected.len(),
+        "concurrent store lost entries: loaded={loaded:?}, expected={expected:?}"
+    );
+    for (id, secret) in expected {
+        assert_eq!(loaded.get(&id), Some(&secret));
+    }
 }
