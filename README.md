@@ -98,19 +98,37 @@ KeyClaw's first public release intentionally keeps the support matrix narrow:
 
 - Official release binaries: `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`
 - Supported client flows: local Claude Code and Codex traffic that actually routes through the KeyClaw proxy
-- Deferred from v0.x: Windows support, extra protocol families, and configurable notice-injection modes
+- Deferred from v0.x: Windows support and extra protocol families
 
 ### Quick Start — Global Proxy
 
-The simplest way to use KeyClaw. Start the proxy and source the env in one step:
+The simplest way to use KeyClaw is still the source-based flow.
+
+One terminal:
 
 ```bash
-eval "$(keyclaw proxy)"
+keyclaw proxy
+source ~/.keyclaw/env.sh
 claude "what API keys are in my .env?"   # secrets are redacted automatically
 codex "deploy using my AWS credentials"  # same protection for Codex
 ```
 
-`keyclaw proxy` detaches and keeps running in the background. The `eval` wrapper sources `~/.keyclaw/env.sh` in your current shell, setting `HTTP_PROXY`, `HTTPS_PROXY`, `SSL_CERT_FILE`, and related variables so CLI tools route through KeyClaw and trust the local CA.
+Two terminals:
+
+```bash
+# Terminal 1
+keyclaw proxy
+
+# Terminal 2
+source ~/.keyclaw/env.sh
+claude
+```
+
+`keyclaw proxy` detaches and keeps running in the background. It prints `source ~/.keyclaw/env.sh` on stdout, and that script exports `HTTP_PROXY`, `HTTPS_PROXY`, `SSL_CERT_FILE`, and related variables so CLI tools route through KeyClaw and trust the local CA.
+
+Starting the daemon does not reconfigure the current shell automatically. A child process cannot mutate its parent shell environment, so the current shell only routes through KeyClaw after `source ~/.keyclaw/env.sh`.
+
+> **Warning:** `eval "$(keyclaw proxy)"` still works as a shortcut if you trust the local `keyclaw` binary and the generated `~/.keyclaw/env.sh`, but it executes shell code emitted by the command. The documented path is to run `keyclaw proxy` first and then `source ~/.keyclaw/env.sh` yourself.
 
 Manage the proxy lifecycle with:
 
@@ -119,9 +137,19 @@ keyclaw proxy status   # check if the proxy is running
 keyclaw proxy stop     # graceful shutdown
 ```
 
+On Linux with `systemd --user`, you can also keep the daemon coming back after login or reboot:
+
+```bash
+keyclaw proxy autostart enable   # install + enable user autostart service
+keyclaw proxy autostart status   # show autostart service status
+keyclaw proxy autostart disable  # disable + remove user autostart service
+```
+
+Autostart only keeps the daemon alive. Shells still need `source ~/.keyclaw/env.sh` to route CLI traffic through it.
+
 If you want the proxy attached to the current terminal instead, use `keyclaw proxy start --foreground`.
 
-> **Tip:** Add `[ -f ~/.keyclaw/env.sh ] && source ~/.keyclaw/env.sh` to your `~/.bashrc` to auto-route through KeyClaw in every new shell. The script safely validates that the proxy is still running before exporting variables.
+> **Tip:** Add `[ -f ~/.keyclaw/env.sh ] && source ~/.keyclaw/env.sh` to your `~/.bashrc` to auto-route through KeyClaw in every new shell while the proxy is already running. By default KeyClaw does not auto-start after reboot; either start `keyclaw proxy` again after login or use `keyclaw proxy autostart enable` on Linux `systemd --user`. The sourced env script will safely no-op until the daemon is back.
 
 ### Quick Start — MITM Wrapper
 
@@ -192,6 +220,7 @@ KeyClaw is configured via environment variables:
 | `KEYCLAW_DETECTOR_TIMEOUT` | `4s` | Timeout for request-body secret detection and streamed body reads (`250ms`, `4s`, `1m` formats supported) |
 | `KEYCLAW_GITLEAKS_CONFIG` | (bundled rules) | Path to custom gitleaks.toml rule file |
 | `KEYCLAW_LOG_LEVEL` | `info` | Operator log verbosity for stderr runtime messages (`error`, `warn`, `info`, `debug`) |
+| `KEYCLAW_NOTICE_MODE` | `verbose` | Prompt notice injection mode after redaction (`verbose`, `minimal`, `off`) |
 | `KEYCLAW_UNSAFE_LOG` | `false` | Disable normal log scrubbing and log raw secret material for debugging only; unsafe and opt-in |
 | `KEYCLAW_FAIL_CLOSED` | `true` | Fail closed on errors |
 | `KEYCLAW_REQUIRE_MITM_EFFECTIVE` | `true` | Fail if proxy bypass is detected |
@@ -199,6 +228,8 @@ KeyClaw is configured via environment variables:
 KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`. Secret detection uses the bundled gitleaks rules compiled natively into the binary; set `KEYCLAW_GITLEAKS_CONFIG` only when you want to override those rules with your own TOML file.
 
 By default, KeyClaw creates a machine-local vault key next to the encrypted vault and reuses it on later runs. Set `KEYCLAW_VAULT_PASSPHRASE` only when you need to override that key material explicitly. Existing vaults written with the removed built-in default are migrated to a generated local key on the next successful write. If an existing vault cannot be decrypted or its key material is missing, KeyClaw fails closed and tells you how to recover.
+
+`KEYCLAW_NOTICE_MODE=verbose` keeps the current full acknowledgment guidance, `minimal` injects a shorter notice, and `off` suppresses notice injection entirely while still redacting and reinjecting secrets normally.
 
 The only intentional exception to scrubbed runtime logging is `KEYCLAW_UNSAFE_LOG=true`. When enabled, KeyClaw may write raw request fragments to stderr or `~/.keyclaw/mitm.log` to help debug interception problems. Leave it unset for normal use.
 

@@ -16,6 +16,7 @@ pub struct Processor {
     pub ruleset: Arc<RuleSet>,
     pub max_body_size: i64,
     pub strict_mode: bool,
+    pub notice_mode: redaction::NoticeMode,
 }
 
 #[derive(Debug, Clone)]
@@ -154,8 +155,11 @@ impl Processor {
         })?;
 
         // Inject a notice telling the LLM that secrets were redacted
-        let rewritten = if notice_count > 0 {
-            redaction::inject_redaction_notice(&rewritten, notice_count).unwrap_or(rewritten)
+        let rewritten = if notice_count > 0
+            && !matches!(self.notice_mode, redaction::NoticeMode::Off)
+        {
+            redaction::inject_redaction_notice_with_mode(&rewritten, notice_count, self.notice_mode)
+                .unwrap_or(rewritten)
         } else {
             rewritten
         };

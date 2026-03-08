@@ -199,3 +199,38 @@ fn readme_project_structure_shows_split_proxy_and_launcher_modules() {
         );
     }
 }
+
+#[test]
+fn proxy_docs_prefer_sourcing_env_script_and_describe_reboot_behavior() {
+    let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
+    let claude = std::fs::read_to_string("CLAUDE.md").expect("read CLAUDE.md");
+    let readme = std::fs::read_to_string("README.md").expect("read README.md");
+
+    for (name, doc) in [("AGENTS.md", &agents), ("CLAUDE.md", &claude)] {
+        assert!(
+            doc.contains("source ~/.keyclaw/env.sh"),
+            "{name} should point operators at sourcing ~/.keyclaw/env.sh: {doc}"
+        );
+        assert!(
+            !doc.contains("eval \"$(keyclaw proxy)\""),
+            "{name} should not recommend eval-based shell setup anymore: {doc}"
+        );
+    }
+
+    assert!(
+        readme.contains("source ~/.keyclaw/env.sh"),
+        "README.md should point operators at sourcing ~/.keyclaw/env.sh: {readme}"
+    );
+    assert!(
+        readme.contains("One terminal:")
+            && readme.contains("Two terminals:")
+            && readme.contains("> **Warning:** `eval \"$(keyclaw proxy)\"`"),
+        "README.md should lead with one-terminal and two-terminal source-based setup, and keep eval behind a warning: {readme}"
+    );
+
+    assert!(
+        readme.contains("does not auto-start again after reboot")
+            || readme.contains("does not auto-start after reboot"),
+        "README.md should explain detached proxy reboot behavior: {readme}"
+    );
+}

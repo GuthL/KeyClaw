@@ -12,8 +12,9 @@ use crate::errors::{code_of, KeyclawError};
 use crate::pipeline::Processor;
 
 use self::bootstrap::{
-    build_processor, configure_unsafe_logging, run_proxy_detached, run_proxy_foreground,
-    run_proxy_status, run_proxy_stop, Runner,
+    build_processor, configure_unsafe_logging, run_proxy_autostart_disable,
+    run_proxy_autostart_enable, run_proxy_autostart_status, run_proxy_detached,
+    run_proxy_foreground, run_proxy_status, run_proxy_stop, Runner,
 };
 use self::doctor::run_doctor;
 
@@ -71,6 +72,11 @@ pub fn run_cli(args: Vec<String>) -> i32 {
             }
             ProxyAction::Stop => run_proxy_stop(),
             ProxyAction::Status => run_proxy_status(),
+            ProxyAction::Autostart { action } => match action {
+                ProxyAutostartAction::Enable => run_proxy_autostart_enable(),
+                ProxyAutostartAction::Disable => run_proxy_autostart_disable(),
+                ProxyAutostartAction::Status => run_proxy_autostart_status(),
+            },
         },
         CliCommand::RewriteJson => {
             configure_unsafe_logging(&cfg);
@@ -89,6 +95,14 @@ pub fn run_cli(args: Vec<String>) -> i32 {
 enum ProxyAction {
     Start { foreground: bool },
     Stop,
+    Status,
+    Autostart { action: ProxyAutostartAction },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ProxyAutostartAction {
+    Enable,
+    Disable,
     Status,
 }
 
@@ -118,6 +132,26 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
                 },
                 Some(("stop", _)) => ProxyAction::Stop,
                 Some(("status", _)) => ProxyAction::Status,
+                Some(("autostart", autostart_matches)) => {
+                    let action = match autostart_matches.subcommand() {
+                        Some(("enable", _)) => ProxyAutostartAction::Enable,
+                        Some(("disable", _)) => ProxyAutostartAction::Disable,
+                        Some(("status", _)) => ProxyAutostartAction::Status,
+                        Some((name, _)) => {
+                            return Err(clap::Error::raw(
+                                ErrorKind::InvalidSubcommand,
+                                format!("unsupported proxy autostart subcommand `{name}`"),
+                            ))
+                        }
+                        None => {
+                            return Err(clap::Error::raw(
+                                ErrorKind::MissingSubcommand,
+                                "proxy autostart requires a subcommand",
+                            ))
+                        }
+                    };
+                    ProxyAction::Autostart { action }
+                }
                 Some((name, _)) => {
                     return Err(clap::Error::raw(
                         ErrorKind::InvalidSubcommand,
@@ -206,8 +240,20 @@ fn cli() -> clap::Command {
                         ),
                 )
                 .subcommand(clap::Command::new("stop").about("Stop the running proxy daemon"))
+                .subcommand(clap::Command::new("status").about("Show status of the proxy daemon"))
                 .subcommand(
-                    clap::Command::new("status").about("Show status of the proxy daemon"),
+                    clap::Command::new("autostart")
+                        .about("Manage login-time autostart for the proxy daemon")
+                        .subcommand(clap::Command::new("enable").about(
+                            "Install and enable a user-level autostart service for the proxy daemon",
+                        ))
+                        .subcommand(clap::Command::new("disable").about(
+                            "Disable and remove the user-level autostart service for the proxy daemon",
+                        ))
+                        .subcommand(
+                            clap::Command::new("status")
+                                .about("Show status of the proxy autostart service"),
+                        ),
                 ),
         )
         .subcommand(
@@ -362,6 +408,34 @@ mod tests {
             super::parse_cli(vec!["proxy".into(), "status".into()]).unwrap(),
             super::CliCommand::Proxy {
                 action: super::ProxyAction::Status
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cli_proxy_autostart_subcommands() {
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into(), "autostart".into(), "enable".into()]).unwrap(),
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Autostart {
+                    action: super::ProxyAutostartAction::Enable,
+                }
+            }
+        );
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into(), "autostart".into(), "disable".into()]).unwrap(),
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Autostart {
+                    action: super::ProxyAutostartAction::Disable,
+                }
+            }
+        );
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into(), "autostart".into(), "status".into()]).unwrap(),
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Autostart {
+                    action: super::ProxyAutostartAction::Status,
+                }
             }
         );
     }

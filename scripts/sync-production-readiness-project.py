@@ -18,7 +18,7 @@ ISSUE_ONE_APPENDIX = """Decision summary:
 - v0.x vault protection defaults to a generated machine-local `vault.key`; `KEYCLAW_VAULT_PASSPHRASE` remains an explicit override only.
 - README-first documentation plus `SECURITY.md`, `CONTRIBUTING.md`, and the maintainer release checklist is the complete v0.x docs surface; no separate docs site is required before launch.
 - The current scrubbed leveled logging contract is sufficient for v0.x; a full structured logging migration is not a launch blocker.
-- Configurable notice modes are deferred; v0.x keeps the current provider-specific notice behavior.
+- `KEYCLAW_NOTICE_MODE` now ships `verbose`, `minimal`, and `off`; v0.x keeps the current provider-specific injection points while letting operators pick the notice verbosity.
 """
 
 ISSUE_ONE_CHECKED_CRITERIA = {

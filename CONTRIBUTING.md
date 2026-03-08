@@ -59,6 +59,7 @@ cargo test -- --nocapture  # See println output
 When you change public behavior, keep the launch-facing docs aligned:
 
 - README, `SECURITY.md`, and `CONTRIBUTING.md` should agree on the trust boundary, non-goals, setup assumptions, and troubleshooting guidance
+- Proxy setup docs should stay source-first: `keyclaw proxy` starts the daemon, `source ~/.keyclaw/env.sh` wires a shell to it, Linux `keyclaw proxy autostart enable` keeps the daemon alive across login/reboot, and shell env wiring stays separate from daemon autostart
 - Check `cargo run -- --help` and `cargo run -- --version` when CLI examples or command text change
 - Rerun the relevant CLI integration tests when changing command examples, stderr/stdout contracts, or operator guidance
 - Refresh `docs/plans/2026-03-07-production-readiness-project.md` with `scripts/sync-production-readiness-project.py` when production-readiness issues or acceptance criteria change

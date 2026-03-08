@@ -364,6 +364,7 @@ mod tests {
             ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
             max_body_size: 1 << 20,
             strict_mode: true,
+            notice_mode: crate::redaction::NoticeMode::Verbose,
         })
     }
 
@@ -373,6 +374,7 @@ mod tests {
             ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
             max_body_size: 1 << 20,
             strict_mode: true,
+            notice_mode: crate::redaction::NoticeMode::Verbose,
         })
     }
 }

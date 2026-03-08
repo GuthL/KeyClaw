@@ -450,6 +450,14 @@ fn proxy_detaches_by_default_and_prints_stop_instructions() {
         stderr.contains("proxy running in background"),
         "stderr={stderr}"
     );
+    assert!(
+        stderr.contains("does not reconfigure this shell"),
+        "stderr should explain that plain `keyclaw proxy` does not update the current shell env: {stderr}"
+    );
+    assert!(
+        stderr.contains("source") && stderr.contains("env.sh"),
+        "stderr should point users at sourcing env.sh for the current shell: {stderr}"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("source") && stdout.contains("env.sh"),
@@ -482,6 +490,58 @@ fn proxy_detaches_by_default_and_prints_stop_instructions() {
         "proxy listener still bound: {socket_addr}"
     );
     guard.0 = None;
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn proxy_autostart_enable_writes_systemd_unit_and_invokes_systemctl() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fake_bin = temp.path().join("bin");
+    std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+    let systemctl_log = temp.path().join("systemctl.log");
+
+    install_fake_tool(
+        &fake_bin,
+        "systemctl",
+        r#"#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KEYCLAW_TEST_SYSTEMCTL_LOG"
+exit 0
+"#,
+    );
+
+    let mut cmd = keyclaw_command(temp.path());
+    prepend_path(&mut cmd, &fake_bin);
+    let output = cmd
+        .arg("proxy")
+        .arg("autostart")
+        .arg("enable")
+        .env("KEYCLAW_TEST_SYSTEMCTL_LOG", &systemctl_log)
+        .output()
+        .expect("enable autostart");
+
+    assert_eq!(output.status.code(), Some(0));
+    let service_path = temp
+        .path()
+        .join(".config")
+        .join("systemd")
+        .join("user")
+        .join("keyclaw-proxy.service");
+    let service = std::fs::read_to_string(&service_path).expect("read service file");
+    assert!(
+        service.contains("ExecStart=") && service.contains("proxy --foreground"),
+        "service={service}"
+    );
+
+    let calls = std::fs::read_to_string(&systemctl_log).expect("read systemctl log");
+    assert!(
+        calls.contains("--user daemon-reload"),
+        "calls should reload user systemd units: {calls}"
+    );
+    assert!(
+        calls.contains("--user enable --now")
+            && calls.contains(&service_path.display().to_string()),
+        "calls should enable and start the service by path: {calls}"
+    );
 }
 
 #[test]
