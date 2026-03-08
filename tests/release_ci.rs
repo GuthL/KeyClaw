@@ -192,7 +192,7 @@ fn release_packaging_scripts_enforce_archive_contract() {
         verify_script.contains("tar -tzf"),
         "verification script should inspect archive contents: {verify_script}"
     );
-    for required in ["doctor", "proxy", "mitm codex", "mitm claude"] {
+    for required in ["doctor", "proxy", "codex", "claude"] {
         assert!(
             smoke_script.contains(required),
             "smoke script should cover {required}: {smoke_script}"

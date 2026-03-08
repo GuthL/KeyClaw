@@ -19,7 +19,9 @@ fi
 
 work="$(mktemp -d)"
 home="${work}/home"
+bin_dir="${work}/bin"
 mkdir -p "$home"
+mkdir -p "$bin_dir"
 trap 'rm -rf "$work"' EXIT
 
 cat > "${work}/send_request.py" <<'PY'
@@ -90,36 +92,57 @@ run_doctor_smoke() {
 
 run_proxy_smoke() {
   local proxy_log="${work}/proxy.err"
+  local pid_path="${home}/.keyclaw/proxy.pid"
 
   HOME="$home" \
   KEYCLAW_PROXY_ADDR=127.0.0.1:0 \
   KEYCLAW_PROXY_URL=http://127.0.0.1:0 \
   KEYCLAW_VAULT_PATH="${home}/proxy-vault.enc" \
   KEYCLAW_VAULT_PASSPHRASE=test-passphrase \
-  "$bin" proxy >"${work}/proxy.out" 2>"$proxy_log" &
-  local proxy_pid=$!
+  "$bin" proxy >"${work}/proxy.out" 2>"$proxy_log"
+  local status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "keyclaw proxy failed to detach" >&2
+    cat "$proxy_log" >&2
+    exit 1
+  fi
 
-  sleep 2
-  if ! kill -0 "$proxy_pid" 2>/dev/null; then
-    echo "keyclaw proxy exited before smoke shutdown" >&2
+  local proxy_pid=""
+  for _ in $(seq 1 100); do
+    if [ -s "$pid_path" ]; then
+      proxy_pid="$(cat "$pid_path")"
+      if kill -0 "$proxy_pid" 2>/dev/null; then
+        break
+      fi
+    fi
+    sleep 0.1
+  done
+  if [ -z "$proxy_pid" ] || ! kill -0 "$proxy_pid" 2>/dev/null; then
+    echo "detached keyclaw proxy did not stay alive" >&2
     cat "$proxy_log" >&2
     exit 1
   fi
 
   kill -TERM "$proxy_pid"
-  set +e
-  wait "$proxy_pid"
-  local status=$?
-  set -e
+  for _ in $(seq 1 100); do
+    if ! kill -0 "$proxy_pid" 2>/dev/null; then
+      return
+    fi
+    sleep 0.1
+  done
 
-  case "$status" in
-    0|130|143) ;;
-    *)
-      echo "unexpected proxy exit status ${status}" >&2
-      cat "$proxy_log" >&2
-      exit 1
-      ;;
-  esac
+  echo "detached keyclaw proxy did not stop after SIGTERM" >&2
+  cat "$proxy_log" >&2
+  exit 1
+}
+
+install_fake_tool() {
+  local tool="$1"
+  cat > "${bin_dir}/${tool}" <<EOF
+#!/usr/bin/env bash
+exec python3 "${work}/send_request.py" "\$@"
+EOF
+  chmod +x "${bin_dir}/${tool}"
 }
 
 run_mitm_smoke() {
@@ -147,8 +170,10 @@ run_mitm_smoke() {
   proxy_addr="$(pick_free_addr)"
   local payload
   payload="$(printf '{"prompt":"api_key = %s"}' "$secret")"
+  install_fake_tool "$tool"
 
   HOME="$home" \
+  PATH="${bin_dir}:${PATH}" \
   KEYCLAW_PROXY_ADDR="$proxy_addr" \
   KEYCLAW_PROXY_URL="http://${proxy_addr}" \
   KEYCLAW_REQUIRE_MITM_EFFECTIVE=true \
@@ -159,7 +184,7 @@ run_mitm_smoke() {
   KEYCLAW_CLAUDE_HOSTS=127.0.0.1 \
   UPSTREAM_URL="$upstream_url" \
   PAYLOAD="$payload" \
-  "$bin" mitm "$tool" -- python3 "${work}/send_request.py" \
+  "$bin" "$tool" exec --model smoke \
     >"${work}/${tool}.out" 2>"${work}/${tool}.err"
 
   wait "$upstream_pid"
@@ -176,4 +201,4 @@ run_proxy_smoke
 run_mitm_smoke codex "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"
 run_mitm_smoke claude "xY2zW4vU6tS8rQ0pO2nM4lK6jI8hG0f"
 
-echo "smoke ok: doctor, proxy, mitm codex, mitm claude"
+echo "smoke ok: doctor, proxy, codex, claude"
