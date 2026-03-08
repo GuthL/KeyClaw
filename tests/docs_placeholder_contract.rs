@@ -51,3 +51,34 @@ fn agent_guide_points_common_edits_at_split_modules() {
         "AGENTS.md should point CLI command behavior at the split launcher modules: {agents}"
     );
 }
+
+#[test]
+fn agent_module_map_matches_the_current_source_tree() {
+    let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
+
+    for expected in [
+        "`gitleaks_rules.rs`",
+        "`proxy/common.rs`",
+        "`proxy/http.rs`",
+        "`proxy/streaming.rs`",
+        "`proxy/websocket.rs`",
+        "`launcher/bootstrap.rs`",
+        "`launcher/doctor.rs`",
+    ] {
+        assert!(
+            agents.contains(expected),
+            "AGENTS.md should list {expected} in the module map: {agents}"
+        );
+    }
+
+    for stale in [
+        "`policy.rs`",
+        "`detector/embedded.rs`",
+        "`detector/gitleaks.rs`",
+    ] {
+        assert!(
+            !agents.contains(stale),
+            "AGENTS.md should not list stale module {stale}: {agents}"
+        );
+    }
+}

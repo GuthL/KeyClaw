@@ -46,18 +46,23 @@ API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_<prefix>_<16 hex ch
 
 | Module | Purpose | Key Types |
 |--------|---------|-----------|
-| `proxy.rs` | MITM proxy server, HTTP/WS handlers | `Server`, `KeyclawHttpHandler` |
+| `gitleaks_rules.rs` | Bundled gitleaks rule loading + compiled regex matching | `RuleSet` |
 | `pipeline.rs` | Orchestrates rewrite + policy evaluation | `Processor`, `RewriteResult` |
 | `placeholder.rs` | Placeholder parsing, generation, and resolution | `make_id()`, `resolve_placeholders()` |
 | `redaction.rs` | JSON tree walker, notice injection | `walk_json_strings()`, `inject_redaction_notice()` |
 | `vault.rs` | AES-GCM encrypted secret↔placeholder storage | `Store` |
 | `certgen.rs` | Runtime CA cert/key generation via rcgen | `ensure_ca()`, `CaPair` |
-| `policy.rs` | Block/warn/allow decisions from detector findings | `Executor`, `Decision`, `Action` |
-| `detector/embedded.rs` | Built-in regex + entropy secret detection | `EmbeddedDetector` |
-| `detector/gitleaks.rs` | Gitleaks subprocess wrapper | `GitleaksDetector` |
-| `launcher.rs` | CLI subcommands (proxy, mitm, doctor, rewrite-json) | `Runner`, `run_cli()` |
+| `proxy.rs` | Proxy server entrypoint + handler wiring | `Server`, `RunningServer` |
+| `proxy/common.rs` | Shared host checks, response helpers, and operator logging | `allowed()`, `request_host()` |
+| `proxy/http.rs` | HTTP request/response interception | `HttpHandler for KeyclawHttpHandler` |
+| `proxy/streaming.rs` | SSE frame resolution and buffering | `SseStreamResolver` |
+| `proxy/websocket.rs` | WebSocket message redaction and resolution | `WebSocketHandler for KeyclawHttpHandler` |
+| `launcher.rs` | CLI surface and subcommand dispatch | `run_cli()` |
+| `launcher/bootstrap.rs` | Processor/bootstrap setup and launched-tool wiring | `build_processor()`, `Runner` |
+| `launcher/doctor.rs` | Operator health checks | `run_doctor()` |
 | `config.rs` | Environment variable configuration | `Config` |
 | `errors.rs` | Error types with deterministic codes | `KeyclawError` |
+| `logging.rs` | Leveled runtime logger for operator-visible output | `configure()`, `info()` |
 | `logscrub.rs` | Sanitizes secrets from log output | `scrub()` |
 
 ## Common Tasks
