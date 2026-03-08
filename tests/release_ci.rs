@@ -96,6 +96,66 @@ fn release_docs_define_artifacts_and_maintainer_checklist() {
     );
 }
 
+#[test]
+fn tagged_release_workflow_packages_documented_archives_and_checksums() {
+    let workflow = std::fs::read_to_string(".github/workflows/release.yml")
+        .expect("read .github/workflows/release.yml");
+
+    assert!(
+        workflow.contains("tags: [ \"v*\" ]"),
+        "release workflow should trigger on version tags: {workflow}"
+    );
+    assert!(
+        workflow.contains("x86_64-unknown-linux-gnu")
+            && workflow.contains("x86_64-apple-darwin")
+            && workflow.contains("aarch64-apple-darwin"),
+        "release workflow should build every documented release target: {workflow}"
+    );
+    assert!(
+        workflow.contains("cargo build --release --locked --target"),
+        "release workflow should build tagged release binaries: {workflow}"
+    );
+    assert!(
+        workflow.contains("scripts/package-release.sh"),
+        "release workflow should package archives through the shared script: {workflow}"
+    );
+    assert!(
+        workflow.contains("SHA256SUMS"),
+        "release workflow should generate published checksums: {workflow}"
+    );
+    assert!(
+        workflow.contains("softprops/action-gh-release"),
+        "release workflow should attach packaged assets to a GitHub release draft: {workflow}"
+    );
+}
+
+#[test]
+fn release_packaging_scripts_enforce_archive_contract() {
+    let package_script = std::fs::read_to_string("scripts/package-release.sh")
+        .expect("read scripts/package-release.sh");
+    let verify_script = std::fs::read_to_string("scripts/verify-release-contract.sh")
+        .expect("read scripts/verify-release-contract.sh");
+
+    for required in ["README.md", "LICENSE", "SECURITY.md"] {
+        assert!(
+            package_script.contains(required),
+            "package script should ship {required}: {package_script}"
+        );
+    }
+    assert!(
+        package_script.contains("keyclaw-v${version}-${target}.tar.gz"),
+        "package script should emit the documented archive naming: {package_script}"
+    );
+    assert!(
+        verify_script.contains("SHA256SUMS"),
+        "verification script should check the published checksum file: {verify_script}"
+    );
+    assert!(
+        verify_script.contains("tar -tzf"),
+        "verification script should inspect archive contents: {verify_script}"
+    );
+}
+
 fn job_section<'a>(workflow: &'a str, job: &str, next_job: Option<&str>) -> &'a str {
     let marker = format!("\n  {job}:\n");
     let start = workflow.find(&marker).expect("job section start") + 1;
