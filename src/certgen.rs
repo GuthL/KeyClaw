@@ -12,6 +12,7 @@ const CA_KEY_FILENAME: &str = "ca.key";
 const CA_VALIDITY_YEARS: i32 = 10;
 const SECONDS_PER_DAY: u64 = 86_400;
 const BROKEN_CA_RECOVERY: &str = "remove the broken CA files and rerun `keyclaw proxy`";
+type CalendarDate = (i32, u8, u8);
 
 pub struct CaPair {
     pub cert_pem: String,
@@ -100,14 +101,14 @@ pub(crate) fn validate_generated_ca_pair(
     Ok(CaPair { cert_pem, key_pem })
 }
 
-fn ca_validity_window_dates(unix_secs: u64) -> ((i32, u8, u8), (i32, u8, u8)) {
+fn ca_validity_window_dates(unix_secs: u64) -> Result<(CalendarDate, CalendarDate), KeyclawError> {
     let days_since_epoch = (unix_secs / SECONDS_PER_DAY) as i64;
     let not_before = calendar_date_from_days_since_epoch(days_since_epoch);
-    let not_after = add_years_clamped(not_before, CA_VALIDITY_YEARS);
-    (not_before, not_after)
+    let not_after = add_years_clamped(not_before, CA_VALIDITY_YEARS)?;
+    Ok((not_before, not_after))
 }
 
-fn calendar_date_from_days_since_epoch(days_since_epoch: i64) -> (i32, u8, u8) {
+fn calendar_date_from_days_since_epoch(days_since_epoch: i64) -> CalendarDate {
     let z = days_since_epoch + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let day_of_era = z - era * 146_097;
@@ -123,19 +124,24 @@ fn calendar_date_from_days_since_epoch(days_since_epoch: i64) -> (i32, u8, u8) {
     (year as i32, month as u8, day as u8)
 }
 
-fn add_years_clamped((year, month, day): (i32, u8, u8), years: i32) -> (i32, u8, u8) {
+fn add_years_clamped(
+    (year, month, day): CalendarDate,
+    years: i32,
+) -> Result<CalendarDate, KeyclawError> {
     let target_year = year + years;
-    let clamped_day = day.min(days_in_month(target_year, month));
-    (target_year, month, clamped_day)
+    let clamped_day = day.min(days_in_month(target_year, month)?);
+    Ok((target_year, month, clamped_day))
 }
 
-fn days_in_month(year: i32, month: u8) -> u8 {
+fn days_in_month(year: i32, month: u8) -> Result<u8, KeyclawError> {
     match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        _ => unreachable!("invalid month from calendar conversion"),
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => Ok(31),
+        4 | 6 | 9 | 11 => Ok(30),
+        2 if is_leap_year(year) => Ok(29),
+        2 => Ok(28),
+        _ => Err(KeyclawError::uncoded(format!(
+            "calendar conversion produced invalid month {month} for year {year}"
+        ))),
     }
 }
 
@@ -170,7 +176,7 @@ fn generate_and_save(
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let (not_before, not_after) = ca_validity_window_dates(now.as_secs());
+    let (not_before, not_after) = ca_validity_window_dates(now.as_secs())?;
     params.not_before = rcgen::date_time_ymd(not_before.0, not_before.1, not_before.2);
     params.not_after = rcgen::date_time_ymd(not_after.0, not_after.1, not_after.2);
 
@@ -346,7 +352,8 @@ mod tests {
     fn validity_window_keeps_late_year_dates_in_the_same_calendar_year() {
         let late_december_2024 = 1_735_603_200_u64;
 
-        let (not_before, not_after) = super::ca_validity_window_dates(late_december_2024);
+        let (not_before, not_after) =
+            super::ca_validity_window_dates(late_december_2024).expect("validity window");
 
         assert_eq!(not_before, (2024, 12, 31));
         assert_eq!(not_after, (2034, 12, 31));
@@ -356,10 +363,18 @@ mod tests {
     fn validity_window_clamps_leap_day_expiry_to_a_real_calendar_date() {
         let leap_day_2024 = 1_709_164_800_u64;
 
-        let (not_before, not_after) = super::ca_validity_window_dates(leap_day_2024);
+        let (not_before, not_after) =
+            super::ca_validity_window_dates(leap_day_2024).expect("validity window");
 
         assert_eq!(not_before, (2024, 2, 29));
         assert_eq!(not_after, (2034, 2, 28));
+    }
+
+    #[test]
+    fn validity_window_helpers_return_structured_error_for_invalid_month() {
+        let err = super::add_years_clamped((2024, 13, 1), 10).expect_err("invalid month");
+
+        assert!(err.to_string().contains("invalid month 13"), "err={err}");
     }
 
     #[test]
