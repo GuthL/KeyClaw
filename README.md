@@ -42,14 +42,14 @@ AI coding assistants like **Claude Code** and **OpenAI Codex** are incredibly po
 └─────────────┘     └──────────────────────────────────────┘     └─────────────┘
                                        ▲
                                        │
-                            ┌──────────┴─────────┐
+                            ┌──────────┴──────────┐
                             │  ~/.keyclaw/        │
                             │  ├── vault.enc      │  AES-GCM encrypted
                             │  ├── vault.key      │  Machine-local key
                             │  ├── ca.crt         │  Auto-generated
                             │  ├── ca.key         │  Per-machine
                             │  └── env.sh         │  Shell integration
-                            └────────────────────┘
+                            └─────────────────────┘
 ```
 
 ### Detection
