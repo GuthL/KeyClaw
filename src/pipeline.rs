@@ -34,70 +34,25 @@ impl Processor {
     }
 
     pub fn rewrite_and_evaluate(&self, body: &[u8]) -> Result<RewriteResult, KeyclawError> {
-        if self.max_body_size > 0 && (body.len() as i64) > self.max_body_size {
-            return Err(KeyclawError::coded(
-                CODE_BODY_TOO_LARGE,
-                "request body exceeds max body size",
-            ));
-        }
-
-        let ruleset = &self.ruleset;
-        let mut replacements: Vec<Replacement> = Vec::new();
-        let rewritten = redaction::walk_message_content(body, |s| {
-            let (out, reps) = placeholder::replace_secrets(s, ruleset, |secret| {
-                if let Some(vault) = &self.vault {
-                    vault.store_secret(secret)
-                } else {
-                    Ok(placeholder::make_id(secret))
-                }
-            })?;
-            replacements.extend(reps);
-            Ok(out)
+        self.rewrite_json_messages(body, |body, rewrite| {
+            redaction::walk_message_content(body, |text| rewrite(text))
         })
-        .map_err(|e| KeyclawError::coded_with_source(CODE_INVALID_JSON, "rewrite failed", e))?;
-
-        self.finalize_rewrite(rewritten, replacements)
     }
 
     pub fn rewrite_and_evaluate_input_only(
         &self,
         body: &[u8],
     ) -> Result<RewriteResult, KeyclawError> {
-        if self.max_body_size > 0 && (body.len() as i64) > self.max_body_size {
-            return Err(KeyclawError::coded(
-                CODE_BODY_TOO_LARGE,
-                "request body exceeds max body size",
-            ));
-        }
-
-        let ruleset = &self.ruleset;
-        let mut replacements: Vec<Replacement> = Vec::new();
-        let rewritten = redaction::walk_input_message_content(body, |s| {
-            let (out, reps) = placeholder::replace_secrets(s, ruleset, |secret| {
-                if let Some(vault) = &self.vault {
-                    vault.store_secret(secret)
-                } else {
-                    Ok(placeholder::make_id(secret))
-                }
-            })?;
-            replacements.extend(reps);
-            Ok(out)
+        self.rewrite_json_messages(body, |body, rewrite| {
+            redaction::walk_input_message_content(body, |text| rewrite(text))
         })
-        .map_err(|e| KeyclawError::coded_with_source(CODE_INVALID_JSON, "rewrite failed", e))?;
-
-        self.finalize_rewrite(rewritten, replacements)
     }
 
     pub fn rewrite_and_evaluate_codex_ws(
         &self,
         body: &[u8],
     ) -> Result<RewriteResult, KeyclawError> {
-        if self.max_body_size > 0 && (body.len() as i64) > self.max_body_size {
-            return Err(KeyclawError::coded(
-                CODE_BODY_TOO_LARGE,
-                "request body exceeds max body size",
-            ));
-        }
+        self.ensure_body_within_limit(body.len())?;
 
         let ruleset = &self.ruleset;
         let mut parsed: Value = serde_json::from_slice(body)
@@ -111,12 +66,12 @@ impl Processor {
                     let last_user_index = arr.iter().rposition(is_user_message);
                     for (idx, item) in arr.iter_mut().enumerate() {
                         let before = replacements.len();
-                        rewrite_message_item(
-                            item,
-                            ruleset,
-                            self.vault.as_ref(),
-                            &mut replacements,
-                        )?;
+                        redaction::rewrite_message_content_fields(item, &mut |s| {
+                            let (rewritten, reps) =
+                                rewrite_string(s, ruleset, self.vault.as_ref())?;
+                            replacements.extend(reps);
+                            Ok(rewritten)
+                        })?;
                         if Some(idx) == last_user_index {
                             notice_replacements += replacements.len() - before;
                         }
@@ -215,6 +170,38 @@ impl Processor {
             format!("replaced {} secrets", replacements.len())
         }
     }
+
+    fn rewrite_json_messages<F>(&self, body: &[u8], walk: F) -> Result<RewriteResult, KeyclawError>
+    where
+        F: for<'a> FnOnce(
+            &[u8],
+            &'a mut dyn FnMut(&str) -> Result<String, KeyclawError>,
+        ) -> Result<Vec<u8>, KeyclawError>,
+    {
+        self.ensure_body_within_limit(body.len())?;
+
+        let mut replacements: Vec<Replacement> = Vec::new();
+        let mut rewrite = |input: &str| {
+            let (rewritten, reps) = rewrite_string(input, &self.ruleset, self.vault.as_ref())?;
+            replacements.extend(reps);
+            Ok(rewritten)
+        };
+        let rewritten = walk(body, &mut rewrite)
+            .map_err(|e| KeyclawError::coded_with_source(CODE_INVALID_JSON, "rewrite failed", e))?;
+
+        self.finalize_rewrite(rewritten, replacements)
+    }
+
+    fn ensure_body_within_limit(&self, body_len: usize) -> Result<(), KeyclawError> {
+        if self.max_body_size > 0 && (body_len as i64) > self.max_body_size {
+            Err(KeyclawError::coded(
+                CODE_BODY_TOO_LARGE,
+                "request body exceeds max body size",
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 fn is_user_message(item: &Value) -> bool {
@@ -222,42 +209,6 @@ fn is_user_message(item: &Value) -> bool {
         .and_then(|obj| obj.get("role"))
         .and_then(Value::as_str)
         == Some("user")
-}
-
-fn rewrite_message_item(
-    item: &mut Value,
-    ruleset: &RuleSet,
-    vault: Option<&Arc<Store>>,
-    replacements: &mut Vec<Replacement>,
-) -> Result<(), KeyclawError> {
-    let obj = match item.as_object_mut() {
-        Some(obj) => obj,
-        None => return Ok(()),
-    };
-
-    match obj.get("content") {
-        Some(Value::String(s)) => {
-            let (rewritten, reps) = rewrite_string(s, ruleset, vault)?;
-            replacements.extend(reps);
-            obj.insert("content".to_string(), Value::String(rewritten));
-        }
-        Some(Value::Array(_)) => {
-            if let Some(Value::Array(arr)) = obj.get_mut("content") {
-                for block in arr.iter_mut() {
-                    if let Some(block_obj) = block.as_object_mut() {
-                        if let Some(Value::String(s)) = block_obj.get("text") {
-                            let (rewritten, reps) = rewrite_string(s, ruleset, vault)?;
-                            replacements.extend(reps);
-                            block_obj.insert("text".to_string(), Value::String(rewritten));
-                        }
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-
-    Ok(())
 }
 
 fn rewrite_string(
@@ -272,4 +223,37 @@ fn rewrite_string(
             Ok(placeholder::make_id(secret))
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::Processor;
+    use crate::errors::{code_of, CODE_BODY_TOO_LARGE};
+    use crate::gitleaks_rules::RuleSet;
+
+    fn processor_with_limit(max_body_size: i64) -> Processor {
+        Processor {
+            vault: None,
+            ruleset: Arc::new(RuleSet {
+                rules: Vec::new(),
+                skipped_rules: 0,
+            }),
+            max_body_size,
+            strict_mode: true,
+            notice_mode: crate::redaction::NoticeMode::Verbose,
+        }
+    }
+
+    #[test]
+    fn ensure_body_within_limit_uses_shared_body_too_large_error() {
+        let processor = processor_with_limit(4);
+
+        let err = processor
+            .ensure_body_within_limit(5)
+            .expect_err("limit should reject oversized bodies");
+
+        assert_eq!(code_of(&err), Some(CODE_BODY_TOO_LARGE));
+    }
 }
