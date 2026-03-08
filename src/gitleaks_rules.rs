@@ -3,7 +3,10 @@ use std::path::Path;
 use regex::Regex;
 use serde::Deserialize;
 
+use crate::entropy::EntropyConfig;
 use crate::errors::KeyclawError;
+
+const ENTROPY_RULE_ID: &str = "entropy";
 
 /// A single compiled gitleaks rule ready for matching.
 pub struct Rule {
@@ -18,6 +21,7 @@ pub struct Rule {
 pub struct RuleSet {
     pub rules: Vec<Rule>,
     pub skipped_rules: usize,
+    pub entropy_config: EntropyConfig,
 }
 
 // ── TOML deserialization shapes ──────────────────────────────
@@ -83,6 +87,7 @@ impl RuleSet {
         Ok(RuleSet {
             rules,
             skipped_rules: skipped,
+            entropy_config: EntropyConfig::default(),
         })
     }
 
@@ -136,6 +141,30 @@ impl RuleSet {
                     start,
                     end,
                     secret,
+                });
+            }
+        }
+
+        // Entropy-based detection pass
+        if self.entropy_config.enabled {
+            for em in crate::entropy::find_high_entropy_tokens(
+                input,
+                self.entropy_config.min_len,
+                self.entropy_config.threshold,
+            ) {
+                // Skip if overlaps with an existing regex match
+                if matches.iter().any(|m| m.start < em.end && em.start < m.end) {
+                    continue;
+                }
+                // Skip if inside an existing placeholder
+                if inside_placeholder(input, em.start, em.end) {
+                    continue;
+                }
+                matches.push(SecretMatch {
+                    rule_id: ENTROPY_RULE_ID,
+                    start: em.start,
+                    end: em.end,
+                    secret: em.token,
                 });
             }
         }
@@ -201,6 +230,37 @@ regex = '[a-f0-9]{16}'
             1,
             "invalid marker-shaped text should still be scanned"
         );
+    }
+
+    #[test]
+    fn find_secrets_includes_entropy_matches() {
+        use crate::entropy::EntropyConfig;
+        let rules = RuleSet {
+            rules: Vec::new(),
+            skipped_rules: 0,
+            entropy_config: EntropyConfig::default(),
+        };
+        let input = "token=aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+        let matches = rules.find_secrets(input);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].rule_id, "entropy");
+        assert_eq!(matches[0].secret, "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v");
+    }
+
+    #[test]
+    fn find_secrets_entropy_disabled() {
+        use crate::entropy::EntropyConfig;
+        let rules = RuleSet {
+            rules: Vec::new(),
+            skipped_rules: 0,
+            entropy_config: EntropyConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        };
+        let input = "token=aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+        let matches = rules.find_secrets(input);
+        assert!(matches.is_empty());
     }
 
     #[test]

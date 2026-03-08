@@ -1,5 +1,6 @@
 pub mod certgen;
 pub mod config;
+pub mod entropy;
 pub mod errors;
 pub mod gitleaks_rules;
 pub mod launcher;
