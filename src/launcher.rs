@@ -4,7 +4,8 @@ mod doctor;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
-use clap::{Arg, ColorChoice};
+use clap::error::ErrorKind;
+use clap::{Arg, ArgMatches, ColorChoice};
 
 use crate::config::Config;
 use crate::errors::{code_of, KeyclawError};
@@ -60,6 +61,7 @@ pub fn run_cli(args: Vec<String>) -> i32 {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum CliCommand {
     Doctor,
     Mitm {
@@ -79,17 +81,34 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
         Some(("proxy", _)) => Ok(CliCommand::Proxy),
         Some(("rewrite-json", _)) => Ok(CliCommand::RewriteJson),
         Some(("mitm", subcommand)) => Ok(CliCommand::Mitm {
-            tool: subcommand
-                .get_one::<String>("tool")
-                .expect("required tool")
-                .to_string(),
+            tool: required_string_arg(subcommand, "tool", "mitm")?,
             child_args: subcommand
                 .get_many::<String>("child_args")
                 .map(|values| values.cloned().collect())
                 .unwrap_or_default(),
         }),
-        _ => unreachable!("subcommand is required"),
+        Some((name, _)) => Err(clap::Error::raw(
+            ErrorKind::InvalidSubcommand,
+            format!("unsupported subcommand `{name}`"),
+        )),
+        None => Err(clap::Error::raw(
+            ErrorKind::MissingSubcommand,
+            "a subcommand is required",
+        )),
     }
+}
+
+fn required_string_arg(
+    matches: &ArgMatches,
+    name: &str,
+    subcommand: &str,
+) -> Result<String, clap::Error> {
+    matches.get_one::<String>(name).cloned().ok_or_else(|| {
+        clap::Error::raw(
+            ErrorKind::MissingRequiredArgument,
+            format!("missing required argument `{name}` for `{subcommand}`"),
+        )
+    })
 }
 
 fn cli() -> clap::Command {
@@ -179,6 +198,40 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::process::Command;
+
+    #[test]
+    fn parse_cli_routes_simple_subcommands() {
+        assert_eq!(
+            super::parse_cli(vec!["doctor".into()]).unwrap(),
+            super::CliCommand::Doctor
+        );
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into()]).unwrap(),
+            super::CliCommand::Proxy
+        );
+        assert_eq!(
+            super::parse_cli(vec!["rewrite-json".into()]).unwrap(),
+            super::CliCommand::RewriteJson
+        );
+    }
+
+    #[test]
+    fn parse_cli_extracts_mitm_tool_and_child_args() {
+        assert_eq!(
+            super::parse_cli(vec![
+                "mitm".into(),
+                "codex".into(),
+                "exec".into(),
+                "--model".into(),
+                "gpt-5".into(),
+            ])
+            .unwrap(),
+            super::CliCommand::Mitm {
+                tool: "codex".into(),
+                child_args: vec!["exec".into(), "--model".into(), "gpt-5".into()],
+            }
+        );
+    }
 
     #[test]
     fn launcher_bypass_risk_detects_exact_host_matches() {
