@@ -21,14 +21,14 @@ The binary is at `./target/release/keyclaw`. No external services needed for bui
 ### Request Flow (outbound)
 
 ```
-User CLI → KeyClaw Proxy → detect secrets → replace with {{KEYCLAW_SECRET_xxx}}
+User CLI → KeyClaw Proxy → detect secrets → replace with {{KEYCLAW_SECRET_<prefix>_<16 hex chars>}}
 → store mapping in encrypted vault → forward sanitized request to API
 ```
 
 ### Response Flow (inbound)
 
 ```
-API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_xxx}} placeholders
+API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_<prefix>_<16 hex chars>}} placeholders
 → resolve from vault → reinject real secrets → forward to CLI
 ```
 
@@ -48,7 +48,7 @@ API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_xxx}} placeholders
 |--------|---------|-----------|
 | `proxy.rs` | MITM proxy server, HTTP/WS handlers | `Server`, `KeyclawHttpHandler` |
 | `pipeline.rs` | Orchestrates rewrite + policy evaluation | `Processor`, `RewriteResult` |
-| `placeholder.rs` | Secret detection regex, placeholder generation | `replace_secrets()`, `resolve_placeholders()` |
+| `placeholder.rs` | Placeholder parsing, generation, and resolution | `make_id()`, `resolve_placeholders()` |
 | `redaction.rs` | JSON tree walker, notice injection | `walk_json_strings()`, `inject_redaction_notice()` |
 | `vault.rs` | AES-GCM encrypted secret↔placeholder storage | `Store` |
 | `certgen.rs` | Runtime CA cert/key generation via rcgen | `ensure_ca()`, `CaPair` |
@@ -64,7 +64,7 @@ API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_xxx}} placeholders
 
 ### Adding a new secret pattern
 
-Edit `src/placeholder.rs` → `replace_secrets()`. Add a new `rewrite()` or `rewrite_with_generic_regex()` call with your regex pattern. The function chains transformations — add yours to the chain.
+Edit `gitleaks.toml` to add or adjust the bundled rule, then use `tests/placeholder.rs` and `tests/integration_proxy.rs` to confirm the rewritten placeholder and round-trip resolution behavior. If the loading or compilation behavior itself needs to change, edit `src/gitleaks_rules.rs`.
 
 ### Changing proxy behavior
 
@@ -87,9 +87,10 @@ Edit `src/redaction.rs` → `inject_redaction_notice()`. The notice is injected 
 
 ### Placeholder format
 ```
-{{KEYCLAW_SECRET_<16 hex chars>}}
+{{KEYCLAW_SECRET_<prefix>_<16 hex chars>}}
 ```
-Example: `{{KEYCLAW_SECRET_e5edb9c02dc4acd3}}`
+The prefix is up to 5 visible characters derived from the secret, followed by a 16-hex SHA-256 digest fragment.
+Example: `{{KEYCLAW_SECRET_api_k_77dc0005c514277d}}`
 
 ### Vault path
 ```
