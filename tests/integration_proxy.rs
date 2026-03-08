@@ -288,10 +288,8 @@ fn response_placeholders_resolved_back_to_secrets() {
     );
     // Check no *real* placeholders remain (the redaction notice contains an example
     // `{{KEYCLAW_SECRET_xxxx}}` which is fine — it doesn't match the full pattern).
-    let real_placeholder_re =
-        regex::Regex::new(r"\{\{KEYCLAW_SECRET_[A-Za-z0-9*_-]{1,5}_[a-f0-9]{16}\}\}").unwrap();
     assert!(
-        !real_placeholder_re.is_match(&resp_body),
+        !placeholder::contains_complete_placeholder(&resp_body),
         "unresolved real placeholder in response: {}",
         resp_body
     );
@@ -573,10 +571,8 @@ fn chunked_non_sse_responses_are_resolved_as_normal_bodies() {
         resp_body.contains(CODEX_SECRET),
         "secret not reinjected in chunked response: {resp_body}"
     );
-    let real_placeholder_re =
-        regex::Regex::new(r"\{\{KEYCLAW_SECRET_[A-Za-z0-9*_-]{1,5}_[a-f0-9]{16}\}\}").unwrap();
     assert!(
-        !real_placeholder_re.is_match(&resp_body),
+        !placeholder::contains_complete_placeholder(&resp_body),
         "placeholder leaked in chunked response: {resp_body}"
     );
 }

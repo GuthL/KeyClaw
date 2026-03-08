@@ -1,7 +1,7 @@
 use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::placeholder::{
-    find_partial_placeholder_start, is_placeholder, make, make_id, replace_secrets,
-    resolve_placeholders,
+    contains_complete_placeholder, find_partial_placeholder_start, is_placeholder, make, make_id,
+    replace_secrets, resolve_placeholders,
 };
 
 fn bundled_rules() -> RuleSet {
@@ -127,4 +127,19 @@ fn resolve_placeholders_handles_star_prefixed_ids() {
     .expect("resolve placeholder");
 
     assert_eq!(resolved, secret);
+}
+
+#[test]
+fn complete_placeholder_detection_matches_only_real_placeholders() {
+    let placeholder = make("prefx_0123456789abcdef");
+
+    assert!(contains_complete_placeholder(&format!(
+        "value {placeholder}"
+    )));
+    assert!(!contains_complete_placeholder(
+        "value {{KEYCLAW_SECRET_xxxx}}"
+    ));
+    assert!(!contains_complete_placeholder(
+        "value {{KEYCLAW_SECRET_prefx_0123456789abcde"
+    ));
 }
