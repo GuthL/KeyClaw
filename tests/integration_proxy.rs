@@ -498,6 +498,68 @@ fn sse_input_json_delta_fragments_resolve_split_placeholders() {
 }
 
 #[test]
+fn chunked_non_sse_responses_are_resolved_as_normal_bodies() {
+    let (upstream_url, rx, _upstream_guard) = start_chunked_echo_upstream();
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+    let expected_placeholder = placeholder::make(&placeholder::make_id(CODEX_SECRET));
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+
+    let client = Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+
+    let resp = client
+        .post(&upstream_url)
+        .header("content-type", "application/json")
+        .body(format!(
+            r#"{{"messages":[{{"content":"api_key = {}"}}]}}"#,
+            CODEX_SECRET
+        ))
+        .send()
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let capture = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream capture");
+    assert!(
+        capture.body.contains(&expected_placeholder),
+        "expected upstream to receive exact placeholder {expected_placeholder}, got {}",
+        capture.body
+    );
+
+    let resp_body = resp.text().expect("response body");
+    assert!(
+        resp_body.contains(CODEX_SECRET),
+        "secret not reinjected in chunked response: {resp_body}"
+    );
+    let real_placeholder_re =
+        regex::Regex::new(r"\{\{KEYCLAW_SECRET_[A-Za-z0-9*_-]{1,5}_[a-f0-9]{16}\}\}").unwrap();
+    assert!(
+        !real_placeholder_re.is_match(&resp_body),
+        "placeholder leaked in chunked response: {resp_body}"
+    );
+}
+
+#[test]
 fn upstream_guard_drop_releases_listener() {
     let (upstream_url, _rx, upstream_guard) = start_upstream();
     let addr = url_socket_addr(&upstream_url);
@@ -733,6 +795,45 @@ fn start_sse_upstream(
                     tiny_http::Header::from_bytes(&b"content-type"[..], &b"text/event-stream"[..])
                         .unwrap(),
                 )
+                .with_status_code(StatusCode(200)),
+        );
+    });
+
+    (format!("http://{}", addr), rx, guard)
+}
+
+fn start_chunked_echo_upstream() -> (String, mpsc::Receiver<UpstreamCapture>, UpstreamGuard) {
+    let listener =
+        TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = TinyServer::from_listener(listener, None).expect("server");
+
+    let (tx, rx) = mpsc::channel();
+
+    let guard = spawn_upstream(server, move |mut req| {
+        let headers: Vec<(String, String)> = req
+            .headers()
+            .iter()
+            .map(|h| {
+                (
+                    h.field.as_str().as_str().to_lowercase(),
+                    h.value.as_str().to_string(),
+                )
+            })
+            .collect();
+        let mut body = String::new();
+        let _ = req.as_reader().read_to_string(&mut body);
+        let _ = tx.send(UpstreamCapture {
+            body: body.clone(),
+            headers,
+        });
+        let _ = req.respond(
+            Response::from_string(body)
+                .with_header(
+                    tiny_http::Header::from_bytes(&b"content-type"[..], &b"application/json"[..])
+                        .unwrap(),
+                )
+                .with_chunked_threshold(0)
                 .with_status_code(StatusCode(200)),
         );
     });

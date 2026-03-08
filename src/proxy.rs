@@ -11,7 +11,7 @@ use http_body_util::{BodyExt, Full};
 use hudsucker::{
     certificate_authority::RcgenAuthority,
     hyper::{
-        header::{CONTENT_LENGTH, CONTENT_TYPE, HOST},
+        header::{CONTENT_LENGTH, CONTENT_TYPE, HOST, TRANSFER_ENCODING},
         Method, Request, Response, StatusCode,
     },
     rcgen::{Issuer, KeyPair},
@@ -660,31 +660,19 @@ impl HttpHandler for KeyclawHttpHandler {
     }
 
     async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
-        // SSE/streaming: pass through without buffering
-        let is_streaming = res
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|ct| ct.contains("text/event-stream") || ct.contains("stream"))
-            .unwrap_or(false)
-            || res
-                .headers()
-                .get("transfer-encoding")
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.contains("chunked"))
-                .unwrap_or(false);
+        let is_sse = response_is_sse(&res);
 
         if res.status() == StatusCode::SWITCHING_PROTOCOLS || res.status().is_informational() {
             return res;
         }
 
-        // SSE/streaming: wrap body to resolve placeholders per-chunk with carry-over
-        // for placeholders that span frame boundaries.
-        if is_streaming {
+        // SSE: resolve placeholders per chunk with carry-over for placeholders
+        // that span event boundaries while preserving streaming behavior.
+        if is_sse {
             let processor = Arc::clone(&self.processor);
             let (mut parts, body) = res.into_parts();
             let mut sse_resolver = SseStreamResolver::new(processor);
-            // Streaming placeholder resolution can change frame sizes, so any
+            // Per-event placeholder resolution can change frame sizes, so any
             // upstream content-length is no longer reliable.
             parts.headers.remove(CONTENT_LENGTH);
             let new_body = body
@@ -702,7 +690,7 @@ impl HttpHandler for KeyclawHttpHandler {
         }
 
         // Non-streaming: collect, resolve placeholders, forward
-        let (parts, body) = res.into_parts();
+        let (mut parts, body) = res.into_parts();
         let collected = match body.collect().await {
             Ok(c) => c,
             Err(_) => return Response::from_parts(parts, Body::empty()),
@@ -723,6 +711,7 @@ impl HttpHandler for KeyclawHttpHandler {
             }
         }
 
+        parts.headers.remove(TRANSFER_ENCODING);
         let mut resp = Response::from_parts(parts, body_from_vec(body_bytes.clone()));
         if let Ok(v) = body_bytes.len().to_string().parse() {
             resp.headers_mut().insert(CONTENT_LENGTH, v);
@@ -843,6 +832,15 @@ fn build_ca_authority(cert_pem: &str, key_pem: &str) -> Result<RcgenAuthority, K
 
 fn body_from_vec(bytes: Vec<u8>) -> Body {
     Full::new(hudsucker::hyper::body::Bytes::from(bytes)).into()
+}
+
+fn response_is_sse(res: &Response<Body>) -> bool {
+    res.headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|ct| ct.split(';').next())
+        .map(|ct| ct.trim().eq_ignore_ascii_case("text/event-stream"))
+        .unwrap_or(false)
 }
 
 fn request_host(req: &Request<Body>) -> Option<String> {
