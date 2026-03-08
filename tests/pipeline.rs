@@ -119,6 +119,30 @@ fn rewrite_input_only_skips_developer_messages() {
 }
 
 #[test]
+fn rewrite_skips_non_user_messages_in_general_mode() {
+    let processor = make_processor(false);
+
+    let body = br#"{
+        "messages":[
+            {"role":"developer","content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"},
+            {"role":"assistant","content":"api_key = zY8xW6vU4tS2rQ0pN8mL6kJ4hG2fD0s"},
+            {"role":"user","content":"test"}
+        ]
+    }"#;
+    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
+
+    assert!(result.replacements.is_empty(), "{:?}", result.replacements);
+    let rewritten = String::from_utf8_lossy(&result.body);
+    assert!(rewritten.contains(r#""role":"developer""#), "{rewritten}");
+    assert!(rewritten.contains("api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
+    assert!(rewritten.contains(r#""role":"assistant""#), "{rewritten}");
+    assert!(rewritten.contains("api_key = zY8xW6vU4tS2rQ0pN8mL6kJ4hG2fD0s"));
+    assert!(rewritten.contains(r#""role":"user""#), "{rewritten}");
+    assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
+    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
+}
+
+#[test]
 fn rewrite_codex_ws_suppresses_notice_for_hidden_context_replacements() {
     let processor = make_processor(false);
 
@@ -135,6 +159,32 @@ fn rewrite_codex_ws_suppresses_notice_for_hidden_context_replacements() {
     assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
     let rewritten = String::from_utf8_lossy(&result.body);
     assert!(contains_complete_placeholder(&rewritten), "{rewritten}");
+    assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
+    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
+}
+
+#[test]
+fn rewrite_codex_ws_skips_non_user_messages() {
+    let processor = make_processor(false);
+
+    let body = br#"{
+        "input":[
+            {"role":"developer","type":"message","content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"},
+            {"role":"assistant","type":"message","content":"api_key = zY8xW6vU4tS2rQ0pN8mL6kJ4hG2fD0s"},
+            {"role":"user","type":"message","content":"test"}
+        ]
+    }"#;
+    let result = processor
+        .rewrite_and_evaluate_codex_ws(body)
+        .expect("rewrite");
+
+    assert!(result.replacements.is_empty(), "{:?}", result.replacements);
+    let rewritten = String::from_utf8_lossy(&result.body);
+    assert!(rewritten.contains(r#""role":"developer""#), "{rewritten}");
+    assert!(rewritten.contains("api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
+    assert!(rewritten.contains(r#""role":"assistant""#), "{rewritten}");
+    assert!(rewritten.contains("api_key = zY8xW6vU4tS2rQ0pN8mL6kJ4hG2fD0s"));
+    assert!(rewritten.contains(r#""role":"user""#), "{rewritten}");
     assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
     assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
 }
