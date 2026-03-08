@@ -84,11 +84,13 @@ When adding new secret patterns, include test cases in `tests/placeholder.rs` th
 - Edge cases (partial matches, embedded in URLs, etc.)
 - Round-trip: detect → placeholder → resolve → original
 
+The bundled detection source of truth is `gitleaks.toml`; `src/gitleaks_rules.rs` is the loader/compiler for those rules.
+
 ## Areas for Contribution
 
 ### Good First Issues
 
-- Adding new secret detection patterns to `src/placeholder.rs`
+- Adding new secret detection patterns to `gitleaks.toml`
 - Improving log messages and error descriptions
 - Adding configuration options to `src/config.rs`
 

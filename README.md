@@ -250,16 +250,16 @@ src/
 ├── lib.rs             # Module declarations
 ├── certgen.rs         # Runtime CA certificate generation
 ├── config.rs          # Environment-based configuration
-├── gitleaks_rules.rs  # Gitleaks TOML parser + native regex compilation
+├── gitleaks_rules.rs  # Bundled gitleaks rule loading + native regex compilation
 ├── proxy.rs           # MITM proxy (HTTP, SSE, WebSocket)
 ├── pipeline.rs        # Request rewrite pipeline
-├── placeholder.rs     # Secret detection and placeholder replacement
+├── placeholder.rs     # Placeholder parsing, generation, and resolution
 ├── redaction.rs       # JSON walker + notice injection
 ├── vault.rs           # AES-GCM encrypted secret storage
 ├── launcher.rs        # CLI launcher (mitm/proxy/doctor)
 ├── logscrub.rs        # Log sanitization
 └── errors.rs          # Error types and codes
-gitleaks.toml          # Bundled detection rules (220+)
+gitleaks.toml          # Bundled detection rules compiled by gitleaks_rules.rs
 ```
 
 ## Agent Guides
