@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tempfile::NamedTempFile;
 
+use crate::certgen::CaPair;
 use crate::config::Config;
 use crate::errors::{KeyclawError, CODE_MITM_NOT_EFFECTIVE};
 use crate::gitleaks_rules::RuleSet;
@@ -16,16 +17,8 @@ use crate::pipeline::Processor;
 use crate::proxy::Server;
 use crate::vault::Store;
 
-pub(super) fn run_proxy(cfg: &Config, processor: Arc<Processor>) -> i32 {
+pub(super) fn run_proxy_foreground(cfg: &Config, processor: Arc<Processor>, ca: CaPair) -> i32 {
     let allowed_hosts = Config::allowed_hosts("all", cfg);
-
-    let ca = match crate::certgen::ensure_ca() {
-        Ok(ca) => ca,
-        Err(e) => {
-            crate::logging::error(&e.to_string());
-            return 1;
-        }
-    };
 
     let mut proxy_server = Server::new(
         cfg.proxy_listen_addr.clone(),
@@ -84,6 +77,51 @@ pub(super) fn run_proxy(cfg: &Config, processor: Arc<Processor>) -> i32 {
 
     crate::logging::info("proxy stopped");
     0
+}
+
+pub(super) fn run_proxy_detached(cfg: &Config) -> Result<i32, KeyclawError> {
+    let keyclaw_dir = crate::certgen::keyclaw_dir();
+    fs::create_dir_all(&keyclaw_dir)
+        .map_err(|e| KeyclawError::uncoded(format!("create keyclaw dir: {e}")))?;
+
+    let pid_path = keyclaw_dir.join("proxy.pid");
+    let env_path = keyclaw_dir.join("env.sh");
+    let log_path = keyclaw_dir.join("proxy.log");
+    let _ = fs::remove_file(&pid_path);
+    let _ = fs::remove_file(&env_path);
+
+    let current_exe = std::env::current_exe()
+        .map_err(|e| KeyclawError::uncoded(format!("resolve current executable: {e}")))?;
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| {
+            KeyclawError::uncoded(format!("open proxy log {}: {e}", log_path.display()))
+        })?;
+    let log_file_err = log_file
+        .try_clone()
+        .map_err(|e| KeyclawError::uncoded(format!("clone proxy log handle: {e}")))?;
+
+    let mut child = Command::new(current_exe)
+        .arg("proxy")
+        .arg("--foreground")
+        .envs(std::env::vars())
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_file_err))
+        .spawn()
+        .map_err(|e| KeyclawError::uncoded(format!("start detached proxy: {e}")))?;
+
+    wait_for_detached_proxy_ready(&mut child, &pid_path, &env_path, &log_path)?;
+
+    crate::logging::info("proxy running in background");
+    crate::logging::info("source ~/.keyclaw/env.sh in any shell to route through keyclaw");
+    crate::logging::info("stop it later with: kill \"$(cat ~/.keyclaw/proxy.pid)\"");
+    crate::logging::info(&format!("proxy log file: {}", log_path.display()));
+
+    let _ = cfg;
+    Ok(0)
 }
 
 pub(super) fn render_proxy_env_script(
@@ -480,10 +518,82 @@ fn set_foreground_process_group(fd: libc::c_int, pgrp: libc::pid_t) {
 }
 
 fn build_command(tool: &str, child_args: Vec<String>) -> (String, Vec<String>) {
-    if let Some((first, rest)) = child_args.split_first() {
-        return (first.clone(), rest.to_vec());
+    let mut child_args = child_args;
+    if child_args
+        .first()
+        .map(|first| first.eq_ignore_ascii_case(tool))
+        .unwrap_or(false)
+    {
+        child_args.remove(0);
     }
-    (tool.to_string(), Vec::new())
+    (tool.to_string(), child_args)
+}
+
+fn wait_for_detached_proxy_ready(
+    child: &mut std::process::Child,
+    pid_path: &Path,
+    env_path: &Path,
+    log_path: &Path,
+) -> Result<(), KeyclawError> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+
+    while Instant::now() < deadline {
+        if pid_matches_child(pid_path, child.id())? && env_path.exists() {
+            return Ok(());
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| KeyclawError::uncoded(format!("check detached proxy status: {e}")))?
+        {
+            if let Some(detail) = detached_proxy_failure_detail(log_path) {
+                return Err(KeyclawError::uncoded(format!(
+                    "detached proxy exited early with status {status}: {detail}"
+                )));
+            }
+            return Err(KeyclawError::uncoded(format!(
+                "detached proxy exited early with status {status}; inspect {}",
+                log_path.display()
+            )));
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    Err(KeyclawError::uncoded(format!(
+        "detached proxy did not become ready; inspect {}",
+        log_path.display()
+    )))
+}
+
+fn pid_matches_child(pid_path: &Path, child_pid: u32) -> Result<bool, KeyclawError> {
+    let pid = match fs::read_to_string(pid_path) {
+        Ok(pid) => pid,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(KeyclawError::uncoded(format!(
+                "read proxy pid file {}: {err}",
+                pid_path.display()
+            )))
+        }
+    };
+
+    Ok(pid.trim() == child_pid.to_string())
+}
+
+fn detached_proxy_failure_detail(log_path: &Path) -> Option<String> {
+    let log = fs::read_to_string(log_path).ok()?;
+    log.lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| {
+            line.strip_prefix("keyclaw error: ")
+                .or_else(|| line.strip_prefix("keyclaw warn: "))
+                .or_else(|| line.strip_prefix("keyclaw info: "))
+                .unwrap_or(line)
+                .to_string()
+        })
 }
 
 #[derive(Debug, PartialEq, Eq)]

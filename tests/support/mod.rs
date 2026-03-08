@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::Path;
 use std::process::Command;
@@ -17,6 +18,12 @@ pub struct UpstreamGuard {
     join: Option<thread::JoinHandle<()>>,
 }
 
+pub struct WrappedToolRun {
+    pub stderr: String,
+    pub exit_code: i32,
+    pub child_args: Vec<String>,
+}
+
 impl Drop for UpstreamGuard {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
@@ -29,7 +36,16 @@ impl Drop for UpstreamGuard {
 }
 
 pub fn run_mitm(tool: &str, addr: String, upstream_url: &str, payload: &str) -> (String, i32) {
-    run_mitm_with_log_level(tool, addr, upstream_url, payload, None)
+    let run = run_tool_command(
+        &["mitm", tool],
+        tool,
+        addr,
+        upstream_url,
+        payload,
+        &[],
+        None,
+    );
+    (run.stderr, run.exit_code)
 }
 
 pub fn run_mitm_with_log_level(
@@ -39,23 +55,119 @@ pub fn run_mitm_with_log_level(
     payload: &str,
     log_level: Option<&str>,
 ) -> (String, i32) {
+    let run = run_tool_command(
+        &["mitm", tool],
+        tool,
+        addr,
+        upstream_url,
+        payload,
+        &[],
+        log_level,
+    );
+    (run.stderr, run.exit_code)
+}
+
+pub fn run_mitm_with_args(
+    tool: &str,
+    addr: String,
+    upstream_url: &str,
+    payload: &str,
+    child_args: &[&str],
+) -> WrappedToolRun {
+    run_tool_command(
+        &["mitm", tool],
+        tool,
+        addr,
+        upstream_url,
+        payload,
+        child_args,
+        None,
+    )
+}
+
+pub fn run_tool_alias(
+    tool: &str,
+    addr: String,
+    upstream_url: &str,
+    payload: &str,
+    child_args: &[&str],
+) -> WrappedToolRun {
+    run_tool_command(&[tool], tool, addr, upstream_url, payload, child_args, None)
+}
+
+pub fn install_fake_tool(dir: &Path, tool: &str, script: &str) {
+    let path = dir.join(tool);
+    fs::write(&path, script).expect("write fake tool");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&path).expect("tool metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("chmod fake tool");
+    }
+}
+
+pub fn prepend_path(cmd: &mut Command, dir: &Path) {
+    let existing = std::env::var_os("PATH");
+    let joined = if let Some(existing) = existing {
+        std::env::join_paths(
+            std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&existing)),
+        )
+        .expect("join PATH")
+    } else {
+        std::env::join_paths([dir.to_path_buf()]).expect("join PATH")
+    };
+    cmd.env("PATH", joined);
+}
+
+fn run_tool_command(
+    entrypoint: &[&str],
+    tool: &str,
+    addr: String,
+    upstream_url: &str,
+    payload: &str,
+    child_args: &[&str],
+    log_level: Option<&str>,
+) -> WrappedToolRun {
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");
+    let tool_dir = temp.path().join("bin");
+    fs::create_dir_all(&tool_dir).expect("create fake tool dir");
     let vault_path = temp.path().join("vault.enc");
-    let py = format!(
-        "import os,urllib.request\nproxy=os.environ.get('HTTP_PROXY')\nurl=os.environ['UPSTREAM_URL']\ndata={:?}.encode()\nopener=urllib.request.build_opener(urllib.request.ProxyHandler({{'http':proxy,'https':proxy}}))\nreq=urllib.request.Request(url,data=data,headers={{'Content-Type':'application/json'}})\nwith opener.open(req,timeout=5):\n    pass\n",
-        payload
+    let args_path = temp.path().join("child-args.txt");
+    install_fake_tool(
+        &tool_dir,
+        tool,
+        r#"#!/usr/bin/env python3
+import os
+import sys
+import urllib.request
+
+with open(os.environ["KEYCLAW_TEST_ARGS_OUT"], "w", encoding="utf-8") as fh:
+    for arg in sys.argv[1:]:
+        fh.write(arg)
+        fh.write("\n")
+
+proxy = os.environ.get("HTTP_PROXY")
+url = os.environ["UPSTREAM_URL"]
+data = os.environ["PAYLOAD"].encode()
+opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+)
+req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+with opener.open(req, timeout=5):
+    pass
+"#,
     );
 
     let mut cmd = Command::new(bin);
     cmd.env_clear();
     preserve_base_env(&mut cmd);
-    cmd.arg("mitm")
-        .arg(tool)
-        .arg("--")
-        .arg("python3")
-        .arg("-c")
-        .arg(py)
+    prepend_path(&mut cmd, &tool_dir);
+    for arg in entrypoint {
+        cmd.arg(arg);
+    }
+    cmd.args(child_args)
         .env("KEYCLAW_PROXY_ADDR", &addr)
         .env("KEYCLAW_PROXY_URL", format!("http://{}", &addr))
         .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true")
@@ -64,14 +176,23 @@ pub fn run_mitm_with_log_level(
         .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase")
         .env("KEYCLAW_CODEX_HOSTS", "127.0.0.1")
         .env("KEYCLAW_CLAUDE_HOSTS", "127.0.0.1")
-        .env("UPSTREAM_URL", upstream_url);
+        .env("KEYCLAW_TEST_ARGS_OUT", &args_path)
+        .env("UPSTREAM_URL", upstream_url)
+        .env("PAYLOAD", payload);
     if let Some(level) = log_level {
         cmd.env("KEYCLAW_LOG_LEVEL", level);
     }
     let output = cmd.output().expect("run mitm");
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (stderr, output.status.code().unwrap_or(1))
+    let child_args = fs::read_to_string(&args_path)
+        .map(|raw| raw.lines().map(ToOwned::to_owned).collect())
+        .unwrap_or_else(|_| Vec::new());
+    WrappedToolRun {
+        stderr,
+        exit_code: output.status.code().unwrap_or(1),
+        child_args,
+    }
 }
 
 pub fn keyclaw_command(home: &Path) -> Command {

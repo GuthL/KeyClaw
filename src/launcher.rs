@@ -11,7 +11,9 @@ use crate::config::Config;
 use crate::errors::{code_of, KeyclawError};
 use crate::pipeline::Processor;
 
-use self::bootstrap::{build_processor, configure_unsafe_logging, run_proxy, Runner};
+use self::bootstrap::{
+    build_processor, configure_unsafe_logging, run_proxy_detached, run_proxy_foreground, Runner,
+};
 use self::doctor::run_doctor;
 
 pub fn run_cli(args: Vec<String>) -> i32 {
@@ -38,13 +40,30 @@ pub fn run_cli(args: Vec<String>) -> i32 {
                 }
             }
         }
-        CliCommand::Proxy => {
+        CliCommand::Proxy { foreground } => {
             configure_unsafe_logging(&cfg);
-            match build_processor(&cfg) {
-                Ok(processor) => run_proxy(&cfg, processor),
-                Err(err) => {
-                    print_error(&err);
-                    1
+            if foreground {
+                let ca = match crate::certgen::ensure_ca() {
+                    Ok(ca) => ca,
+                    Err(err) => {
+                        print_error(&err);
+                        return 1;
+                    }
+                };
+                match build_processor(&cfg) {
+                    Ok(processor) => run_proxy_foreground(&cfg, processor, ca),
+                    Err(err) => {
+                        print_error(&err);
+                        1
+                    }
+                }
+            } else {
+                match run_proxy_detached(&cfg) {
+                    Ok(code) => code,
+                    Err(err) => {
+                        print_error(&err);
+                        1
+                    }
                 }
             }
         }
@@ -68,7 +87,9 @@ enum CliCommand {
         tool: String,
         child_args: Vec<String>,
     },
-    Proxy,
+    Proxy {
+        foreground: bool,
+    },
     RewriteJson,
 }
 
@@ -78,7 +99,9 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
 
     match matches.subcommand() {
         Some(("doctor", _)) => Ok(CliCommand::Doctor),
-        Some(("proxy", _)) => Ok(CliCommand::Proxy),
+        Some(("proxy", subcommand)) => Ok(CliCommand::Proxy {
+            foreground: subcommand.get_flag("foreground"),
+        }),
         Some(("rewrite-json", _)) => Ok(CliCommand::RewriteJson),
         Some(("mitm", subcommand)) => Ok(CliCommand::Mitm {
             tool: required_string_arg(subcommand, "tool", "mitm")?,
@@ -86,6 +109,14 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
                 .get_many::<String>("child_args")
                 .map(|values| values.cloned().collect())
                 .unwrap_or_default(),
+        }),
+        Some(("codex", subcommand)) => Ok(CliCommand::Mitm {
+            tool: "codex".to_string(),
+            child_args: alias_child_args(subcommand),
+        }),
+        Some(("claude", subcommand)) => Ok(CliCommand::Mitm {
+            tool: "claude".to_string(),
+            child_args: alias_child_args(subcommand),
         }),
         Some((name, _)) => Err(clap::Error::raw(
             ErrorKind::InvalidSubcommand,
@@ -111,6 +142,13 @@ fn required_string_arg(
     })
 }
 
+fn alias_child_args(matches: &ArgMatches) -> Vec<String> {
+    matches
+        .get_many::<String>("child_args")
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default()
+}
+
 fn cli() -> clap::Command {
     clap::Command::new("keyclaw")
         .version(env!("CARGO_PKG_VERSION"))
@@ -118,7 +156,16 @@ fn cli() -> clap::Command {
         .color(ColorChoice::Never)
         .disable_help_subcommand(true)
         .subcommand_required(true)
-        .subcommand(clap::Command::new("proxy").about("Start the global proxy daemon"))
+        .subcommand(
+            clap::Command::new("proxy")
+                .about("Start the global proxy daemon")
+                .arg(
+                    Arg::new("foreground")
+                        .long("foreground")
+                        .help("Keep the proxy attached to this terminal instead of detaching")
+                        .action(clap::ArgAction::SetTrue),
+                ),
+        )
         .subcommand(
             clap::Command::new("mitm")
                 .about("Run a supported CLI behind the local MITM proxy")
@@ -137,11 +184,27 @@ fn cli() -> clap::Command {
                         .allow_hyphen_values(true),
                 ),
         )
+        .subcommand(tool_alias_command("codex"))
+        .subcommand(tool_alias_command("claude"))
         .subcommand(
             clap::Command::new("rewrite-json")
                 .about("Read JSON from stdin, redact secrets, and write JSON to stdout"),
         )
         .subcommand(clap::Command::new("doctor").about("Run operator health checks"))
+}
+
+fn tool_alias_command(tool: &'static str) -> clap::Command {
+    clap::Command::new(tool)
+        .about(format!("Run {tool} behind the local MITM proxy"))
+        .disable_help_flag(true)
+        .arg(
+            Arg::new("child_args")
+                .value_name("CHILD_ARGS")
+                .help("Arguments forwarded to the child CLI")
+                .num_args(0..)
+                .trailing_var_arg(true)
+                .allow_hyphen_values(true),
+        )
 }
 
 fn run_mitm(cfg: &Config, processor: Arc<Processor>, tool: &str, child_args: Vec<String>) -> i32 {
@@ -207,7 +270,11 @@ mod tests {
         );
         assert_eq!(
             super::parse_cli(vec!["proxy".into()]).unwrap(),
-            super::CliCommand::Proxy
+            super::CliCommand::Proxy { foreground: false }
+        );
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into(), "--foreground".into()]).unwrap(),
+            super::CliCommand::Proxy { foreground: true }
         );
         assert_eq!(
             super::parse_cli(vec!["rewrite-json".into()]).unwrap(),
@@ -229,6 +296,22 @@ mod tests {
             super::CliCommand::Mitm {
                 tool: "codex".into(),
                 child_args: vec!["exec".into(), "--model".into(), "gpt-5".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cli_extracts_tool_alias_child_args() {
+        assert_eq!(
+            super::parse_cli(vec![
+                "claude".into(),
+                "--resume".into(),
+                "session-123".into(),
+            ])
+            .unwrap(),
+            super::CliCommand::Mitm {
+                tool: "claude".into(),
+                child_args: vec!["--resume".into(), "session-123".into()],
             }
         );
     }

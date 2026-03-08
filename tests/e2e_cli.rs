@@ -13,8 +13,9 @@ use std::os::unix::process::ExitStatusExt;
 use wait_timeout::ChildExt;
 
 use support::{
-    can_bind, doctor_command, free_addr, keyclaw_command, rewrite_json_command, run_mitm,
-    run_mitm_with_log_level, start_upstream, wait_until, TEST_SECRET_CLAUDE, TEST_SECRET_CODEX,
+    can_bind, doctor_command, free_addr, install_fake_tool, keyclaw_command, prepend_path,
+    rewrite_json_command, run_mitm, run_mitm_with_args, run_mitm_with_log_level, run_tool_alias,
+    start_upstream, wait_until, TEST_SECRET_CLAUDE, TEST_SECRET_CODEX,
 };
 
 #[test]
@@ -31,6 +32,8 @@ fn help_flag_returns_success_and_lists_supported_subcommands() {
     assert!(out.contains("Usage:"), "stdout={out}");
     assert!(out.contains("proxy"), "stdout={out}");
     assert!(out.contains("mitm"), "stdout={out}");
+    assert!(out.contains("codex"), "stdout={out}");
+    assert!(out.contains("claude"), "stdout={out}");
     assert!(out.contains("rewrite-json"), "stdout={out}");
     assert!(out.contains("doctor"), "stdout={out}");
     assert!(stderr.trim().is_empty(), "stderr={stderr}");
@@ -50,6 +53,8 @@ fn short_help_flag_returns_success_and_lists_supported_subcommands() {
     assert!(out.contains("Usage:"), "stdout={out}");
     assert!(out.contains("proxy"), "stdout={out}");
     assert!(out.contains("mitm"), "stdout={out}");
+    assert!(out.contains("codex"), "stdout={out}");
+    assert!(out.contains("claude"), "stdout={out}");
     assert!(out.contains("rewrite-json"), "stdout={out}");
     assert!(out.contains("doctor"), "stdout={out}");
     assert!(stderr.trim().is_empty(), "stderr={stderr}");
@@ -137,6 +142,94 @@ fn mitm_claude_intercepts_and_sanitizes() {
         "no placeholder in upstream body: {body}"
     );
     assert!(!stderr.contains(TEST_SECRET_CLAUDE));
+}
+
+#[test]
+fn codex_alias_intercepts_and_forwards_child_args() {
+    let (upstream_url, rx, _guard) = start_upstream();
+
+    let run = run_tool_alias(
+        "codex",
+        free_addr(),
+        &upstream_url,
+        &format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX),
+        &["exec", "--model", "gpt-5"],
+    );
+
+    assert_eq!(run.exit_code, 0, "stderr={}", run.stderr);
+    let body = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream body");
+    assert!(
+        !body.contains(TEST_SECRET_CODEX),
+        "secret leaked to upstream: {body}"
+    );
+    assert!(
+        placeholder::contains_complete_placeholder(&body),
+        "no placeholder in upstream body: {body}"
+    );
+    assert_eq!(
+        run.child_args,
+        vec!["exec", "--model", "gpt-5"],
+        "stderr={}",
+        run.stderr
+    );
+}
+
+#[test]
+fn claude_alias_intercepts_and_sanitizes() {
+    let (upstream_url, rx, _guard) = start_upstream();
+
+    let run = run_tool_alias(
+        "claude",
+        free_addr(),
+        &upstream_url,
+        &format!(r#"{{"prompt":"secret_key: {}"}}"#, TEST_SECRET_CLAUDE),
+        &["--resume", "session-123"],
+    );
+
+    assert_eq!(run.exit_code, 0, "stderr={}", run.stderr);
+    let body = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream body");
+    assert!(
+        !body.contains(TEST_SECRET_CLAUDE),
+        "secret leaked to upstream: {body}"
+    );
+    assert!(
+        placeholder::contains_complete_placeholder(&body),
+        "no placeholder in upstream body: {body}"
+    );
+    assert_eq!(
+        run.child_args,
+        vec!["--resume", "session-123"],
+        "stderr={}",
+        run.stderr
+    );
+}
+
+#[test]
+fn mitm_codex_forwards_child_args_without_repeating_executable() {
+    let (upstream_url, rx, _guard) = start_upstream();
+
+    let run = run_mitm_with_args(
+        "codex",
+        free_addr(),
+        &upstream_url,
+        &format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX),
+        &["exec", "--model", "gpt-5"],
+    );
+
+    assert_eq!(run.exit_code, 0, "stderr={}", run.stderr);
+    let _ = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream body");
+    assert_eq!(
+        run.child_args,
+        vec!["exec", "--model", "gpt-5"],
+        "stderr={}",
+        run.stderr
+    );
 }
 
 #[test]
@@ -326,6 +419,74 @@ fn proxy_fails_fast_on_broken_generated_ca_pair() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn proxy_detaches_by_default_and_prints_stop_instructions() {
+    struct ProxyGuard(Option<i32>);
+
+    impl Drop for ProxyGuard {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0.take() {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let addr = free_addr();
+    let socket_addr: SocketAddr = addr.parse().expect("parse socket addr");
+    let output = keyclaw_command(temp.path())
+        .arg("proxy")
+        .env("KEYCLAW_PROXY_ADDR", &addr)
+        .env("KEYCLAW_PROXY_URL", format!("http://{addr}"))
+        .output()
+        .expect("run proxy");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("proxy running in background"),
+        "stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("source ~/.keyclaw/env.sh"),
+        "stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("kill \"$(cat ~/.keyclaw/proxy.pid)\""),
+        "stderr={stderr}"
+    );
+
+    let pid_path = temp.path().join(".keyclaw").join("proxy.pid");
+    let env_path = temp.path().join(".keyclaw").join("env.sh");
+    wait_until(Duration::from_secs(3), || {
+        pid_path.exists() && env_path.exists() && !can_bind(socket_addr)
+    });
+
+    assert!(pid_path.exists(), "proxy pid file missing");
+    assert!(env_path.exists(), "proxy env.sh missing");
+    assert!(!can_bind(socket_addr), "proxy listener was not started");
+
+    let pid: i32 = std::fs::read_to_string(&pid_path)
+        .expect("read proxy pid")
+        .trim()
+        .parse()
+        .expect("parse proxy pid");
+    let mut guard = ProxyGuard(Some(pid));
+
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    wait_until(Duration::from_secs(3), || can_bind(socket_addr));
+    assert!(
+        can_bind(socket_addr),
+        "proxy listener still bound: {socket_addr}"
+    );
+    guard.0 = None;
+}
+
 #[test]
 fn rewrite_json_respects_custom_gitleaks_config() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -503,10 +664,6 @@ fn coded_errors_emit_a_single_code_prefix() {
     let output = Command::new(bin)
         .arg("mitm")
         .arg("codex")
-        .arg("--")
-        .arg("python3")
-        .arg("-c")
-        .arg("print('not reached')")
         .env_clear()
         .env("HOME", temp.path())
         .env("NO_PROXY", "*")
@@ -598,23 +755,28 @@ fn mitm_releases_proxy_port_immediately_on_sigint() {
     let socket_addr: SocketAddr = addr.parse().expect("parse socket addr");
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");
+    let tool_dir = temp.path().join("bin");
     let vault_path = temp.path().join("vault.enc");
+    std::fs::create_dir_all(&tool_dir).expect("create tool dir");
+    install_fake_tool(
+        &tool_dir,
+        "codex",
+        "#!/usr/bin/env bash\ntrap '' INT TERM\nsleep 60\n",
+    );
 
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .arg("mitm")
         .arg("codex")
-        .arg("--")
-        .arg("bash")
-        .arg("-lc")
-        .arg("trap '' INT TERM; sleep 60")
         .env("KEYCLAW_PROXY_ADDR", &addr)
         .env("KEYCLAW_PROXY_URL", format!("http://{addr}"))
         .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "false")
         .env("KEYCLAW_VAULT_PATH", &vault_path)
         .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase")
         .env("KEYCLAW_CODEX_HOSTS", "127.0.0.1")
-        .spawn()
-        .expect("spawn keyclaw");
+        .env("HOME", temp.path());
+    prepend_path(&mut command, &tool_dir);
+    let mut child = command.spawn().expect("spawn keyclaw");
 
     wait_until(Duration::from_secs(3), || !can_bind(socket_addr));
 
@@ -647,9 +809,12 @@ fn mitm_releases_proxy_port_immediately_on_sigint() {
 fn mitm_returns_control_to_interactive_shell_after_child_exit() {
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");
+    let tool_dir = temp.path().join("bin");
     let vault_path = temp.path().join("vault.enc");
     let gitleaks_config = temp.path().join("gitleaks.toml");
     std::fs::write(&gitleaks_config, "rules = []\n").expect("write gitleaks config");
+    std::fs::create_dir_all(&tool_dir).expect("create tool dir");
+    install_fake_tool(&tool_dir, "codex", "#!/usr/bin/env bash\nexit 0\n");
 
     let py = format!(
         r#"
@@ -663,6 +828,7 @@ import sys
 import time
 
 bin_path = {bin_path:?}
+tool_dir = {tool_dir:?}
 vault_path = {vault_path:?}
 gitleaks_config = {gitleaks_config:?}
 cmd = (
@@ -671,7 +837,7 @@ cmd = (
     f"KEYCLAW_VAULT_PATH={vault_path} "
     f"KEYCLAW_GITLEAKS_CONFIG={gitleaks_config} "
     "KEYCLAW_VAULT_PASSPHRASE=test-passphrase "
-    f"{{bin_path}} mitm codex -- bash -lc 'exit 0'; "
+    f"PATH={tool_dir}:$PATH {{bin_path}} mitm codex; "
     "printf '__RC__=%s\\n' \"$?\"; jobs -l; exit"
 )
 
@@ -750,6 +916,7 @@ if re.search(r"(^|[\r\n])__RC__=0(?:\r\n|\n|\r|$)", output) and "Stopped" not in
 sys.exit(2)
 "#,
         bin_path = bin.display().to_string(),
+        tool_dir = tool_dir.display().to_string(),
         vault_path = vault_path.display().to_string(),
         gitleaks_config = gitleaks_config.display().to_string(),
     );
