@@ -22,6 +22,27 @@ fn docs_route_secret_pattern_work_to_gitleaks_rules() {
     );
 }
 
+#[test]
+fn removed_gitleaks_bin_env_stays_out_of_runtime_contract() {
+    let readme = std::fs::read_to_string("README.md").expect("read README.md");
+    let config = std::fs::read_to_string("src/config.rs").expect("read src/config.rs");
+    let config_plan = std::fs::read_to_string("docs/plans/2026-03-07-config-alignment.md")
+        .expect("read docs/plans/2026-03-07-config-alignment.md");
+
+    assert!(
+        readme.contains("KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`"),
+        "README.md should keep the removal of KEYCLAW_GITLEAKS_BIN explicit: {readme}"
+    );
+    assert!(
+        !config.contains("KEYCLAW_GITLEAKS_BIN"),
+        "src/config.rs should not mention the removed KEYCLAW_GITLEAKS_BIN env var: {config}"
+    );
+    assert!(
+        !config_plan.contains("- Remove `KEYCLAW_GITLEAKS_BIN` from the live config surface."),
+        "The config-alignment plan should not describe KEYCLAW_GITLEAKS_BIN removal as pending work: {config_plan}"
+    );
+}
+
 fn normalized_agent_guide(path: &str, expected_title: &str) -> String {
     let guide = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("read {path}"));
 

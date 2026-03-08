@@ -215,7 +215,6 @@ mod tests {
             "KEYCLAW_LOG_LEVEL",
             "KEYCLAW_UNSAFE_LOG",
             "KEYCLAW_DETECTOR_TIMEOUT",
-            "KEYCLAW_GITLEAKS_BIN",
         ];
         let saved = capture_env(&keys);
 
@@ -228,7 +227,6 @@ mod tests {
         env::set_var("KEYCLAW_LOG_LEVEL", "debug");
         env::set_var("KEYCLAW_UNSAFE_LOG", "true");
         env::set_var("KEYCLAW_DETECTOR_TIMEOUT", "250ms");
-        env::set_var("KEYCLAW_GITLEAKS_BIN", "/tmp/ignored-gitleaks");
 
         let cfg = Config::from_env();
 
