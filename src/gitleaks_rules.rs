@@ -155,16 +155,51 @@ pub struct SecretMatch<'a> {
 
 /// Check if a position in the input falls inside an existing placeholder.
 fn inside_placeholder(input: &str, start: usize, end: usize) -> bool {
-    let search_start = start.saturating_sub(60);
-    if let Some(pos) = input[search_start..start].rfind("{{KEYCLAW_SECRET_") {
-        let abs_pos = search_start + pos;
-        if let Some(close) = input[end..].find("}}") {
-            let close_abs = end + close + 2;
-            let candidate = &input[abs_pos..close_abs];
-            if candidate.starts_with("{{KEYCLAW_SECRET_") && candidate.ends_with("}}") {
+    let search_start = start.saturating_sub(crate::placeholder::MAX_PLACEHOLDER_LEN);
+    for (rel, ch) in input[search_start..start].char_indices() {
+        if ch != '{' {
+            continue;
+        }
+
+        let abs_pos = search_start + rel;
+        if let Some(len) = crate::placeholder::complete_placeholder_len(&input[abs_pos..]) {
+            let placeholder_end = abs_pos + len;
+            if abs_pos < end && start < placeholder_end {
                 return true;
             }
         }
     }
+
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuleSet;
+    use crate::placeholder::make;
+
+    #[test]
+    fn find_secrets_skips_real_placeholders_but_not_marker_shaped_invalid_text() {
+        let rules = RuleSet::from_toml(
+            r#"
+[[rules]]
+id = "placeholder-hash"
+regex = '[a-f0-9]{16}'
+"#,
+        )
+        .expect("ruleset");
+
+        let valid = format!("prefix {}", make("*_0123456789abcdef"));
+        let invalid = "prefix {{KEYCLAW_SECRET_prefixx_0123456789abcdef}}";
+
+        assert!(
+            rules.find_secrets(&valid).is_empty(),
+            "valid placeholder should be ignored"
+        );
+        assert_eq!(
+            rules.find_secrets(invalid).len(),
+            1,
+            "invalid marker-shaped text should still be scanned"
+        );
+    }
 }

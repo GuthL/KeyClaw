@@ -10,6 +10,8 @@ const PLACEHOLDER_MARKER: &str = "{{KEYCLAW_SECRET_";
 const PREFIX_LEN: usize = 5;
 const HASH_LEN: usize = 16;
 const MAX_PARTIAL_PLACEHOLDER_LEN: usize = PLACEHOLDER_MARKER.len() + PREFIX_LEN + 1 + HASH_LEN + 1;
+pub(crate) const MAX_PLACEHOLDER_LEN: usize =
+    PLACEHOLDER_MARKER.len() + PREFIX_LEN + 1 + HASH_LEN + 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Replacement {
@@ -140,6 +142,13 @@ where
 
     out.push_str(&input[cursor..]);
     Ok(out)
+}
+
+pub(crate) fn complete_placeholder_len(text: &str) -> Option<usize> {
+    match parse_placeholder(text) {
+        PlaceholderParse::Complete(matched) => Some(matched.full_len),
+        PlaceholderParse::NoMatch | PlaceholderParse::Partial => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
