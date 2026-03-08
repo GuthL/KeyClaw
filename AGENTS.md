@@ -68,16 +68,15 @@ Edit `gitleaks.toml` to add or adjust the bundled rule, then use `tests/placehol
 
 ### Changing proxy behavior
 
-Edit `src/proxy.rs`. The `HttpHandler` impl on `KeyclawHttpHandler` has:
-- `handle_request` — intercepts outbound requests, redacts secrets
-- `handle_response` — intercepts inbound responses, resolves placeholders (both streaming and non-streaming)
-- `should_intercept` — decides which CONNECT tunnels to MITM
-
-The `WebSocketHandler` impl handles WS message interception (client→server redaction, server→client resolution).
+Edit the focused proxy modules rather than only the thin `src/proxy.rs` entrypoint:
+- `src/proxy/http.rs` — HTTP request/response interception, body collection, and response reinjection
+- `src/proxy/streaming.rs` — SSE frame handling and split-placeholder buffering
+- `src/proxy/websocket.rs` — WebSocket message redaction and resolution
+- `src/proxy/common.rs` — shared host checks, helpers, and operator-visible response building
 
 ### Adding a new CLI subcommand
 
-Edit `src/launcher.rs` → `run_cli()` match block. Add a new arm and corresponding function.
+Edit `src/launcher.rs` to extend the clap surface and subcommand dispatch, then put the concrete behavior in the split launcher modules (`src/launcher/bootstrap.rs` today, or a new sibling module if the command needs its own file).
 
 ### Changing the redaction notice
 
