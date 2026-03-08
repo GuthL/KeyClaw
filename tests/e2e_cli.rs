@@ -1,21 +1,19 @@
-use std::io::Write;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
+mod support;
 
-use tiny_http::{Response, Server as TinyServer, StatusCode};
+use std::io::Write;
+use std::net::SocketAddr;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 #[cfg(unix)]
 use wait_timeout::ChildExt;
 
-// Test secrets that match gitleaks generic-api-key rule (keyword + high-entropy value)
-// Format: "api_key = <high-entropy-token>" triggers the generic-api-key rule
-const TEST_SECRET_CODEX: &str = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
-const TEST_SECRET_CLAUDE: &str = "xY2zW4vU6tS8rQ0pO2nM4lK6jI8hG0f";
+use support::{
+    can_bind, doctor_command, free_addr, keyclaw_command, rewrite_json_command, run_mitm,
+    run_mitm_with_log_level, start_upstream, wait_until, TEST_SECRET_CLAUDE, TEST_SECRET_CODEX,
+};
 
 #[test]
 fn help_flag_returns_success_and_lists_supported_subcommands() {
@@ -767,126 +765,4 @@ sys.exit(2)
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn run_mitm(tool: &str, addr: String, upstream_url: &str, payload: &str) -> (String, i32) {
-    run_mitm_with_log_level(tool, addr, upstream_url, payload, None)
-}
-
-fn run_mitm_with_log_level(
-    tool: &str,
-    addr: String,
-    upstream_url: &str,
-    payload: &str,
-    log_level: Option<&str>,
-) -> (String, i32) {
-    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
-    let temp = tempfile::tempdir().expect("tempdir");
-    let vault_path = temp.path().join("vault.enc");
-    let py = format!(
-        "import os,urllib.request\nproxy=os.environ.get('HTTP_PROXY')\nurl=os.environ['UPSTREAM_URL']\ndata={:?}.encode()\nopener=urllib.request.build_opener(urllib.request.ProxyHandler({{'http':proxy,'https':proxy}}))\nreq=urllib.request.Request(url,data=data,headers={{'Content-Type':'application/json'}})\nwith opener.open(req,timeout=5):\n    pass\n",
-        payload
-    );
-
-    let mut cmd = Command::new(bin);
-    cmd.arg("mitm")
-        .arg(tool)
-        .arg("--")
-        .arg("python3")
-        .arg("-c")
-        .arg(py)
-        .env("KEYCLAW_PROXY_ADDR", &addr)
-        .env("KEYCLAW_PROXY_URL", format!("http://{}", &addr))
-        .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true")
-        .env("KEYCLAW_MAX_BODY_BYTES", "1048576")
-        .env("KEYCLAW_VAULT_PATH", &vault_path)
-        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase")
-        .env("KEYCLAW_CODEX_HOSTS", "127.0.0.1")
-        .env("KEYCLAW_CLAUDE_HOSTS", "127.0.0.1")
-        .env("UPSTREAM_URL", upstream_url);
-    if let Some(level) = log_level {
-        cmd.env("KEYCLAW_LOG_LEVEL", level);
-    }
-    let output = cmd.output().expect("run mitm");
-
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (stderr, output.status.code().unwrap_or(1))
-}
-
-fn keyclaw_command(home: &std::path::Path) -> Command {
-    let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
-    let mut cmd = Command::new(bin);
-    cmd.env_clear().env("HOME", home);
-    cmd
-}
-
-fn doctor_command(home: &std::path::Path) -> Command {
-    let vault_path = home.join("vault.enc");
-
-    let mut cmd = keyclaw_command(home);
-    cmd.arg("doctor")
-        .env_clear()
-        .env("HOME", home)
-        .env("KEYCLAW_PROXY_ADDR", "127.0.0.1:0")
-        .env("KEYCLAW_PROXY_URL", "http://127.0.0.1:0")
-        .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true")
-        .env("KEYCLAW_VAULT_PATH", vault_path)
-        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
-    cmd
-}
-
-fn rewrite_json_command(home: &std::path::Path) -> Command {
-    let vault_path = home.join("vault.enc");
-
-    let mut cmd = keyclaw_command(home);
-    cmd.arg("rewrite-json")
-        .env("KEYCLAW_VAULT_PATH", vault_path)
-        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
-    cmd
-}
-
-fn can_bind(addr: SocketAddr) -> bool {
-    TcpListener::bind(addr).map(drop).is_ok()
-}
-
-fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let start = std::time::Instant::now();
-    while start.elapsed() < timeout {
-        if predicate() {
-            return;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
-fn start_upstream() -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
-    let listener =
-        TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let server = TinyServer::from_listener(listener, None).expect("server");
-
-    let (tx, rx) = mpsc::channel();
-    let join = thread::spawn(move || loop {
-        match server.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(mut req)) => {
-                let mut body = String::new();
-                let _ = req.as_reader().read_to_string(&mut body);
-                let _ = tx.send(body);
-                let _ = req.respond(Response::empty(StatusCode(200)));
-            }
-            Ok(None) => continue,
-            Err(_) => break,
-        }
-    });
-
-    (format!("http://{}", addr), rx, join)
-}
-
-fn free_addr() -> String {
-    let listener =
-        TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    drop(listener);
-    thread::sleep(Duration::from_millis(20));
-    addr.to_string()
 }

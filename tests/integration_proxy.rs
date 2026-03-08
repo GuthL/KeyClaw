@@ -11,6 +11,7 @@ use keyclaw::pipeline::Processor;
 use keyclaw::placeholder;
 use keyclaw::proxy::Server;
 use keyclaw::vault::Store;
+use once_cell::sync::Lazy;
 use reqwest::blocking::Client;
 use serde_json::json;
 use tiny_http::{Response, Server as TinyServer, StatusCode};
@@ -20,13 +21,37 @@ struct UpstreamCapture {
     headers: Vec<(String, String)>,
 }
 
+struct UpstreamGuard {
+    shutdown: Option<mpsc::Sender<()>>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for UpstreamGuard {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
 // Use secrets in "api_key = <value>" format so gitleaks generic-api-key rule matches
 const CODEX_SECRET: &str = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
 const CLAUDE_SECRET: &str = "xY2zW4vU6tS8rQ0pO2nM4lK6jI8hG0f";
 
-fn test_ca() -> (String, String) {
+// Reuse immutable test fixtures so integration tests exercise the proxy path,
+// not repeated CA parsing and gitleaks rule compilation.
+static TEST_CA: Lazy<(String, String)> = Lazy::new(|| {
     let ca = certgen::ensure_ca().expect("generate test CA");
     (ca.cert_pem, ca.key_pem)
+});
+static TEST_RULESET: Lazy<Arc<RuleSet>> =
+    Lazy::new(|| Arc::new(RuleSet::bundled().expect("bundled rules")));
+
+fn test_ca() -> (String, String) {
+    (TEST_CA.0.clone(), TEST_CA.1.clone())
 }
 
 #[test]
@@ -472,11 +497,132 @@ fn sse_input_json_delta_fragments_resolve_split_placeholders() {
     );
 }
 
+#[test]
+fn upstream_guard_drop_releases_listener() {
+    let (upstream_url, _rx, upstream_guard) = start_upstream();
+    let addr = url_socket_addr(&upstream_url);
+
+    drop(upstream_guard);
+
+    assert_listener_released(addr, "upstream listener");
+}
+
+#[test]
+fn proxy_server_drop_releases_listener_without_traffic() {
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec!["127.0.0.1".to_string()],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+    let addr = running.addr.parse().expect("parse proxy addr");
+
+    drop(running);
+
+    assert_listener_released(addr, "proxy listener without traffic");
+}
+
+#[test]
+fn proxy_server_drop_releases_listener_after_request() {
+    let (upstream_url, rx, _upstream_guard) = start_upstream();
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+    let addr = running.addr.parse().expect("parse proxy addr");
+
+    {
+        let client = Client::builder()
+            .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("client");
+
+        let resp = client
+            .post(&upstream_url)
+            .header("content-type", "application/json")
+            .body(format!(r#"{{"prompt":"api_key = {}"}}"#, CODEX_SECRET))
+            .send()
+            .expect("request");
+
+        assert_eq!(resp.status().as_u16(), 200);
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("upstream capture");
+    }
+
+    drop(running);
+
+    assert_listener_released(addr, "proxy listener after request");
+}
+
+#[test]
+fn proxy_server_lifecycle_is_fast_without_traffic() {
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec!["127.0.0.1".to_string()],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+
+    let startup_start = std::time::Instant::now();
+    let running = proxy.start().expect("start proxy");
+    let startup_elapsed = startup_start.elapsed();
+
+    let shutdown_start = std::time::Instant::now();
+    drop(running);
+    let shutdown_elapsed = shutdown_start.elapsed();
+
+    assert!(
+        startup_elapsed < Duration::from_secs(2),
+        "proxy startup took {startup_elapsed:?}, shutdown took {shutdown_elapsed:?}"
+    );
+    assert!(
+        shutdown_elapsed < Duration::from_secs(2),
+        "proxy shutdown took {shutdown_elapsed:?}, startup took {startup_elapsed:?}"
+    );
+}
+
+#[test]
+fn warmed_processor_fixture_setup_is_fast() {
+    let _ = new_processor_with_ca();
+
+    let start = std::time::Instant::now();
+    let _ = new_processor_with_ca();
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "warmed new_processor_with_ca took {elapsed:?}"
+    );
+}
+
 fn new_processor_with_ca() -> (Processor, String, String) {
     let dir = tempfile::tempdir().expect("tempdir");
     let vault_path = dir.path().join("vault.enc");
     let vault = Arc::new(Store::new(vault_path, "test-pass".to_string()));
-    let ruleset = Arc::new(RuleSet::bundled().expect("bundled rules"));
+    let ruleset = Arc::clone(&TEST_RULESET);
     let (ca_cert, ca_key) = test_ca();
 
     let processor = Processor {
@@ -490,11 +636,7 @@ fn new_processor_with_ca() -> (Processor, String, String) {
 }
 
 /// Upstream that echoes the request body back as the response body.
-fn start_echo_upstream() -> (
-    String,
-    mpsc::Receiver<UpstreamCapture>,
-    thread::JoinHandle<()>,
-) {
+fn start_echo_upstream() -> (String, mpsc::Receiver<UpstreamCapture>, UpstreamGuard) {
     let listener =
         TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -502,51 +644,38 @@ fn start_echo_upstream() -> (
 
     let (tx, rx) = mpsc::channel();
 
-    let join = thread::spawn(move || loop {
-        match server.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(mut req)) => {
-                let headers: Vec<(String, String)> = req
-                    .headers()
-                    .iter()
-                    .map(|h| {
-                        (
-                            h.field.as_str().as_str().to_lowercase(),
-                            h.value.as_str().to_string(),
-                        )
-                    })
-                    .collect();
-                let mut body = String::new();
-                let _ = req.as_reader().read_to_string(&mut body);
-                let _ = tx.send(UpstreamCapture {
-                    body: body.clone(),
-                    headers,
-                });
-                // Echo the request body back as the response
-                let _ = req.respond(
-                    Response::from_string(body)
-                        .with_header(
-                            tiny_http::Header::from_bytes(
-                                &b"content-type"[..],
-                                &b"application/json"[..],
-                            )
-                            .unwrap(),
-                        )
-                        .with_status_code(StatusCode(200)),
-                );
-            }
-            Ok(None) => continue,
-            Err(_) => break,
-        }
+    let guard = spawn_upstream(server, move |mut req| {
+        let headers: Vec<(String, String)> = req
+            .headers()
+            .iter()
+            .map(|h| {
+                (
+                    h.field.as_str().as_str().to_lowercase(),
+                    h.value.as_str().to_string(),
+                )
+            })
+            .collect();
+        let mut body = String::new();
+        let _ = req.as_reader().read_to_string(&mut body);
+        let _ = tx.send(UpstreamCapture {
+            body: body.clone(),
+            headers,
+        });
+        // Echo the request body back as the response
+        let _ = req.respond(
+            Response::from_string(body)
+                .with_header(
+                    tiny_http::Header::from_bytes(&b"content-type"[..], &b"application/json"[..])
+                        .unwrap(),
+                )
+                .with_status_code(StatusCode(200)),
+        );
     });
 
-    (format!("http://{}", addr), rx, join)
+    (format!("http://{}", addr), rx, guard)
 }
 
-fn start_upstream() -> (
-    String,
-    mpsc::Receiver<UpstreamCapture>,
-    thread::JoinHandle<()>,
-) {
+fn start_upstream() -> (String, mpsc::Receiver<UpstreamCapture>, UpstreamGuard) {
     let listener =
         TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -554,39 +683,29 @@ fn start_upstream() -> (
 
     let (tx, rx) = mpsc::channel();
 
-    let join = thread::spawn(move || loop {
-        match server.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(mut req)) => {
-                let headers: Vec<(String, String)> = req
-                    .headers()
-                    .iter()
-                    .map(|h| {
-                        (
-                            h.field.as_str().as_str().to_lowercase(),
-                            h.value.as_str().to_string(),
-                        )
-                    })
-                    .collect();
-                let mut body = String::new();
-                let _ = req.as_reader().read_to_string(&mut body);
-                let _ = tx.send(UpstreamCapture { body, headers });
-                let _ = req.respond(Response::empty(StatusCode(200)));
-            }
-            Ok(None) => continue,
-            Err(_) => break,
-        }
+    let guard = spawn_upstream(server, move |mut req| {
+        let headers: Vec<(String, String)> = req
+            .headers()
+            .iter()
+            .map(|h| {
+                (
+                    h.field.as_str().as_str().to_lowercase(),
+                    h.value.as_str().to_string(),
+                )
+            })
+            .collect();
+        let mut body = String::new();
+        let _ = req.as_reader().read_to_string(&mut body);
+        let _ = tx.send(UpstreamCapture { body, headers });
+        let _ = req.respond(Response::empty(StatusCode(200)));
     });
 
-    (format!("http://{}", addr), rx, join)
+    (format!("http://{}", addr), rx, guard)
 }
 
 fn start_sse_upstream(
     response_body: String,
-) -> (
-    String,
-    mpsc::Receiver<UpstreamCapture>,
-    thread::JoinHandle<()>,
-) {
+) -> (String, mpsc::Receiver<UpstreamCapture>, UpstreamGuard) {
     let listener =
         TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -594,40 +713,31 @@ fn start_sse_upstream(
 
     let (tx, rx) = mpsc::channel();
 
-    let join = thread::spawn(move || loop {
-        match server.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(mut req)) => {
-                let headers: Vec<(String, String)> = req
-                    .headers()
-                    .iter()
-                    .map(|h| {
-                        (
-                            h.field.as_str().as_str().to_lowercase(),
-                            h.value.as_str().to_string(),
-                        )
-                    })
-                    .collect();
-                let mut body = String::new();
-                let _ = req.as_reader().read_to_string(&mut body);
-                let _ = tx.send(UpstreamCapture { body, headers });
-                let _ = req.respond(
-                    Response::from_string(response_body.clone())
-                        .with_header(
-                            tiny_http::Header::from_bytes(
-                                &b"content-type"[..],
-                                &b"text/event-stream"[..],
-                            )
-                            .unwrap(),
-                        )
-                        .with_status_code(StatusCode(200)),
-                );
-            }
-            Ok(None) => continue,
-            Err(_) => break,
-        }
+    let guard = spawn_upstream(server, move |mut req| {
+        let headers: Vec<(String, String)> = req
+            .headers()
+            .iter()
+            .map(|h| {
+                (
+                    h.field.as_str().as_str().to_lowercase(),
+                    h.value.as_str().to_string(),
+                )
+            })
+            .collect();
+        let mut body = String::new();
+        let _ = req.as_reader().read_to_string(&mut body);
+        let _ = tx.send(UpstreamCapture { body, headers });
+        let _ = req.respond(
+            Response::from_string(response_body.clone())
+                .with_header(
+                    tiny_http::Header::from_bytes(&b"content-type"[..], &b"text/event-stream"[..])
+                        .unwrap(),
+                )
+                .with_status_code(StatusCode(200)),
+        );
     });
 
-    (format!("http://{}", addr), rx, join)
+    (format!("http://{}", addr), rx, guard)
 }
 
 fn collect_input_json_deltas(body: &str) -> Vec<String> {
@@ -649,6 +759,48 @@ fn collect_input_json_deltas(body: &str) -> Vec<String> {
             Some(delta.get("partial_json")?.as_str()?.to_string())
         })
         .collect()
+}
+
+fn url_socket_addr(url: &str) -> SocketAddr {
+    let parsed = url::Url::parse(url).expect("parse upstream url");
+    let host = parsed.host_str().expect("upstream host");
+    let port = parsed.port().expect("upstream port");
+    SocketAddr::new(host.parse().expect("parse upstream ip"), port)
+}
+
+fn assert_listener_released(addr: SocketAddr, label: &str) {
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(1) {
+        if TcpListener::bind(addr).is_ok() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    panic!("{label} {addr} stayed bound after drop");
+}
+
+fn spawn_upstream(
+    server: TinyServer,
+    mut handle_request: impl FnMut(tiny_http::Request) + Send + 'static,
+) -> UpstreamGuard {
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    let join = thread::spawn(move || loop {
+        if shutdown_rx.try_recv().is_ok() {
+            break;
+        }
+
+        match server.recv_timeout(Duration::from_millis(100)) {
+            Ok(Some(req)) => handle_request(req),
+            Ok(None) => continue,
+            Err(_) => break,
+        }
+    });
+
+    UpstreamGuard {
+        shutdown: Some(shutdown_tx),
+        join: Some(join),
+    }
 }
 
 fn send_partial_proxy_request(
