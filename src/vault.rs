@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -60,18 +60,37 @@ impl Store {
     }
 
     pub fn save(&self, entries: &HashMap<String, String>) -> Result<(), KeyclawError> {
-        let _guard = self
-            .lock
-            .lock()
-            .map_err(|_| KeyclawError::uncoded("vault mutex poisoned"))?;
+        let _guard = self.lock_entries()?;
         save_entries(&self.path, &self.passphrase, entries)
     }
 
     pub fn load(&self) -> Result<HashMap<String, String>, KeyclawError> {
-        let _guard = self
-            .lock
+        let _guard = self.lock_entries()?;
+        self.load_entries_unlocked()
+    }
+
+    pub fn store_secret(&self, secret: &str) -> Result<String, KeyclawError> {
+        let _guard = self.lock_entries()?;
+        let mut entries = self.load_entries_unlocked()?;
+        let id = placeholder::make_id(secret);
+        entries.insert(id.clone(), secret.to_string());
+        save_entries(&self.path, &self.passphrase, &entries)?;
+        Ok(id)
+    }
+
+    pub fn resolve(&self, id: &str) -> Result<Option<String>, KeyclawError> {
+        let _guard = self.lock_entries()?;
+        let entries = self.load_entries_unlocked()?;
+        Ok(entries.get(id).cloned())
+    }
+
+    fn lock_entries(&self) -> Result<MutexGuard<'_, ()>, KeyclawError> {
+        self.lock
             .lock()
-            .map_err(|_| KeyclawError::uncoded("vault mutex poisoned"))?;
+            .map_err(|_| KeyclawError::uncoded("vault mutex poisoned"))
+    }
+
+    fn load_entries_unlocked(&self) -> Result<HashMap<String, String>, KeyclawError> {
         match load_entries(&self.path, &self.passphrase) {
             Ok(entries) => Ok(entries),
             Err(VaultLoadFailure::Missing) => Ok(HashMap::new()),
@@ -81,19 +100,6 @@ impl Store {
             ))),
             Err(VaultLoadFailure::Error(err)) => Err(err),
         }
-    }
-
-    pub fn store_secret(&self, secret: &str) -> Result<String, KeyclawError> {
-        let mut entries = self.load()?;
-        let id = placeholder::make_id(secret);
-        entries.insert(id.clone(), secret.to_string());
-        self.save(&entries)?;
-        Ok(id)
-    }
-
-    pub fn resolve(&self, id: &str) -> Result<Option<String>, KeyclawError> {
-        let entries = self.load()?;
-        Ok(entries.get(id).cloned())
     }
 }
 
