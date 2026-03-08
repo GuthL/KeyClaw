@@ -553,6 +553,7 @@ fn rewrite_json_respects_custom_gitleaks_config() {
 
     let mut child = rewrite_json_command(temp.path())
         .env("KEYCLAW_GITLEAKS_CONFIG", &gitleaks_config)
+        .env("KEYCLAW_ENTROPY_ENABLED", "false")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
