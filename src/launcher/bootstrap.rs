@@ -56,8 +56,8 @@ pub(super) fn run_proxy_foreground(cfg: &Config, processor: Arc<Processor>, ca: 
     }
 
     crate::logging::info(&format!("proxy listening on {}", running_proxy.addr));
-    crate::logging::info("source ~/.keyclaw/env.sh in any shell to route through keyclaw");
     crate::logging::info("press Ctrl-C to stop");
+    println!("source {}", env_path.display());
 
     let mut signals = match signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,
@@ -116,12 +116,154 @@ pub(super) fn run_proxy_detached(cfg: &Config) -> Result<i32, KeyclawError> {
     wait_for_detached_proxy_ready(&mut child, &pid_path, &env_path, &log_path)?;
 
     crate::logging::info("proxy running in background");
-    crate::logging::info("source ~/.keyclaw/env.sh in any shell to route through keyclaw");
-    crate::logging::info("stop it later with: kill \"$(cat ~/.keyclaw/proxy.pid)\"");
     crate::logging::info(&format!("proxy log file: {}", log_path.display()));
+    println!("source {}", env_path.display());
 
     let _ = cfg;
     Ok(0)
+}
+
+pub(super) fn run_proxy_stop() -> i32 {
+    let keyclaw_dir = crate::certgen::keyclaw_dir();
+    let pid_path = keyclaw_dir.join("proxy.pid");
+
+    let pid = match read_and_validate_proxy_pid(&pid_path) {
+        Some(pid) => pid,
+        None => {
+            crate::logging::info("no running proxy found");
+            return 0;
+        }
+    };
+
+    // Send SIGTERM
+    let kill_result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if kill_result != 0 {
+        crate::logging::info("no running proxy found");
+        let _ = fs::remove_file(&pid_path);
+        return 0;
+    }
+
+    // Wait up to 5 seconds for the process to exit
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut exited = false;
+    while Instant::now() < deadline {
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        if !alive {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = fs::remove_file(&pid_path);
+
+    if exited {
+        crate::logging::info(&format!("proxy stopped (pid={pid})"));
+        0
+    } else {
+        crate::logging::error(&format!(
+            "proxy (pid={pid}) did not exit within 5 seconds after SIGTERM"
+        ));
+        1
+    }
+}
+
+pub(super) fn run_proxy_status() -> i32 {
+    let keyclaw_dir = crate::certgen::keyclaw_dir();
+    let pid_path = keyclaw_dir.join("proxy.pid");
+    let env_path = keyclaw_dir.join("env.sh");
+
+    let pid = match read_and_validate_proxy_pid(&pid_path) {
+        Some(pid) => pid,
+        None => {
+            crate::logging::info("proxy not running");
+            return 1;
+        }
+    };
+
+    let addr = read_proxy_addr_from_env(&env_path).unwrap_or_else(|| "127.0.0.1:8877".to_string());
+    crate::logging::info(&format!("proxy running (pid={pid}, addr={addr})"));
+    0
+}
+
+/// Read PID from file and validate that it is actually a keyclaw proxy process.
+/// Returns `None` if no PID file, stale PID, or not a keyclaw proxy process.
+/// Cleans up stale PID file as a side effect.
+fn read_and_validate_proxy_pid(pid_path: &Path) -> Option<u32> {
+    let pid_str = fs::read_to_string(pid_path).ok()?;
+
+    let pid: u32 = match pid_str.trim().parse() {
+        Ok(p) => p,
+        Err(_) => {
+            let _ = fs::remove_file(pid_path);
+            return None;
+        }
+    };
+
+    // Check if process is alive
+    let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+    if !alive {
+        let _ = fs::remove_file(pid_path);
+        return None;
+    }
+
+    // Validate the process is actually a keyclaw proxy by checking comm and args
+    if !is_keyclaw_proxy_process(pid) {
+        let _ = fs::remove_file(pid_path);
+        return None;
+    }
+
+    Some(pid)
+}
+
+/// Check if a given PID is a keyclaw proxy process by inspecting process name and args.
+fn is_keyclaw_proxy_process(pid: u32) -> bool {
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("keyclaw"));
+    let exe_name = current_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("keyclaw");
+
+    // Check process comm (executable name)
+    let comm = match Command::new("ps")
+        .args(["-ww", "-o", "comm=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        Err(_) => return false,
+    };
+
+    if comm != exe_name {
+        return false;
+    }
+
+    // Check process args contain "proxy"
+    let args = match Command::new("ps")
+        .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        Err(_) => return false,
+    };
+
+    // Match same pattern as env.sh: *" proxy" or *" proxy "*
+    args.contains(" proxy") && (args.ends_with(" proxy") || args.contains(" proxy "))
+}
+
+/// Extract the proxy address from the env.sh script.
+fn read_proxy_addr_from_env(env_path: &Path) -> Option<String> {
+    let content = fs::read_to_string(env_path).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        // Look for HTTP_PROXY= line (the export line)
+        if let Some(rest) = line.strip_prefix("export HTTP_PROXY=") {
+            let url = rest.trim_matches('\'');
+            // Strip "http://" prefix to get just the address
+            return Some(url.strip_prefix("http://").unwrap_or(url).to_string());
+        }
+    }
+    None
 }
 
 pub(super) fn render_proxy_env_script(
@@ -739,5 +881,59 @@ mod tests {
             !ruleset.rules.is_empty(),
             "bundled fallback should still load shipped rules"
         );
+    }
+
+    #[test]
+    fn read_and_validate_proxy_pid_returns_none_for_missing_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let pid_path = temp.path().join("proxy.pid");
+        assert!(super::read_and_validate_proxy_pid(&pid_path).is_none());
+    }
+
+    #[test]
+    fn read_and_validate_proxy_pid_returns_none_for_invalid_pid() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let pid_path = temp.path().join("proxy.pid");
+        std::fs::write(&pid_path, "not-a-number").expect("write");
+        assert!(super::read_and_validate_proxy_pid(&pid_path).is_none());
+        // Stale PID file should be cleaned up
+        assert!(!pid_path.exists());
+    }
+
+    #[test]
+    fn read_and_validate_proxy_pid_returns_none_for_dead_process() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let pid_path = temp.path().join("proxy.pid");
+        // PID 4294967 is very unlikely to be running
+        std::fs::write(&pid_path, "4294967").expect("write");
+        assert!(super::read_and_validate_proxy_pid(&pid_path).is_none());
+        // Stale PID file should be cleaned up
+        assert!(!pid_path.exists());
+    }
+
+    #[test]
+    fn is_keyclaw_proxy_process_rejects_unrelated_process() {
+        // The current test runner is not a keyclaw proxy process
+        let pid = std::process::id();
+        assert!(!super::is_keyclaw_proxy_process(pid));
+    }
+
+    #[test]
+    fn read_proxy_addr_from_env_extracts_address() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_path = temp.path().join("env.sh");
+        let content = "# comment\nexport HTTP_PROXY='http://127.0.0.1:9988'\nexport HTTPS_PROXY='http://127.0.0.1:9988'\n";
+        std::fs::write(&env_path, content).expect("write");
+        assert_eq!(
+            super::read_proxy_addr_from_env(&env_path),
+            Some("127.0.0.1:9988".to_string())
+        );
+    }
+
+    #[test]
+    fn read_proxy_addr_from_env_returns_none_for_missing_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_path = temp.path().join("env.sh");
+        assert_eq!(super::read_proxy_addr_from_env(&env_path), None);
     }
 }

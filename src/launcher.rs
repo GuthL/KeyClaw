@@ -12,7 +12,8 @@ use crate::errors::{code_of, KeyclawError};
 use crate::pipeline::Processor;
 
 use self::bootstrap::{
-    build_processor, configure_unsafe_logging, run_proxy_detached, run_proxy_foreground, Runner,
+    build_processor, configure_unsafe_logging, run_proxy_detached, run_proxy_foreground,
+    run_proxy_status, run_proxy_stop, Runner,
 };
 use self::doctor::run_doctor;
 
@@ -40,33 +41,37 @@ pub fn run_cli(args: Vec<String>) -> i32 {
                 }
             }
         }
-        CliCommand::Proxy { foreground } => {
-            configure_unsafe_logging(&cfg);
-            if foreground {
-                let ca = match crate::certgen::ensure_ca() {
-                    Ok(ca) => ca,
-                    Err(err) => {
-                        print_error(&err);
-                        return 1;
+        CliCommand::Proxy { action } => match action {
+            ProxyAction::Start { foreground } => {
+                configure_unsafe_logging(&cfg);
+                if foreground {
+                    let ca = match crate::certgen::ensure_ca() {
+                        Ok(ca) => ca,
+                        Err(err) => {
+                            print_error(&err);
+                            return 1;
+                        }
+                    };
+                    match build_processor(&cfg) {
+                        Ok(processor) => run_proxy_foreground(&cfg, processor, ca),
+                        Err(err) => {
+                            print_error(&err);
+                            1
+                        }
                     }
-                };
-                match build_processor(&cfg) {
-                    Ok(processor) => run_proxy_foreground(&cfg, processor, ca),
-                    Err(err) => {
-                        print_error(&err);
-                        1
-                    }
-                }
-            } else {
-                match run_proxy_detached(&cfg) {
-                    Ok(code) => code,
-                    Err(err) => {
-                        print_error(&err);
-                        1
+                } else {
+                    match run_proxy_detached(&cfg) {
+                        Ok(code) => code,
+                        Err(err) => {
+                            print_error(&err);
+                            1
+                        }
                     }
                 }
             }
-        }
+            ProxyAction::Stop => run_proxy_stop(),
+            ProxyAction::Status => run_proxy_status(),
+        },
         CliCommand::RewriteJson => {
             configure_unsafe_logging(&cfg);
             match build_processor(&cfg) {
@@ -81,6 +86,13 @@ pub fn run_cli(args: Vec<String>) -> i32 {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum ProxyAction {
+    Start { foreground: bool },
+    Stop,
+    Status,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum CliCommand {
     Doctor,
     Mitm {
@@ -88,7 +100,7 @@ enum CliCommand {
         child_args: Vec<String>,
     },
     Proxy {
-        foreground: bool,
+        action: ProxyAction,
     },
     RewriteJson,
 }
@@ -99,9 +111,25 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
 
     match matches.subcommand() {
         Some(("doctor", _)) => Ok(CliCommand::Doctor),
-        Some(("proxy", subcommand)) => Ok(CliCommand::Proxy {
-            foreground: subcommand.get_flag("foreground"),
-        }),
+        Some(("proxy", subcommand)) => {
+            let action = match subcommand.subcommand() {
+                Some(("start", start_matches)) => ProxyAction::Start {
+                    foreground: start_matches.get_flag("foreground"),
+                },
+                Some(("stop", _)) => ProxyAction::Stop,
+                Some(("status", _)) => ProxyAction::Status,
+                Some((name, _)) => {
+                    return Err(clap::Error::raw(
+                        ErrorKind::InvalidSubcommand,
+                        format!("unsupported proxy subcommand `{name}`"),
+                    ))
+                }
+                None => ProxyAction::Start {
+                    foreground: subcommand.get_flag("foreground"),
+                },
+            };
+            Ok(CliCommand::Proxy { action })
+        }
         Some(("rewrite-json", _)) => Ok(CliCommand::RewriteJson),
         Some(("mitm", subcommand)) => Ok(CliCommand::Mitm {
             tool: required_string_arg(subcommand, "tool", "mitm")?,
@@ -158,12 +186,28 @@ fn cli() -> clap::Command {
         .subcommand_required(true)
         .subcommand(
             clap::Command::new("proxy")
-                .about("Start the global proxy daemon")
+                .about("Manage the global proxy daemon")
                 .arg(
                     Arg::new("foreground")
                         .long("foreground")
                         .help("Keep the proxy attached to this terminal instead of detaching")
                         .action(clap::ArgAction::SetTrue),
+                )
+                .subcommand(
+                    clap::Command::new("start")
+                        .about("Start the global proxy daemon")
+                        .arg(
+                            Arg::new("foreground")
+                                .long("foreground")
+                                .help(
+                                    "Keep the proxy attached to this terminal instead of detaching",
+                                )
+                                .action(clap::ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(clap::Command::new("stop").about("Stop the running proxy daemon"))
+                .subcommand(
+                    clap::Command::new("status").about("Show status of the proxy daemon"),
                 ),
         )
         .subcommand(
@@ -270,15 +314,55 @@ mod tests {
         );
         assert_eq!(
             super::parse_cli(vec!["proxy".into()]).unwrap(),
-            super::CliCommand::Proxy { foreground: false }
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Start { foreground: false }
+            }
         );
         assert_eq!(
             super::parse_cli(vec!["proxy".into(), "--foreground".into()]).unwrap(),
-            super::CliCommand::Proxy { foreground: true }
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Start { foreground: true }
+            }
         );
         assert_eq!(
             super::parse_cli(vec!["rewrite-json".into()]).unwrap(),
             super::CliCommand::RewriteJson
+        );
+    }
+
+    #[test]
+    fn parse_cli_proxy_start_subcommand() {
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into(), "start".into()]).unwrap(),
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Start { foreground: false }
+            }
+        );
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into(), "start".into(), "--foreground".into()]).unwrap(),
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Start { foreground: true }
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cli_proxy_stop_subcommand() {
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into(), "stop".into()]).unwrap(),
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Stop
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cli_proxy_status_subcommand() {
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into(), "status".into()]).unwrap(),
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Status
+            }
         );
     }
 

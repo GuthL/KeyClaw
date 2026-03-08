@@ -202,4 +202,13 @@ regex = '[a-f0-9]{16}'
             "invalid marker-shaped text should still be scanned"
         );
     }
+
+    #[test]
+    fn bundled_rules_load_without_skips() {
+        let rules = RuleSet::bundled().expect("bundled rules");
+        assert_eq!(
+            rules.skipped_rules, 0,
+            "bundled rules should not contain invalid or unsupported entries"
+        );
+    }
 }

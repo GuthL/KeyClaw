@@ -102,28 +102,26 @@ KeyClaw's first public release intentionally keeps the support matrix narrow:
 
 ### Quick Start — Global Proxy
 
-The simplest way to use KeyClaw. Start the proxy, source the env, and use your CLI tools as normal:
+The simplest way to use KeyClaw. Start the proxy and source the env in one step:
 
 ```bash
-# Terminal 1: Start the proxy
-keyclaw proxy
-
-# Terminal 2: Source the env and use your tools
-source ~/.keyclaw/env.sh
+eval "$(keyclaw proxy)"
 claude "what API keys are in my .env?"   # secrets are redacted automatically
 codex "deploy using my AWS credentials"  # same protection for Codex
 ```
 
-By default `keyclaw proxy` detaches and keeps running in the background. Stop it later with:
+`keyclaw proxy` detaches and keeps running in the background. The `eval` wrapper sources `~/.keyclaw/env.sh` in your current shell, setting `HTTP_PROXY`, `HTTPS_PROXY`, `SSL_CERT_FILE`, and related variables so CLI tools route through KeyClaw and trust the local CA.
+
+Manage the proxy lifecycle with:
 
 ```bash
-kill "$(cat ~/.keyclaw/proxy.pid)"
+keyclaw proxy status   # check if the proxy is running
+keyclaw proxy stop     # graceful shutdown
 ```
 
-If you want the proxy attached to the current terminal instead, use `keyclaw proxy --foreground`.
+If you want the proxy attached to the current terminal instead, use `keyclaw proxy start --foreground`.
 
-The `env.sh` script validates that the recorded `keyclaw proxy` process is still the active instance before exporting proxy variables, and it ignores stale PID state safely — safe to add to your `.bashrc`.
-It also exports `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `NODE_EXTRA_CA_CERTS` so supported CLI tools route through KeyClaw and trust the local CA.
+> **Tip:** Add `[ -f ~/.keyclaw/env.sh ] && source ~/.keyclaw/env.sh` to your `~/.bashrc` to auto-route through KeyClaw in every new shell. The script safely validates that the proxy is still running before exporting variables.
 
 ### Quick Start — MITM Wrapper
 

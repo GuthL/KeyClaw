@@ -109,7 +109,9 @@ Example: `{{KEYCLAW_SECRET_api_k_77dc0005c514277d}}`
 
 ### Proxy env integration
 ```bash
-source ~/.keyclaw/env.sh   # Sets HTTP_PROXY, SSL_CERT_FILE, etc.
+eval "$(keyclaw proxy)"    # Start proxy + source env in one step
+keyclaw proxy status       # Check if proxy is running
+keyclaw proxy stop         # Graceful shutdown
 ```
 
 ## Error Handling

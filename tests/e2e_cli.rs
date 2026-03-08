@@ -450,13 +450,10 @@ fn proxy_detaches_by_default_and_prints_stop_instructions() {
         stderr.contains("proxy running in background"),
         "stderr={stderr}"
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("source ~/.keyclaw/env.sh"),
-        "stderr={stderr}"
-    );
-    assert!(
-        stderr.contains("kill \"$(cat ~/.keyclaw/proxy.pid)\""),
-        "stderr={stderr}"
+        stdout.contains("source") && stdout.contains("env.sh"),
+        "stdout should contain eval-able source command: stdout={stdout}"
     );
 
     let pid_path = temp.path().join(".keyclaw").join("proxy.pid");
