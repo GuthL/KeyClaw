@@ -8,7 +8,7 @@ use http_body_util::Full;
 use hudsucker::{
     certificate_authority::RcgenAuthority,
     hyper::{
-        header::{CONTENT_TYPE, HOST},
+        header::{HeaderValue, CONTENT_TYPE, HOST},
         Request, Response, StatusCode,
     },
     rcgen::{Issuer, KeyPair},
@@ -109,12 +109,12 @@ pub(super) fn is_json_payload(payload: &[u8]) -> bool {
 pub(super) fn json_error_response(status: StatusCode, code: &str, msg: &str) -> Response<Body> {
     let payload = serde_json::json!({"error": {"code": code, "message": msg}});
     let body = serde_json::to_vec(&payload).unwrap_or_else(|_| b"{}".to_vec());
-
-    Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, "application/json")
-        .body(body_from_vec(body))
-        .expect("failed to build proxy error response")
+    let mut response = Response::new(body_from_vec(body));
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    response
 }
 
 pub(super) fn log_replacements(
@@ -232,10 +232,24 @@ fn log_with_level(level: crate::logging::LogLevel, line: String) {
 
 #[cfg(test)]
 mod tests {
-    use hudsucker::hyper::{header::HOST, Request, Uri};
+    use hudsucker::hyper::{header::CONTENT_TYPE, header::HOST, Request, StatusCode, Uri};
     use hudsucker::Body;
 
-    use super::{allowed, normalize_hosts, request_host};
+    use super::{allowed, json_error_response, normalize_hosts, request_host};
+
+    #[test]
+    fn json_error_response_sets_status_and_json_content_type() {
+        let response = json_error_response(StatusCode::BAD_REQUEST, "invalid_json", "bad input");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+    }
 
     #[test]
     fn request_host_prefers_uri_authority_over_host_header() {
