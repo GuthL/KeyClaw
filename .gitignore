@@ -19,3 +19,6 @@ certs/
 
 # Internal docs
 docs/
+
+# Git worktrees
+.worktrees/
