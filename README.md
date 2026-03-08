@@ -251,12 +251,20 @@ src/
 ├── certgen.rs         # Runtime CA certificate generation
 ├── config.rs          # Environment-based configuration
 ├── gitleaks_rules.rs  # Bundled gitleaks rule loading + native regex compilation
-├── proxy.rs           # MITM proxy (HTTP, SSE, WebSocket)
 ├── pipeline.rs        # Request rewrite pipeline
 ├── placeholder.rs     # Placeholder parsing, generation, and resolution
 ├── redaction.rs       # JSON walker + notice injection
 ├── vault.rs           # AES-GCM encrypted secret storage
-├── launcher.rs        # CLI launcher (mitm/proxy/doctor)
+├── proxy.rs           # Proxy server entrypoint + handler wiring
+├── proxy/
+│   ├── common.rs      # Shared host checks, response helpers, and logging
+│   ├── http.rs        # HTTP request/response interception
+│   ├── streaming.rs   # SSE frame resolution and buffering
+│   └── websocket.rs   # WebSocket message redaction and resolution
+├── launcher.rs        # CLI surface and subcommand dispatch
+├── launcher/
+│   ├── bootstrap.rs   # Processor/bootstrap setup and launched-tool wiring
+│   └── doctor.rs      # Operator health checks
 ├── logscrub.rs        # Log sanitization
 └── errors.rs          # Error types and codes
 gitleaks.toml          # Bundled detection rules compiled by gitleaks_rules.rs

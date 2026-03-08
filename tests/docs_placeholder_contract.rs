@@ -82,3 +82,23 @@ fn agent_module_map_matches_the_current_source_tree() {
         );
     }
 }
+
+#[test]
+fn readme_project_structure_shows_split_proxy_and_launcher_modules() {
+    let readme = std::fs::read_to_string("README.md").expect("read README.md");
+
+    for expected in [
+        "proxy/",
+        "│   ├── http.rs",
+        "│   ├── streaming.rs",
+        "│   └── websocket.rs",
+        "launcher/",
+        "│   ├── bootstrap.rs",
+        "│   └── doctor.rs",
+    ] {
+        assert!(
+            readme.contains(expected),
+            "README.md should include {expected} in the project structure section: {readme}"
+        );
+    }
+}
