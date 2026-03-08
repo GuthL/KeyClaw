@@ -31,3 +31,23 @@ fn docs_describe_the_current_placeholder_shape() {
         "AGENTS.md should describe the current placeholder shape with the visible prefix segment: {agents}"
     );
 }
+
+#[test]
+fn agent_guide_points_common_edits_at_split_modules() {
+    let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
+
+    assert!(
+        agents.contains("src/proxy/http.rs")
+            && agents.contains("src/proxy/streaming.rs")
+            && agents.contains("src/proxy/websocket.rs"),
+        "AGENTS.md should point proxy changes at the split proxy modules: {agents}"
+    );
+    assert!(
+        !agents.contains("Edit `src/proxy.rs`. The `HttpHandler` impl on `KeyclawHttpHandler` has:"),
+        "AGENTS.md should not describe proxy changes as if src/proxy.rs still held the handler implementation: {agents}"
+    );
+    assert!(
+        agents.contains("src/launcher/bootstrap.rs"),
+        "AGENTS.md should point CLI command behavior at the split launcher modules: {agents}"
+    );
+}
