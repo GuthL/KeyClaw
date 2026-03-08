@@ -91,6 +91,10 @@ fn release_docs_define_artifacts_and_maintainer_checklist() {
         "checklist should link to a documented dry run: {checklist}"
     );
     assert!(
+        checklist.contains("scripts/smoke-release.sh target/release/keyclaw"),
+        "checklist should point maintainers at the canonical smoke script: {checklist}"
+    );
+    assert!(
         contributing.contains("docs/release/maintainer-checklist.md"),
         "CONTRIBUTING should link to the release checklist: {contributing}"
     );
@@ -133,6 +137,8 @@ fn tagged_release_workflow_packages_documented_archives_and_checksums() {
 fn release_packaging_scripts_enforce_archive_contract() {
     let package_script = std::fs::read_to_string("scripts/package-release.sh")
         .expect("read scripts/package-release.sh");
+    let smoke_script =
+        std::fs::read_to_string("scripts/smoke-release.sh").expect("read scripts/smoke-release.sh");
     let verify_script = std::fs::read_to_string("scripts/verify-release-contract.sh")
         .expect("read scripts/verify-release-contract.sh");
 
@@ -154,6 +160,12 @@ fn release_packaging_scripts_enforce_archive_contract() {
         verify_script.contains("tar -tzf"),
         "verification script should inspect archive contents: {verify_script}"
     );
+    for required in ["doctor", "proxy", "mitm codex", "mitm claude"] {
+        assert!(
+            smoke_script.contains(required),
+            "smoke script should cover {required}: {smoke_script}"
+        );
+    }
 }
 
 fn job_section<'a>(workflow: &'a str, job: &str, next_job: Option<&str>) -> &'a str {
