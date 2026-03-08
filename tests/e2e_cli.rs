@@ -5,6 +5,8 @@ use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use keyclaw::placeholder;
+
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 #[cfg(unix)]
@@ -105,7 +107,7 @@ fn mitm_codex_intercepts_and_sanitizes() {
         "secret leaked to upstream: {body}"
     );
     assert!(
-        body.contains("{{KEYCLAW_SECRET_"),
+        placeholder::contains_complete_placeholder(&body),
         "no placeholder in upstream body: {body}"
     );
     assert!(!stderr.contains(TEST_SECRET_CODEX));
@@ -131,7 +133,7 @@ fn mitm_claude_intercepts_and_sanitizes() {
         "secret leaked to upstream: {body}"
     );
     assert!(
-        body.contains("{{KEYCLAW_SECRET_"),
+        placeholder::contains_complete_placeholder(&body),
         "no placeholder in upstream body: {body}"
     );
     assert!(!stderr.contains(TEST_SECRET_CLAUDE));
