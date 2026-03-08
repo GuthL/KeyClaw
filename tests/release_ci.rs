@@ -4,15 +4,16 @@ fn release_ci_workflow_covers_supported_matrix_and_gates() {
         .expect("read .github/workflows/rust.yml");
     let lint = job_section(&workflow, "lint", Some("test"));
     let test = job_section(&workflow, "test", Some("release-build"));
-    let release_build = job_section(&workflow, "release-build", None);
+    let release_build = job_section(&workflow, "release-build", Some("publish-dry-run"));
+    let publish_dry_run = job_section(&workflow, "publish-dry-run", None);
 
     assert!(
-        workflow.contains("push:\n    branches: [ \"master\" ]"),
-        "workflow should target master pushes: {workflow}"
+        workflow.contains("push:\n    branches: [ \"master\", \"main\" ]"),
+        "workflow should target master and main pushes: {workflow}"
     );
     assert!(
-        workflow.contains("pull_request:\n    branches: [ \"master\" ]"),
-        "workflow should target master pull requests: {workflow}"
+        workflow.contains("pull_request:\n    branches: [ \"master\", \"main\" ]"),
+        "workflow should target master and main pull requests: {workflow}"
     );
     assert!(
         lint.contains("matrix:"),
@@ -45,6 +46,14 @@ fn release_ci_workflow_covers_supported_matrix_and_gates() {
     assert!(
         release_build.contains("cargo build --release --locked"),
         "release-build job should build release artifacts: {release_build}"
+    );
+    assert!(
+        publish_dry_run.contains("ubuntu-latest"),
+        "publish-dry-run job should run on Linux: {publish_dry_run}"
+    );
+    assert!(
+        publish_dry_run.contains("cargo publish --dry-run --locked"),
+        "publish-dry-run job should rehearse crates.io publication in CI: {publish_dry_run}"
     );
 }
 
