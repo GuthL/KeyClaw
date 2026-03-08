@@ -1,4 +1,4 @@
-# CLAUDE.md — Agent Guide to KeyClaw
+# AGENTS.md — Agent Guide to KeyClaw
 
 This file helps AI coding agents (Claude, Codex, Cursor, etc.) understand and work with the KeyClaw codebase effectively.
 
@@ -115,9 +115,11 @@ source ~/.keyclaw/env.sh   # Sets HTTP_PROXY, SSL_CERT_FILE, etc.
 ## Error Handling
 
 All errors use `KeyclawError` with optional deterministic codes:
-- `blocked_by_leak_policy` — secret found, request blocked
-- `gitleaks_unavailable` — gitleaks binary missing
 - `mitm_not_effective` — proxy bypass detected
+- `body_too_large` — request exceeds the configured max body size
+- `invalid_json` — JSON parse/rewrite failed
+- `request_timeout` — request body read timed out before inspection completed
+- `strict_resolve_failed` — placeholder resolution failed in strict mode
 
 Check errors with `code_of(&err)` to get the code string.
 

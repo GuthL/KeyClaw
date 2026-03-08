@@ -21,64 +21,67 @@ The binary is at `./target/release/keyclaw`. No external services needed for bui
 ### Request Flow (outbound)
 
 ```
-User CLI → KeyClaw Proxy → detect secrets (gitleaks rules) → replace with {{KEYCLAW_SECRET_xxx}}
+User CLI → KeyClaw Proxy → detect secrets → replace with {{KEYCLAW_SECRET_<prefix>_<16 hex chars>}}
 → store mapping in encrypted vault → forward sanitized request to API
 ```
 
 ### Response Flow (inbound)
 
 ```
-API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_xxx}} placeholders
+API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_<prefix>_<16 hex chars>}} placeholders
 → resolve from vault → reinject real secrets → forward to CLI
 ```
 
 ### Key Design Decisions
 
 1. **hudsucker** is the MITM proxy engine (HTTP/HTTPS/WebSocket)
-2. **Gitleaks rules are compiled natively** — 220+ rules from `gitleaks.toml` parsed at startup into Rust regex. No subprocess needed.
-3. **Placeholders are deterministic** — same secret always produces same placeholder ID (5-char prefix + SHA-256 hash)
-4. **Vault is AES-GCM encrypted** with scrypt key derivation, atomic writes via temp file + rename
+2. **Placeholders are deterministic** — same secret always produces same placeholder ID (SHA-256 based)
+3. **Vault is AES-GCM encrypted** with scrypt key derivation, atomic writes via temp file + rename
+4. **Fail-closed by default** — if detection errors occur, requests are blocked, not silently passed
 5. **WebSocket compression is stripped** — `Sec-WebSocket-Extensions` header is removed because tungstenite can't handle permessage-deflate (RSV1 bits)
 6. **SSE streams are not buffered** — placeholders are resolved per-chunk via `map_frame` to preserve streaming behavior
 7. **CA certs are generated at runtime** — no embedded certs, each machine generates its own on first run
-8. **Custom rules** can be loaded from a file via `KEYCLAW_GITLEAKS_CONFIG` env var
 
 ## Module Map
 
 | Module | Purpose | Key Types |
 |--------|---------|-----------|
-| `gitleaks_rules.rs` | Parse gitleaks.toml, compile regex rules natively | `RuleSet`, `Rule`, `SecretMatch` |
-| `proxy.rs` | MITM proxy server, HTTP/WS handlers | `Server`, `KeyclawHttpHandler` |
-| `pipeline.rs` | Orchestrates rewrite pipeline | `Processor`, `RewriteResult` |
-| `placeholder.rs` | Secret replacement using RuleSet, placeholder generation | `replace_secrets()`, `resolve_placeholders()` |
+| `gitleaks_rules.rs` | Bundled gitleaks rule loading + compiled regex matching | `RuleSet` |
+| `pipeline.rs` | Orchestrates rewrite + policy evaluation | `Processor`, `RewriteResult` |
+| `placeholder.rs` | Placeholder parsing, generation, and resolution | `make_id()`, `resolve_placeholders()` |
 | `redaction.rs` | JSON tree walker, notice injection | `walk_json_strings()`, `inject_redaction_notice()` |
 | `vault.rs` | AES-GCM encrypted secret↔placeholder storage | `Store` |
 | `certgen.rs` | Runtime CA cert/key generation via rcgen | `ensure_ca()`, `CaPair` |
-| `launcher.rs` | CLI subcommands (proxy, mitm, doctor, rewrite-json) | `Runner`, `run_cli()` |
+| `proxy.rs` | Proxy server entrypoint + handler wiring | `Server`, `RunningServer` |
+| `proxy/common.rs` | Shared host checks, response helpers, and operator logging | `allowed()`, `request_host()` |
+| `proxy/http.rs` | HTTP request/response interception | `HttpHandler for KeyclawHttpHandler` |
+| `proxy/streaming.rs` | SSE frame resolution and buffering | `SseStreamResolver` |
+| `proxy/websocket.rs` | WebSocket message redaction and resolution | `WebSocketHandler for KeyclawHttpHandler` |
+| `launcher.rs` | CLI surface and subcommand dispatch | `run_cli()` |
+| `launcher/bootstrap.rs` | Processor/bootstrap setup and launched-tool wiring | `build_processor()`, `Runner` |
+| `launcher/doctor.rs` | Operator health checks | `run_doctor()` |
 | `config.rs` | Environment variable configuration | `Config` |
 | `errors.rs` | Error types with deterministic codes | `KeyclawError` |
+| `logging.rs` | Leveled runtime logger for operator-visible output | `configure()`, `info()` |
 | `logscrub.rs` | Sanitizes secrets from log output | `scrub()` |
 
 ## Common Tasks
 
 ### Adding a new secret pattern
 
-Add a `[[rules]]` entry to `gitleaks.toml` at the repo root. The rule needs `id`, `regex`, and optionally `keywords` (for fast pre-filtering) and `secretGroup` (capture group index). Rules are compiled at startup via `include_str!`.
-
-For custom per-deployment rules, set `KEYCLAW_GITLEAKS_CONFIG=/path/to/custom.toml`.
+Edit `gitleaks.toml` to add or adjust the bundled rule, then use `tests/placeholder.rs` and `tests/integration_proxy.rs` to confirm the rewritten placeholder and round-trip resolution behavior. If the loading or compilation behavior itself needs to change, edit `src/gitleaks_rules.rs`.
 
 ### Changing proxy behavior
 
-Edit `src/proxy.rs`. The `HttpHandler` impl on `KeyclawHttpHandler` has:
-- `handle_request` — intercepts outbound requests, redacts secrets
-- `handle_response` — intercepts inbound responses, resolves placeholders (both streaming and non-streaming)
-- `should_intercept` — decides which CONNECT tunnels to MITM
-
-The `WebSocketHandler` impl handles WS message interception (client→server redaction, server→client resolution).
+Edit the focused proxy modules rather than only the thin `src/proxy.rs` entrypoint:
+- `src/proxy/http.rs` — HTTP request/response interception, body collection, and response reinjection
+- `src/proxy/streaming.rs` — SSE frame handling and split-placeholder buffering
+- `src/proxy/websocket.rs` — WebSocket message redaction and resolution
+- `src/proxy/common.rs` — shared host checks, helpers, and operator-visible response building
 
 ### Adding a new CLI subcommand
 
-Edit `src/launcher.rs` → `run_cli()` match block. Add a new arm and corresponding function.
+Edit `src/launcher.rs` to extend the clap surface and subcommand dispatch, then put the concrete behavior in the split launcher modules (`src/launcher/bootstrap.rs` today, or a new sibling module if the command needs its own file).
 
 ### Changing the redaction notice
 
@@ -90,9 +93,8 @@ Edit `src/redaction.rs` → `inject_redaction_notice()`. The notice is injected 
 ```
 {{KEYCLAW_SECRET_<prefix>_<16 hex chars>}}
 ```
-Example: `{{KEYCLAW_SECRET_ghp_A_edc439282b0de94f}}`
-
-The prefix is the first 5 characters of the secret (for human readability in logs).
+The prefix is up to 5 visible characters derived from the secret, followed by a 16-hex SHA-256 digest fragment.
+Example: `{{KEYCLAW_SECRET_api_k_77dc0005c514277d}}`
 
 ### Vault path
 ```
@@ -114,21 +116,21 @@ source ~/.keyclaw/env.sh   # Sets HTTP_PROXY, SSL_CERT_FILE, etc.
 
 All errors use `KeyclawError` with optional deterministic codes:
 - `mitm_not_effective` — proxy bypass detected
-- `body_too_large` — request exceeds max body size
+- `body_too_large` — request exceeds the configured max body size
 - `invalid_json` — JSON parse/rewrite failed
+- `request_timeout` — request body read timed out before inspection completed
 - `strict_resolve_failed` — placeholder resolution failed in strict mode
 
 Check errors with `code_of(&err)` to get the code string.
 
 ## Testing
 
-Tests are in `tests/`. Integration tests in `tests/integration_proxy.rs` spin up a real proxy. E2E tests in `tests/e2e_cli.rs` test the full binary. Unit tests cover placeholder logic, pipeline, and vault operations.
+Tests are in `tests/`. Integration tests in `tests/integration_proxy.rs` spin up a real proxy. Unit tests cover detection, placeholder logic, policy decisions, and vault operations.
 
 ```bash
 cargo test                          # All tests
 cargo test placeholder              # Just placeholder tests
 cargo test --test integration_proxy # Just proxy integration tests
-cargo test --test e2e_cli           # Just e2e CLI tests
 ```
 
 ## Dependencies to Know
@@ -136,42 +138,5 @@ cargo test --test e2e_cli           # Just e2e CLI tests
 - **hudsucker 0.24** — MITM proxy engine (wraps hyper + rustls + tungstenite)
 - **rcgen 0.14** — CA certificate generation (via hudsucker re-export)
 - **aes-gcm** — Vault encryption
-- **toml** — Parsing gitleaks.toml rules
-- **regex** — Native regex compilation of gitleaks rules (with 50MB size limit for complex patterns)
+- **aho-corasick** — Fast multi-pattern string matching for secret detection
 - **scrypt** — Key derivation for vault passphrase
-
-## Development Workflow
-
-For any non-trivial change, follow this 3-phase loop:
-
-### Phase 1: PM (spec before code)
-Before writing any code, define:
-- **What** — one sentence describing the change
-- **Acceptance criteria** — concrete conditions that mean "done"
-- **Scope** — what's in, what's explicitly out
-- **Edge cases** — failure modes to handle
-
-### Phase 2: Implement
-Write the code. Run `cargo test && cargo build --release` before moving on.
-
-### Phase 3: PR Review (self-review before commit)
-Review your own changes as a critical Staff Engineer would:
-- **Correctness** — does it meet the acceptance criteria?
-- **Security** — any secret leaks, placeholder integrity issues, vault concerns?
-- **Performance** — regex efficiency, per-request overhead?
-- **Rust idioms** — proper error handling, no unwrap in production paths, lifetime correctness?
-
-Only commit after all three phases pass.
-
-### Ralph Loop
-
-For iterative development with `/ralph-loop`:
-
-```
-/ralph-loop "Implement [feature].
-Phase 1: Write a 5-line spec with acceptance criteria.
-Phase 2: Implement. Run cargo test && cargo build --release.
-Phase 3: Self-review for correctness, security, performance.
-If review finds issues, fix and re-review.
-When all green, commit and output <promise>DONE</promise>" --completion-promise "DONE" --max-iterations 10
-```
