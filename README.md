@@ -1,10 +1,10 @@
 <div align="center">
 
-```
+<pre>
  ╦╔═╔═╗╦ ╦╔═╗╦  ╔═╗╦ ╦
  ╠╩╗║╣ ╚╦╝║  ║  ╠═╣║║║
  ╩ ╩╚═╝ ╩ ╚═╝╩═╝╩ ╩╚╩╝
-```
+</pre>
 
 **Detected secrets are swapped locally before they leave your machine.**
 
@@ -29,27 +29,27 @@ AI coding assistants like **Claude Code** and **OpenAI Codex** are incredibly po
 ## How It Works
 
 ```
-┌─────────────┐     ┌──────────────────────────────────┐     ┌─────────────┐
-│             │     │           KeyClaw Proxy           │     │             │
-│  Claude CLI ├────►│                                   ├────►│ Anthropic   │
-│  Codex CLI  │     │  1. Intercept request             │     │ OpenAI      │
-│             │◄────┤  2. Detect secrets (gitleaks rules)│◄────┤ API         │
-│             │     │  3. Replace with {{KEYCLAW_xxx}}   │     │             │
-│             │     │  4. Store in encrypted vault       │     │             │
-│             │     │  5. Forward sanitized request      │     │             │
-│             │     │  6. Reinject secrets in response   │     │             │
-│             │     │                                   │     │             │
-└─────────────┘     └──────────────────────────────────┘     └─────────────┘
-                              ▲
-                              │
-                    ┌─────────┴─────────┐
-                    │  ~/.keyclaw/       │
-                    │  ├── vault.enc     │  AES-GCM encrypted
-                    │  ├── vault.key     │  Machine-local key
-                    │  ├── ca.crt        │  Auto-generated
-                    │  ├── ca.key        │  Per-machine
-                    │  └── env.sh        │  Shell integration
-                    └───────────────────┘
+┌─────────────┐     ┌──────────────────────────────────────┐     ┌─────────────┐
+│             │     │            KeyClaw Proxy             │     │             │
+│  Claude CLI ├────►│                                      ├────►│ Anthropic   │
+│  Codex CLI  │     │  1. Intercept request                │     │ OpenAI      │
+│             │◄────┤  2. Detect secrets (gitleaks rules)  │◄────┤ API         │
+│             │     │  3. Replace with {{KEYCLAW_xxx}}     │     │             │
+│             │     │  4. Store in encrypted vault         │     │             │
+│             │     │  5. Forward sanitized request        │     │             │
+│             │     │  6. Reinject secrets in response     │     │             │
+│             │     │                                      │     │             │
+└─────────────┘     └──────────────────────────────────────┘     └─────────────┘
+                                       ▲
+                                       │
+                            ┌──────────┴─────────┐
+                            │  ~/.keyclaw/        │
+                            │  ├── vault.enc      │  AES-GCM encrypted
+                            │  ├── vault.key      │  Machine-local key
+                            │  ├── ca.crt         │  Auto-generated
+                            │  ├── ca.key         │  Per-machine
+                            │  └── env.sh         │  Shell integration
+                            └────────────────────┘
 ```
 
 ### Detection
@@ -82,14 +82,14 @@ Custom rules can be loaded from a file via `KEYCLAW_GITLEAKS_CONFIG`.
 ```bash
 git clone https://github.com/GuthL/KeyClaw.git
 cd KeyClaw
-cargo build --release
+cargo install --path .
 ```
 
 Check the installed entrypoint before wiring it into your shell:
 
 ```bash
-./target/release/keyclaw --help
-./target/release/keyclaw --version
+keyclaw --help
+keyclaw --version
 ```
 
 ### Supported Surface (v0.x)
@@ -106,13 +106,21 @@ The simplest way to use KeyClaw. Start the proxy, source the env, and use your C
 
 ```bash
 # Terminal 1: Start the proxy
-./target/release/keyclaw proxy
+keyclaw proxy
 
 # Terminal 2: Source the env and use your tools
 source ~/.keyclaw/env.sh
 claude "what API keys are in my .env?"   # secrets are redacted automatically
 codex "deploy using my AWS credentials"  # same protection for Codex
 ```
+
+By default `keyclaw proxy` detaches and keeps running in the background. Stop it later with:
+
+```bash
+kill "$(cat ~/.keyclaw/proxy.pid)"
+```
+
+If you want the proxy attached to the current terminal instead, use `keyclaw proxy --foreground`.
 
 The `env.sh` script validates that the recorded `keyclaw proxy` process is still the active instance before exporting proxy variables, and it ignores stale PID state safely — safe to add to your `.bashrc`.
 It also exports `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `NODE_EXTRA_CA_CERTS` so supported CLI tools route through KeyClaw and trust the local CA.
@@ -122,19 +130,21 @@ It also exports `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE`, `REQU
 Wraps a single CLI session with automatic proxy setup and teardown:
 
 ```bash
-# Wrap a Codex session
-./target/release/keyclaw mitm codex -- codex
+# Short form
+keyclaw codex exec --model gpt-5
+keyclaw claude --resume latest
 
-# Wrap a Claude session
-./target/release/keyclaw mitm claude -- claude
+# Explicit equivalent
+keyclaw mitm codex exec --model gpt-5
+keyclaw mitm claude --resume latest
 ```
 
-The `mitm` wrapper injects the proxy and CA trust environment for the child process automatically. Use it when you want a single protected session without sourcing shell-wide proxy variables.
+The shorthand `keyclaw codex ...` and `keyclaw claude ...` forms are just aliases for `keyclaw mitm codex ...` and `keyclaw mitm claude ...`. In all of those forms, KeyClaw launches the selected CLI binary for you, so you only pass the child CLI arguments.
 
 ### Verify It Works
 
 ```bash
-./target/release/keyclaw doctor
+keyclaw doctor
 ```
 
 `keyclaw doctor` is the first thing to run after changing local config or before debugging a failed `mitm` session. It checks the proxy bind address, proxy URL, CA readiness, vault path, vault key material, custom gitleaks config, proxy-bypass risk, and other operator-facing safety knobs.
@@ -148,11 +158,11 @@ Interpret the output like this:
 
 ## Troubleshooting
 
-Start with `./target/release/keyclaw doctor`. It is the fastest way to catch broken CA files, proxy bypass, custom ruleset problems, and missing vault key material before you debug the CLI itself.
+Start with `keyclaw doctor`. It is the fastest way to catch broken CA files, proxy bypass, custom ruleset problems, and missing vault key material before you debug the CLI itself.
 
 ### Certificate Trust Or TLS Errors
 
-- Use either `source ~/.keyclaw/env.sh` from `keyclaw proxy` or the `keyclaw mitm ...` wrapper so the child process sees the local proxy URL and CA bundle variables.
+- Use either `source ~/.keyclaw/env.sh` from `keyclaw proxy` or the `keyclaw codex` / `keyclaw claude` / `keyclaw mitm ...` wrappers so the child process sees the local proxy URL and CA bundle variables.
 - Confirm `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, or `NODE_EXTRA_CA_CERTS` point at `~/.keyclaw/ca.crt` if you are wiring the environment manually.
 - If `doctor` reports a broken or partial CA pair, remove the bad files in `~/.keyclaw/` and rerun `keyclaw proxy` to regenerate them locally.
 
