@@ -180,7 +180,7 @@ impl Processor {
         };
 
         let text = String::from_utf8_lossy(body);
-        if !text.contains("{{KEYCLAW_SECRET_") {
+        if !crate::placeholder::contains_placeholder_prefix(&text) {
             return Ok(body.to_vec());
         }
 

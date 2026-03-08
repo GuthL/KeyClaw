@@ -111,7 +111,7 @@ impl KeyclawHttpHandler {
     }
 
     fn resolve_ws_response_text(&self, text: &str) -> Option<String> {
-        if !text.contains("{{KEYCLAW_SECRET_") {
+        if !crate::placeholder::contains_placeholder_prefix(text) {
             return None;
         }
 

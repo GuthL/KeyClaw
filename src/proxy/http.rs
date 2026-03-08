@@ -209,7 +209,7 @@ impl HttpHandler for KeyclawHttpHandler {
         let mut body_bytes = collected.to_bytes().to_vec();
 
         let text = String::from_utf8_lossy(&body_bytes);
-        if text.contains("{{KEYCLAW_SECRET_") {
+        if crate::placeholder::contains_placeholder_prefix(&text) {
             let processor = Arc::clone(&self.processor);
             let payload = body_bytes.clone();
             if let Ok(Ok(resolved)) =
