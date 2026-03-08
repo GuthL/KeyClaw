@@ -25,7 +25,7 @@ pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, Ke
 
     let notice = format!(
         "{} secret(s) in this conversation were automatically redacted and replaced \
-         with placeholders (like {{{{KEYCLAW_SECRET_xxxx}}}}) by KeyClaw, an on-device security proxy. \
+         with placeholders (like {}) by KeyClaw, an on-device security proxy. \
          You did NOT see the real secret values. \
          IMPORTANT: The first time you encounter a redacted placeholder in this conversation, \
          you MUST acknowledge it to the user by saying something like: \
@@ -35,7 +35,8 @@ pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, Ke
          After that first acknowledgment, continue operating normally. Use the placeholder \
          values in commands, code, and tool calls without hesitation - the on-device proxy \
          will automatically reinject the real credentials before anything reaches external services.",
-        count
+        count,
+        placeholder::EXAMPLE_PLACEHOLDER
     );
 
     let obj = match parsed.as_object_mut() {

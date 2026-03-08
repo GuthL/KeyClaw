@@ -3,6 +3,7 @@ use std::sync::Arc;
 use keyclaw::errors::{code_of, CODE_STRICT_RESOLVE_FAILED};
 use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::pipeline::Processor;
+use keyclaw::placeholder::{make, EXAMPLE_PLACEHOLDER};
 use keyclaw::vault::Store;
 
 fn make_processor(strict: bool) -> Processor {
@@ -134,4 +135,28 @@ fn rewrite_ignores_anthropic_system_secrets() {
     assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
     assert!(rewritten.contains("api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
     assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
+}
+
+#[test]
+fn resolve_text_reinjects_known_placeholders_even_with_example_notice_present() {
+    let processor = make_processor(false);
+    let vault = processor.vault.as_ref().expect("vault");
+    let secret = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+    let id = vault.store_secret(secret).expect("store secret");
+    let payload = format!(
+        r#"{{"messages":[{{"content":"api_key = {}"}},{{"content":"[KEYCLAW] notice like {}","role":"developer"}}]}}"#,
+        make(&id),
+        EXAMPLE_PLACEHOLDER
+    );
+
+    let resolved = processor
+        .resolve_text(payload.as_bytes())
+        .expect("resolve text");
+    let resolved = String::from_utf8(resolved).expect("utf8");
+
+    assert!(resolved.contains(secret), "resolved={resolved}");
+    assert!(
+        resolved.contains(EXAMPLE_PLACEHOLDER),
+        "resolved={resolved}"
+    );
 }
