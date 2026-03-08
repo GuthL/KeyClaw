@@ -26,7 +26,11 @@ fn production_readiness_plan_locks_v0x_release_decisions() {
         "production readiness plan should record the logging-scope decision: {plan}"
     );
     assert!(
-        plan.contains("notice") && plan.contains("deferred"),
+        plan.contains("notice")
+            && plan.contains("KEYCLAW_NOTICE_MODE")
+            && plan.contains("verbose")
+            && plan.contains("minimal")
+            && plan.contains("off"),
         "production readiness plan should record the notice-mode decision: {plan}"
     );
     assert!(

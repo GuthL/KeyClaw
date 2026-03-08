@@ -4,9 +4,14 @@ use keyclaw::errors::{code_of, CODE_STRICT_RESOLVE_FAILED};
 use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::pipeline::Processor;
 use keyclaw::placeholder::{contains_complete_placeholder, make, EXAMPLE_PLACEHOLDER};
+use keyclaw::redaction::NoticeMode;
 use keyclaw::vault::Store;
 
 fn make_processor(strict: bool) -> Processor {
+    make_processor_with_notice_mode(strict, NoticeMode::Verbose)
+}
+
+fn make_processor_with_notice_mode(strict: bool, notice_mode: NoticeMode) -> Processor {
     let dir = tempfile::tempdir().expect("tempdir");
     let vault = Arc::new(Store::new(
         dir.path().join("vault.enc"),
@@ -18,6 +23,7 @@ fn make_processor(strict: bool) -> Processor {
         ruleset,
         max_body_size: 1 << 20,
         strict_mode: strict,
+        notice_mode,
     }
 }
 
@@ -54,6 +60,20 @@ fn rewrite_detects_and_replaces_secrets() {
     let rewritten = String::from_utf8_lossy(&result.body);
     assert!(contains_complete_placeholder(&rewritten), "{rewritten}");
     assert!(!rewritten.contains("aB3dE5fG"));
+}
+
+#[test]
+fn rewrite_detects_and_replaces_secrets_without_notice_when_notice_mode_is_off() {
+    let processor = make_processor_with_notice_mode(false, NoticeMode::Off);
+
+    let body = br#"{"messages":[{"content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"}]}"#;
+    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
+
+    assert!(!result.replacements.is_empty());
+    let rewritten = String::from_utf8_lossy(&result.body);
+    assert!(contains_complete_placeholder(&rewritten), "{rewritten}");
+    assert!(!rewritten.contains("aB3dE5fG"), "{rewritten}");
+    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
 }
 
 #[test]

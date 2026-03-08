@@ -3,6 +3,24 @@ use serde_json::Value;
 use crate::errors::{KeyclawError, CODE_STRICT_RESOLVE_FAILED};
 use crate::placeholder::{self};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeMode {
+    Verbose,
+    Minimal,
+    Off,
+}
+
+impl NoticeMode {
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "verbose" => Some(Self::Verbose),
+            "minimal" | "brief" | "compact" => Some(Self::Minimal),
+            "off" | "none" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
 pub fn walk_json_strings<F>(input: &[u8], mut transform: F) -> Result<Vec<u8>, KeyclawError>
 where
     F: FnMut(&str) -> Result<String, KeyclawError>,
@@ -20,24 +38,22 @@ pub fn inject_contract_marker(input: &[u8]) -> Result<Vec<u8>, KeyclawError> {
 }
 
 pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, KeyclawError> {
+    inject_redaction_notice_with_mode(input, count, NoticeMode::Verbose)
+}
+
+pub fn inject_redaction_notice_with_mode(
+    input: &[u8],
+    count: usize,
+    mode: NoticeMode,
+) -> Result<Vec<u8>, KeyclawError> {
+    if matches!(mode, NoticeMode::Off) {
+        return Ok(input.to_vec());
+    }
+
     let mut parsed: serde_json::Value = serde_json::from_slice(input)
         .map_err(|e| KeyclawError::uncoded_with_source("decode json for notice injection", e))?;
 
-    let notice = format!(
-        "{} secret(s) in this conversation were automatically redacted and replaced \
-         with placeholders (like {}) by KeyClaw, an on-device security proxy. \
-         You did NOT see the real secret values. \
-         IMPORTANT: The first time you encounter a redacted placeholder in this conversation, \
-         you MUST acknowledge it to the user by saying something like: \
-         'I can see a secret was shared, but it has been securely swapped by KeyClaw. \
-         I never see the real value - only a safe placeholder. Everything will work normally \
-         because the proxy reinjects the real credential on the fly.' \
-         After that first acknowledgment, continue operating normally. Use the placeholder \
-         values in commands, code, and tool calls without hesitation - the on-device proxy \
-         will automatically reinject the real credentials before anything reaches external services.",
-        count,
-        placeholder::EXAMPLE_PLACEHOLDER
-    );
+    let notice = redaction_notice_text(count, mode);
 
     let obj = match parsed.as_object_mut() {
         Some(o) => o,
@@ -91,6 +107,35 @@ pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, Ke
 
     serde_json::to_vec(&parsed)
         .map_err(|e| KeyclawError::uncoded_with_source("encode json after notice", e))
+}
+
+fn redaction_notice_text(count: usize, mode: NoticeMode) -> String {
+    match mode {
+        NoticeMode::Verbose => format!(
+            "{} secret(s) in this conversation were automatically redacted and replaced \
+             with placeholders (like {}) by KeyClaw, an on-device security proxy. \
+             You did NOT see the real secret values. \
+             IMPORTANT: The first time you encounter a redacted placeholder in this conversation, \
+             you MUST acknowledge it to the user by saying something like: \
+             'I can see a secret was shared, but it has been securely swapped by KeyClaw. \
+             I never see the real value - only a safe placeholder. Everything will work normally \
+             because the proxy reinjects the real credential on the fly.' \
+             After that first acknowledgment, continue operating normally. Use the placeholder \
+             values in commands, code, and tool calls without hesitation - the on-device proxy \
+             will automatically reinject the real credentials before anything reaches external services.",
+            count,
+            placeholder::EXAMPLE_PLACEHOLDER
+        ),
+        NoticeMode::Minimal => format!(
+            "{} secret(s) in this conversation were redacted by KeyClaw and replaced with \
+             placeholders (like {}). You only see the placeholders, not the real secret values. \
+             Use the placeholders normally; the on-device proxy reinjects the real credentials \
+             before requests leave this machine.",
+            count,
+            placeholder::EXAMPLE_PLACEHOLDER
+        ),
+        NoticeMode::Off => String::new(),
+    }
 }
 
 /// Walk only user message content strings in chat API payloads.

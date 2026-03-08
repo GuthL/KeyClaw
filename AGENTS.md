@@ -85,7 +85,7 @@ Edit `src/launcher.rs` to extend the clap surface and subcommand dispatch, then 
 
 ### Changing the redaction notice
 
-Edit `src/redaction.rs` → `inject_redaction_notice()`. The notice is injected differently for Anthropic (appended to `system` field) vs OpenAI (added as `developer` role message).
+Edit `src/redaction.rs` → `inject_redaction_notice_with_mode()` and `src/config.rs` for `KEYCLAW_NOTICE_MODE`. The notice is injected differently for Anthropic (appended to `system` field) vs OpenAI (added as `developer` role message), and the shipped modes are `verbose`, `minimal`, and `off`.
 
 ## Important Patterns
 
@@ -109,10 +109,13 @@ Example: `{{KEYCLAW_SECRET_api_k_77dc0005c514277d}}`
 
 ### Proxy env integration
 ```bash
-eval "$(keyclaw proxy)"    # Start proxy + source env in one step
+keyclaw proxy              # Start proxy daemon in the background
+source ~/.keyclaw/env.sh   # Route the current shell through it
 keyclaw proxy status       # Check if proxy is running
 keyclaw proxy stop         # Graceful shutdown
 ```
+
+On Linux with `systemd --user`, `keyclaw proxy autostart enable` installs a per-user autostart service. That keeps the daemon alive across login/reboot, but shells still need `source ~/.keyclaw/env.sh`.
 
 ## Error Handling
 

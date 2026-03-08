@@ -733,6 +733,7 @@ fn new_processor_with_ca() -> (Processor, String, String) {
         ruleset,
         max_body_size: 1 << 20,
         strict_mode: true,
+        notice_mode: keyclaw::redaction::NoticeMode::Verbose,
     };
 
     (processor, ca_cert, ca_key)
