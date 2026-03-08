@@ -22,6 +22,12 @@ fn docs_route_secret_pattern_work_to_gitleaks_rules() {
     );
 }
 
+fn normalized_agent_guide(path: &str, expected_title: &str) -> String {
+    let guide = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("read {path}"));
+
+    guide.replacen(expected_title, "# AGENT_GUIDE — Agent Guide to KeyClaw", 1)
+}
+
 #[test]
 fn docs_describe_the_current_placeholder_shape() {
     let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
@@ -30,6 +36,31 @@ fn docs_describe_the_current_placeholder_shape() {
         agents.contains("{{KEYCLAW_SECRET_<prefix>_<16 hex chars>}}"),
         "AGENTS.md should describe the current placeholder shape with the visible prefix segment: {agents}"
     );
+}
+
+#[test]
+fn agent_guides_describe_current_error_codes() {
+    let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
+
+    for expected in [
+        "`mitm_not_effective`",
+        "`body_too_large`",
+        "`invalid_json`",
+        "`request_timeout`",
+        "`strict_resolve_failed`",
+    ] {
+        assert!(
+            agents.contains(expected),
+            "AGENTS.md should document shipped error code {expected}: {agents}"
+        );
+    }
+
+    for stale in ["`blocked_by_leak_policy`", "`gitleaks_unavailable`"] {
+        assert!(
+            !agents.contains(stale),
+            "AGENTS.md should not document stale error code {stale}: {agents}"
+        );
+    }
 }
 
 #[test]
@@ -81,6 +112,27 @@ fn agent_module_map_matches_the_current_source_tree() {
             "AGENTS.md should not list stale module {stale}: {agents}"
         );
     }
+}
+
+#[test]
+fn agent_guides_share_the_same_current_content() {
+    let agents = normalized_agent_guide("AGENTS.md", "# AGENTS.md — Agent Guide to KeyClaw");
+    let claude = normalized_agent_guide("CLAUDE.md", "# CLAUDE.md — Agent Guide to KeyClaw");
+
+    assert_eq!(
+        agents, claude,
+        "AGENTS.md and CLAUDE.md should stay in sync aside from the top-level filename heading"
+    );
+}
+
+#[test]
+fn agents_guide_uses_its_own_filename_in_the_title() {
+    let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
+
+    assert!(
+        agents.starts_with("# AGENTS.md — Agent Guide to KeyClaw"),
+        "AGENTS.md should identify itself in the title: {agents}"
+    );
 }
 
 #[test]
