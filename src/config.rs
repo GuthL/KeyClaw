@@ -22,6 +22,9 @@ pub struct Config {
     pub unsafe_log: bool,
     pub require_mitm_effective: bool,
     pub notice_mode: NoticeMode,
+    pub entropy_enabled: bool,
+    pub entropy_threshold: f64,
+    pub entropy_min_len: usize,
 }
 
 impl Config {
@@ -48,6 +51,9 @@ impl Config {
             unsafe_log: bool_env("KEYCLAW_UNSAFE_LOG", false),
             require_mitm_effective: bool_env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", true),
             notice_mode: notice_mode_env("KEYCLAW_NOTICE_MODE", NoticeMode::Verbose),
+            entropy_enabled: bool_env("KEYCLAW_ENTROPY_ENABLED", true),
+            entropy_threshold: f64_env("KEYCLAW_ENTROPY_THRESHOLD", 3.5),
+            entropy_min_len: usize_env("KEYCLAW_ENTROPY_MIN_LEN", 20),
         }
     }
 
@@ -103,6 +109,20 @@ fn log_level_env(key: &str, fallback: LogLevel) -> LogLevel {
 fn notice_mode_env(key: &str, fallback: NoticeMode) -> NoticeMode {
     match env::var(key) {
         Ok(v) => NoticeMode::parse(v.trim()).unwrap_or(fallback),
+        Err(_) => fallback,
+    }
+}
+
+fn f64_env(key: &str, fallback: f64) -> f64 {
+    match env::var(key) {
+        Ok(v) => v.trim().parse::<f64>().unwrap_or(fallback),
+        Err(_) => fallback,
+    }
+}
+
+fn usize_env(key: &str, fallback: usize) -> usize {
+    match env::var(key) {
+        Ok(v) => v.trim().parse::<usize>().unwrap_or(fallback),
         Err(_) => fallback,
     }
 }
@@ -298,6 +318,36 @@ mod tests {
         assert_eq!(cfg.detector_timeout, Duration::from_secs(4));
         assert_eq!(cfg.notice_mode, NoticeMode::Verbose);
 
+        restore_env(saved);
+    }
+
+    #[test]
+    fn from_env_reads_entropy_settings() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let keys = ["KEYCLAW_ENTROPY_ENABLED", "KEYCLAW_ENTROPY_THRESHOLD", "KEYCLAW_ENTROPY_MIN_LEN"];
+        let saved = capture_env(&keys);
+        env::set_var("KEYCLAW_ENTROPY_ENABLED", "false");
+        env::set_var("KEYCLAW_ENTROPY_THRESHOLD", "4.0");
+        env::set_var("KEYCLAW_ENTROPY_MIN_LEN", "30");
+        let cfg = Config::from_env();
+        assert!(!cfg.entropy_enabled);
+        assert!((cfg.entropy_threshold - 4.0).abs() < 0.001);
+        assert_eq!(cfg.entropy_min_len, 30);
+        restore_env(saved);
+    }
+
+    #[test]
+    fn from_env_uses_entropy_defaults() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let keys = ["KEYCLAW_ENTROPY_ENABLED", "KEYCLAW_ENTROPY_THRESHOLD", "KEYCLAW_ENTROPY_MIN_LEN"];
+        let saved = capture_env(&keys);
+        env::remove_var("KEYCLAW_ENTROPY_ENABLED");
+        env::remove_var("KEYCLAW_ENTROPY_THRESHOLD");
+        env::remove_var("KEYCLAW_ENTROPY_MIN_LEN");
+        let cfg = Config::from_env();
+        assert!(cfg.entropy_enabled);
+        assert!((cfg.entropy_threshold - 3.5).abs() < 0.001);
+        assert_eq!(cfg.entropy_min_len, 20);
         restore_env(saved);
     }
 

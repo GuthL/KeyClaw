@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 
 use crate::certgen::CaPair;
+use crate::entropy::EntropyConfig;
 use crate::config::Config;
 use crate::errors::{KeyclawError, CODE_MITM_NOT_EFFECTIVE};
 use crate::gitleaks_rules::RuleSet;
@@ -769,7 +770,12 @@ pub(super) fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawErr
         crate::vault::resolve_vault_passphrase(&cfg.vault_path, cfg.vault_passphrase.as_deref())?;
     let vault = Arc::new(Store::new(cfg.vault_path.clone(), passphrase));
 
-    let ruleset = load_runtime_ruleset(cfg)?;
+    let mut ruleset = load_runtime_ruleset(cfg)?;
+    ruleset.entropy_config = EntropyConfig {
+        enabled: cfg.entropy_enabled,
+        threshold: cfg.entropy_threshold,
+        min_len: cfg.entropy_min_len,
+    };
 
     crate::logging::info(&format!("{} gitleaks rules loaded", ruleset.rules.len()));
 
@@ -1084,6 +1090,9 @@ mod tests {
             unsafe_log: false,
             require_mitm_effective: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
+            entropy_enabled: true,
+            entropy_threshold: 3.5,
+            entropy_min_len: 20,
         }
     }
 
