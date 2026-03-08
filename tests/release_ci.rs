@@ -95,8 +95,40 @@ fn release_docs_define_artifacts_and_maintainer_checklist() {
         "checklist should point maintainers at the canonical smoke script: {checklist}"
     );
     assert!(
+        checklist.contains("cargo publish --dry-run"),
+        "checklist should rehearse crates.io publication: {checklist}"
+    );
+    assert!(
+        checklist.contains("cargo publish"),
+        "checklist should document the final crates.io publish step: {checklist}"
+    );
+    assert!(
         contributing.contains("docs/release/maintainer-checklist.md"),
         "CONTRIBUTING should link to the release checklist: {contributing}"
+    );
+}
+
+#[test]
+fn cargo_manifest_is_ready_for_crates_io_publication() {
+    let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    let gitignore = std::fs::read_to_string(".gitignore").expect("read .gitignore");
+
+    for required in [
+        "description = ",
+        "license = ",
+        "readme = ",
+        "repository = ",
+        "homepage = ",
+    ] {
+        assert!(
+            manifest.contains(required),
+            "Cargo.toml should include {required} for crates.io publication: {manifest}"
+        );
+    }
+
+    assert!(
+        gitignore.contains("*.bak"),
+        ".gitignore should ignore local backup files so publish rehearsal stays clean: {gitignore}"
     );
 }
 

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -24,7 +25,7 @@ pub const LEGACY_DEFAULT_VAULT_PASSPHRASE: &str = "keyclaw-default-passphrase";
 pub struct Store {
     path: PathBuf,
     passphrase: String,
-    lock: Mutex<()>,
+    lock: Mutex<VaultCryptoState>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -50,56 +51,97 @@ enum VaultLoadFailure {
     Error(KeyclawError),
 }
 
+#[derive(Debug, Default)]
+struct VaultCryptoState {
+    salt: Option<[u8; 16]>,
+    key: Option<[u8; 32]>,
+}
+
 impl Store {
     pub fn new(path: impl Into<PathBuf>, passphrase: String) -> Self {
         Self {
             path: path.into(),
             passphrase,
-            lock: Mutex::new(()),
+            lock: Mutex::new(VaultCryptoState::default()),
         }
     }
 
     pub fn save(&self, entries: &HashMap<String, String>) -> Result<(), KeyclawError> {
-        let _guard = self.lock_entries()?;
-        save_entries(&self.path, &self.passphrase, entries)
+        let mut state = self.lock_entries()?;
+        save_entries(&self.path, &self.passphrase, &mut state, entries)
     }
 
     pub fn load(&self) -> Result<HashMap<String, String>, KeyclawError> {
-        let _guard = self.lock_entries()?;
-        self.load_entries_unlocked()
+        let mut state = self.lock_entries()?;
+        self.load_entries_unlocked(&mut state)
     }
 
     pub fn store_secret(&self, secret: &str) -> Result<String, KeyclawError> {
-        let _guard = self.lock_entries()?;
-        let mut entries = self.load_entries_unlocked()?;
+        let mut state = self.lock_entries()?;
+        let mut entries = self.load_entries_unlocked(&mut state)?;
         let id = placeholder::make_id(secret);
         entries.insert(id.clone(), secret.to_string());
-        save_entries(&self.path, &self.passphrase, &entries)?;
+        save_entries(&self.path, &self.passphrase, &mut state, &entries)?;
         Ok(id)
     }
 
     pub fn resolve(&self, id: &str) -> Result<Option<String>, KeyclawError> {
-        let _guard = self.lock_entries()?;
-        let entries = self.load_entries_unlocked()?;
+        let mut state = self.lock_entries()?;
+        let entries = self.load_entries_unlocked(&mut state)?;
         Ok(entries.get(id).cloned())
     }
 
-    fn lock_entries(&self) -> Result<MutexGuard<'_, ()>, KeyclawError> {
+    pub fn warm_up(&self) -> Result<(), KeyclawError> {
+        let mut state = self.lock_entries()?;
+        prime_vault_state(&self.path, &self.passphrase, &mut state)
+    }
+
+    fn lock_entries(&self) -> Result<MutexGuard<'_, VaultCryptoState>, KeyclawError> {
         self.lock
             .lock()
             .map_err(|_| KeyclawError::uncoded("vault mutex poisoned"))
     }
 
-    fn load_entries_unlocked(&self) -> Result<HashMap<String, String>, KeyclawError> {
-        match load_entries(&self.path, &self.passphrase) {
+    fn load_entries_unlocked(
+        &self,
+        state: &mut VaultCryptoState,
+    ) -> Result<HashMap<String, String>, KeyclawError> {
+        match load_entries(&self.path, &self.passphrase, state) {
             Ok(entries) => Ok(entries),
             Err(VaultLoadFailure::Missing) => Ok(HashMap::new()),
-            Err(VaultLoadFailure::WrongPassphrase) => Err(KeyclawError::uncoded(format!(
-                "vault {} could not be decrypted with the configured key material; restore the correct key or set KEYCLAW_VAULT_PASSPHRASE",
-                self.path.display()
-            ))),
-            Err(VaultLoadFailure::Error(err)) => Err(err),
+            Err(err) => Err(map_load_failure(&self.path, err)),
         }
+    }
+}
+
+impl VaultCryptoState {
+    fn remember(&mut self, salt: [u8; 16], key: [u8; 32]) {
+        self.salt = Some(salt);
+        self.key = Some(key);
+    }
+
+    fn key_for_salt(&mut self, passphrase: &str, salt: [u8; 16]) -> Result<[u8; 32], KeyclawError> {
+        if self.salt == Some(salt) {
+            if let Some(key) = self.key {
+                return Ok(key);
+            }
+        }
+
+        let key = derive_key(passphrase, &salt)?;
+        self.remember(salt, key);
+        Ok(key)
+    }
+
+    fn ensure_key(&mut self, passphrase: &str) -> Result<([u8; 16], [u8; 32]), KeyclawError> {
+        if let (Some(salt), Some(key)) = (self.salt, self.key) {
+            return Ok((salt, key));
+        }
+
+        let mut salt = [0u8; 16];
+        OsRng.fill_bytes(&mut salt);
+        let key = derive_key(passphrase, &salt)?;
+        self.remember(salt, key);
+        Ok((salt, key))
     }
 }
 
@@ -124,7 +166,7 @@ pub fn resolve_vault_passphrase(
         return create_vault_key(&key_path);
     }
 
-    match load_entries(vault_path, LEGACY_DEFAULT_VAULT_PASSPHRASE) {
+    match load_entries_once(vault_path, LEGACY_DEFAULT_VAULT_PASSPHRASE) {
         Ok(entries) => migrate_legacy_vault(vault_path, &key_path, &entries),
         Err(VaultLoadFailure::WrongPassphrase) => {
             Err(missing_vault_key_error(vault_path, &key_path))
@@ -156,7 +198,7 @@ pub(crate) fn inspect_vault_passphrase_status(
         return Ok(VaultPassphraseStatus::GeneratedKeyWillBeCreated(key_path));
     }
 
-    match load_entries(vault_path, LEGACY_DEFAULT_VAULT_PASSPHRASE) {
+    match load_entries_once(vault_path, LEGACY_DEFAULT_VAULT_PASSPHRASE) {
         Ok(_) => Ok(VaultPassphraseStatus::LegacyVaultWillMigrate(key_path)),
         Err(VaultLoadFailure::WrongPassphrase) => {
             Err(missing_vault_key_error(vault_path, &key_path))
@@ -169,7 +211,8 @@ pub(crate) fn inspect_vault_passphrase_status(
 }
 
 fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], KeyclawError> {
-    // Keep KDF cost meaningful while avoiding proxy request timeouts in debug/test runs.
+    // Derive once per vault salt and reuse the result across requests so the KDF stays off the
+    // request hot path after startup.
     let params = ScryptParams::new(13, 8, 1, 32)
         .map_err(|e| KeyclawError::uncoded_with_source("configure scrypt", e))?;
 
@@ -182,14 +225,13 @@ fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], KeyclawError> {
 fn save_entries(
     path: &Path,
     passphrase: &str,
+    state: &mut VaultCryptoState,
     entries: &HashMap<String, String>,
 ) -> Result<(), KeyclawError> {
     let plaintext = serde_json::to_vec(entries)
         .map_err(|e| KeyclawError::uncoded_with_source("marshal vault plaintext", e))?;
 
-    let mut salt = [0u8; 16];
-    OsRng.fill_bytes(&mut salt);
-    let key = derive_key(passphrase, &salt)?;
+    let (salt, key) = state.ensure_key(passphrase)?;
 
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| KeyclawError::uncoded_with_source("create aes-gcm cipher", e))?;
@@ -216,6 +258,7 @@ fn save_entries(
 fn load_entries(
     path: &Path,
     passphrase: &str,
+    state: &mut VaultCryptoState,
 ) -> Result<HashMap<String, String>, VaultLoadFailure> {
     let bytes = match fs::read(path) {
         Ok(v) => v,
@@ -242,6 +285,10 @@ fn load_entries(
     let salt = BASE64
         .decode(payload.salt)
         .map_err(|_| VaultLoadFailure::Error(invalid_vault_error(path, "invalid salt encoding")))?;
+    let salt: [u8; 16] = salt
+        .as_slice()
+        .try_into()
+        .map_err(|_| VaultLoadFailure::Error(invalid_vault_error(path, "invalid salt length")))?;
     let nonce = BASE64.decode(payload.nonce).map_err(|_| {
         VaultLoadFailure::Error(invalid_vault_error(path, "invalid nonce encoding"))
     })?;
@@ -249,7 +296,9 @@ fn load_entries(
         VaultLoadFailure::Error(invalid_vault_error(path, "invalid ciphertext encoding"))
     })?;
 
-    let key = derive_key(passphrase, &salt).map_err(VaultLoadFailure::Error)?;
+    let key = state
+        .key_for_salt(passphrase, salt)
+        .map_err(VaultLoadFailure::Error)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| {
         VaultLoadFailure::Error(KeyclawError::uncoded_with_source(
             "create aes-gcm cipher",
@@ -272,6 +321,14 @@ fn load_entries(
             VaultLoadFailure::Error(invalid_vault_error(path, "invalid decrypted payload"))
         })?;
     Ok(entries.unwrap_or_default())
+}
+
+fn load_entries_once(
+    path: &Path,
+    passphrase: &str,
+) -> Result<HashMap<String, String>, VaultLoadFailure> {
+    let mut state = VaultCryptoState::default();
+    load_entries(path, passphrase, &mut state)
 }
 
 fn normalized_passphrase(value: Option<&str>) -> Option<&str> {
@@ -330,13 +387,45 @@ fn migrate_legacy_vault(
     OsRng.fill_bytes(&mut key_bytes);
     let new_passphrase = BASE64.encode(key_bytes);
 
-    save_entries(vault_path, &new_passphrase, entries)?;
+    let mut state = VaultCryptoState::default();
+    save_entries(vault_path, &new_passphrase, &mut state, entries)?;
     if let Err(err) = atomic_write(key_path, new_passphrase.as_bytes(), 0o600) {
-        let _ = save_entries(vault_path, LEGACY_DEFAULT_VAULT_PASSPHRASE, entries);
+        let mut legacy_state = VaultCryptoState::default();
+        let _ = save_entries(
+            vault_path,
+            LEGACY_DEFAULT_VAULT_PASSPHRASE,
+            &mut legacy_state,
+            entries,
+        );
         return Err(err);
     }
 
     Ok(new_passphrase)
+}
+
+fn prime_vault_state(
+    path: &Path,
+    passphrase: &str,
+    state: &mut VaultCryptoState,
+) -> Result<(), KeyclawError> {
+    match load_entries(path, passphrase, state) {
+        Ok(_) => Ok(()),
+        Err(VaultLoadFailure::Missing) => state.ensure_key(passphrase).map(|_| ()),
+        Err(err) => Err(map_load_failure(path, err)),
+    }
+}
+
+fn map_load_failure(path: &Path, failure: VaultLoadFailure) -> KeyclawError {
+    match failure {
+        VaultLoadFailure::Missing => {
+            KeyclawError::uncoded(format!("vault {} is missing", path.display()))
+        }
+        VaultLoadFailure::WrongPassphrase => KeyclawError::uncoded(format!(
+            "vault {} could not be decrypted with the configured key material; restore the correct key or set KEYCLAW_VAULT_PASSPHRASE",
+            path.display()
+        )),
+        VaultLoadFailure::Error(err) => err,
+    }
 }
 
 fn missing_vault_key_error(vault_path: &Path, key_path: &Path) -> KeyclawError {

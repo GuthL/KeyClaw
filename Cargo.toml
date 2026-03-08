@@ -2,6 +2,11 @@
 name = "keyclaw"
 version = "0.1.0"
 edition = "2021"
+description = "Local MITM proxy for secret-safe AI CLI traffic"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/GuthL/KeyClaw"
+homepage = "https://github.com/GuthL/KeyClaw"
 
 [dependencies]
 aes-gcm = "0.10"

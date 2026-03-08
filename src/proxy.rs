@@ -83,6 +83,8 @@ impl Server {
     }
 
     pub fn start(&self) -> Result<RunningServer, KeyclawError> {
+        self.processor.warm_up()?;
+
         let bind_addr = if self.listen_addr.trim().is_empty() {
             "127.0.0.1:8877".to_string()
         } else {
