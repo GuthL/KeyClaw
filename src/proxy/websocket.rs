@@ -1,0 +1,239 @@
+use futures::{SinkExt, Stream, StreamExt};
+use hudsucker::{
+    tokio_tungstenite::tungstenite::{self, Message},
+    WebSocketContext, WebSocketHandler,
+};
+
+use super::common::{log_debug, log_warn};
+use super::KeyclawHttpHandler;
+
+fn is_expected_websocket_close_error(err: &tungstenite::Error) -> bool {
+    match err {
+        tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => true,
+        tungstenite::Error::Protocol(
+            tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+        ) => true,
+        tungstenite::Error::Io(io_err) => {
+            io_err.kind() == std::io::ErrorKind::UnexpectedEof
+                && io_err.to_string().contains("close_notify")
+        }
+        _ => false,
+    }
+}
+
+fn uses_input_only_ws_rewrite_path(path: &str) -> bool {
+    path.starts_with("/backend-api/codex/responses")
+}
+
+fn uses_input_only_ws_rewrite(ctx: &WebSocketContext) -> bool {
+    matches!(
+        ctx,
+        WebSocketContext::ClientToServer { dst, .. }
+            if uses_input_only_ws_rewrite_path(dst.path())
+    )
+}
+
+impl WebSocketHandler for KeyclawHttpHandler {
+    async fn handle_websocket(
+        mut self,
+        ctx: WebSocketContext,
+        mut stream: impl Stream<Item = Result<Message, tungstenite::Error>> + Unpin + Send + 'static,
+        mut sink: impl futures::Sink<Message, Error = tungstenite::Error> + Unpin + Send + 'static,
+    ) {
+        while let Some(message) = stream.next().await {
+            match message {
+                Ok(message) => {
+                    let Some(message) = self.handle_message(&ctx, message).await else {
+                        continue;
+                    };
+
+                    match sink.send(message).await {
+                        Err(tungstenite::Error::ConnectionClosed) => {}
+                        Err(err) => log_warn(format!("ws send error: {err}")),
+                        Ok(()) => {}
+                    }
+                }
+                Err(err) => {
+                    if !is_expected_websocket_close_error(&err) {
+                        log_warn(format!("ws message error: {err}"));
+                        match sink.send(Message::Close(None)).await {
+                            Err(tungstenite::Error::ConnectionClosed) => {}
+                            Err(close_err) => {
+                                log_warn(format!("ws close error: {close_err}"));
+                            }
+                            Ok(()) => {}
+                        }
+                    }
+
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn handle_message(&mut self, ctx: &WebSocketContext, msg: Message) -> Option<Message> {
+        if !matches!(ctx, WebSocketContext::ClientToServer { .. }) {
+            if let Message::Text(text) = &msg {
+                if let Some(value) = self.resolve_ws_response_text(text.as_str()) {
+                    log_debug("ws response: resolved placeholders".to_string());
+                    return Some(Message::Text(value.into()));
+                }
+            }
+            return Some(msg);
+        }
+
+        if let Message::Text(text) = &msg {
+            if let Some((value, count)) =
+                self.rewrite_ws_request_text(text.as_str(), uses_input_only_ws_rewrite(ctx))
+            {
+                log_debug(format!("ws request: redacted {} secret(s)", count));
+                return Some(Message::Text(value.into()));
+            }
+        }
+        Some(msg)
+    }
+}
+
+impl KeyclawHttpHandler {
+    fn rewrite_ws_request_text(&self, text: &str, input_only: bool) -> Option<(String, usize)> {
+        let payload = text.as_bytes().to_vec();
+        let rewrite = if input_only {
+            self.processor.rewrite_and_evaluate_codex_ws(&payload)
+        } else {
+            self.processor.rewrite_and_evaluate(&payload)
+        };
+        match rewrite {
+            Ok(result) if !result.replacements.is_empty() => String::from_utf8(result.body)
+                .ok()
+                .map(|value| (value, result.replacements.len())),
+            _ => None,
+        }
+    }
+
+    fn resolve_ws_response_text(&self, text: &str) -> Option<String> {
+        if !text.contains("{{KEYCLAW_SECRET_") {
+            return None;
+        }
+
+        self.processor
+            .resolve_text(text.as_bytes())
+            .ok()
+            .and_then(|resolved| String::from_utf8(resolved).ok())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicI64;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use hudsucker::tokio_tungstenite::tungstenite::{self, error::ProtocolError};
+
+    use super::super::KeyclawHttpHandler;
+    use super::{is_expected_websocket_close_error, uses_input_only_ws_rewrite_path};
+    use crate::gitleaks_rules::RuleSet;
+    use crate::pipeline::Processor;
+    use crate::placeholder;
+    use crate::vault::Store;
+
+    #[test]
+    fn tls_unexpected_eof_is_treated_as_expected_ws_close() {
+        let err = tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "peer closed connection without sending TLS close_notify",
+        ));
+
+        assert!(is_expected_websocket_close_error(&err));
+    }
+
+    #[test]
+    fn reset_without_closing_handshake_is_treated_as_expected_ws_close() {
+        let err = tungstenite::Error::Protocol(ProtocolError::ResetWithoutClosingHandshake);
+
+        assert!(is_expected_websocket_close_error(&err));
+    }
+
+    #[test]
+    fn unrelated_io_errors_are_not_treated_as_expected_ws_close() {
+        let err = tungstenite::Error::Io(std::io::Error::other("socket exploded"));
+
+        assert!(!is_expected_websocket_close_error(&err));
+    }
+
+    #[test]
+    fn codex_responses_ws_uses_input_only_scope() {
+        assert!(uses_input_only_ws_rewrite_path(
+            "/backend-api/codex/responses"
+        ));
+    }
+
+    #[test]
+    fn non_codex_ws_keeps_full_scope() {
+        assert!(!uses_input_only_ws_rewrite_path("/backend-api/other"));
+    }
+
+    #[test]
+    fn ws_request_text_messages_are_redacted() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = Arc::new(Store::new(
+            temp.path().join("vault.enc"),
+            "test-passphrase".to_string(),
+        ));
+        let processor = Arc::new(Processor {
+            vault: Some(Arc::clone(&vault)),
+            ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
+            max_body_size: 1 << 20,
+            strict_mode: true,
+        });
+        let handler = KeyclawHttpHandler {
+            allowed_hosts: vec!["api.openai.com".to_string()],
+            processor,
+            max_body_bytes: 1 << 20,
+            body_timeout: Duration::from_secs(1),
+            intercepted: Arc::new(AtomicI64::new(0)),
+        };
+        let secret = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+        let text = handler
+            .rewrite_ws_request_text(
+                &format!(r#"{{"messages":[{{"content":"api_key = {}"}}]}}"#, secret),
+                false,
+            )
+            .expect("rewritten message")
+            .0;
+
+        assert!(!text.contains(secret), "text={text}");
+        assert!(text.contains("{{KEYCLAW_SECRET_"), "text={text}");
+    }
+
+    #[test]
+    fn ws_response_text_messages_are_resolved() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = Arc::new(Store::new(
+            temp.path().join("vault.enc"),
+            "test-passphrase".to_string(),
+        ));
+        let processor = Arc::new(Processor {
+            vault: Some(Arc::clone(&vault)),
+            ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
+            max_body_size: 1 << 20,
+            strict_mode: true,
+        });
+        let handler = KeyclawHttpHandler {
+            allowed_hosts: vec!["api.openai.com".to_string()],
+            processor,
+            max_body_bytes: 1 << 20,
+            body_timeout: Duration::from_secs(1),
+            intercepted: Arc::new(AtomicI64::new(0)),
+        };
+        let request_secret = "api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+        let id = vault.store_secret(request_secret).expect("store secret");
+        let placeholder = placeholder::make(&id);
+        let text = handler
+            .resolve_ws_response_text(&format!(r#"{{"content":"{}"}}"#, placeholder))
+            .expect("resolved message");
+
+        assert!(text.contains(request_secret), "text={text}");
+        assert!(!text.contains(&placeholder), "text={text}");
+    }
+}
