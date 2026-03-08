@@ -16,3 +16,6 @@ keyclaw
 
 # Generated CA certs (machine-specific)
 certs/
+
+# Internal docs
+docs/
