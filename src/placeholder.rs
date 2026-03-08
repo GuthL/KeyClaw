@@ -99,6 +99,10 @@ pub fn find_partial_placeholder_start(text: &str) -> Option<usize> {
     })
 }
 
+pub(crate) fn contains_placeholder_prefix(text: &str) -> bool {
+    text.contains(PLACEHOLDER_MARKER)
+}
+
 pub fn resolve_placeholders<F>(
     input: &str,
     strict: bool,
@@ -107,7 +111,7 @@ pub fn resolve_placeholders<F>(
 where
     F: FnMut(&str) -> Result<Option<String>, KeyclawError>,
 {
-    if !input.contains(PLACEHOLDER_MARKER) {
+    if !contains_placeholder_prefix(input) {
         return Ok(input.to_string());
     }
 
