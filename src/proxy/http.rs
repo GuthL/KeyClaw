@@ -167,7 +167,7 @@ impl HttpHandler for KeyclawHttpHandler {
             if let Ok(value) = crate::placeholder::CONTRACT_MARKER_VALUE.parse() {
                 rewritten_req
                     .headers_mut()
-                    .insert("x-keyclaw-contract", value);
+                    .insert(crate::placeholder::CONTRACT_MARKER_KEY, value);
             }
         }
         rewritten_req.headers_mut().remove("accept-encoding");

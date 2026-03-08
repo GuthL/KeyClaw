@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use crate::errors::KeyclawError;
 use crate::gitleaks_rules::RuleSet;
 
-pub const CONTRACT_MARKER_KEY: &str = "_keyclaw_contract";
+pub const CONTRACT_MARKER_KEY: &str = "x-keyclaw-contract";
 pub const CONTRACT_MARKER_VALUE: &str = "placeholder:v1";
 pub const EXAMPLE_PLACEHOLDER: &str = "{{KEYCLAW_SECRET_xxxx}}";
 
