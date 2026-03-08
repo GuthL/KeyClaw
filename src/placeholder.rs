@@ -5,6 +5,7 @@ use crate::gitleaks_rules::RuleSet;
 
 pub const CONTRACT_MARKER_KEY: &str = "_keyclaw_contract";
 pub const CONTRACT_MARKER_VALUE: &str = "placeholder:v1";
+pub const EXAMPLE_PLACEHOLDER: &str = "{{KEYCLAW_SECRET_xxxx}}";
 
 const PLACEHOLDER_MARKER: &str = "{{KEYCLAW_SECRET_";
 const PREFIX_LEN: usize = 5;

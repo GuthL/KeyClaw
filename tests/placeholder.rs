@@ -1,7 +1,7 @@
 use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::placeholder::{
     contains_complete_placeholder, find_partial_placeholder_start, is_placeholder, make, make_id,
-    replace_secrets, resolve_placeholders,
+    replace_secrets, resolve_placeholders, EXAMPLE_PLACEHOLDER,
 };
 
 fn bundled_rules() -> RuleSet {
@@ -142,4 +142,30 @@ fn complete_placeholder_detection_matches_only_real_placeholders() {
     assert!(!contains_complete_placeholder(
         "value {{KEYCLAW_SECRET_prefx_0123456789abcde"
     ));
+}
+
+#[test]
+fn resolve_placeholders_partially_resolves_when_later_ids_are_missing() {
+    let known = make("prefx_0123456789abcdef");
+    let missing = make("api_k_0123456789abcdef");
+    let input = format!("before {known} after {missing}");
+
+    let resolved = resolve_placeholders(&input, false, |id| {
+        Ok((id == "prefx_0123456789abcdef").then(|| "super-secret".to_string()))
+    })
+    .expect("resolve placeholders");
+
+    assert_eq!(resolved, format!("before super-secret after {missing}"));
+}
+
+#[test]
+fn example_placeholder_stays_marker_shaped_but_not_resolvable() {
+    assert!(
+        !is_placeholder(EXAMPLE_PLACEHOLDER),
+        "example placeholder should stay out of the resolvable contract"
+    );
+    assert!(
+        !contains_complete_placeholder(EXAMPLE_PLACEHOLDER),
+        "example placeholder should not trigger strict response resolution"
+    );
 }
