@@ -225,6 +225,34 @@ KeyClaw is configured via environment variables:
 | `KEYCLAW_FAIL_CLOSED` | `true` | Fail closed on errors |
 | `KEYCLAW_REQUIRE_MITM_EFFECTIVE` | `true` | Fail if proxy bypass is detected |
 
+### Setting Variables
+
+Inline for one command:
+
+```bash
+KEYCLAW_LOG_LEVEL=debug KEYCLAW_NOTICE_MODE=minimal keyclaw claude --resume latest
+KEYCLAW_GITLEAKS_CONFIG="$PWD/gitleaks.toml" keyclaw doctor
+```
+
+Persistent for the current shell session:
+
+```bash
+export KEYCLAW_LOG_LEVEL=debug
+export KEYCLAW_NOTICE_MODE=minimal
+keyclaw codex exec --model gpt-5
+```
+
+Persistent across new shells:
+
+```bash
+# ~/.bashrc or ~/.zshrc
+export KEYCLAW_LOG_LEVEL=debug
+export KEYCLAW_NOTICE_MODE=minimal
+export KEYCLAW_GITLEAKS_CONFIG="$HOME/.config/keyclaw/gitleaks.toml"
+```
+
+If you use `keyclaw proxy` as a detached daemon, or enable `keyclaw proxy autostart`, daemon-side settings are read when that proxy process starts. After changing variables such as `KEYCLAW_PROXY_ADDR`, `KEYCLAW_LOG_LEVEL`, `KEYCLAW_GITLEAKS_CONFIG`, `KEYCLAW_NOTICE_MODE`, or `KEYCLAW_REQUIRE_MITM_EFFECTIVE`, restart the proxy so the running daemon picks them up.
+
 KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`. Secret detection uses the bundled gitleaks rules compiled natively into the binary; set `KEYCLAW_GITLEAKS_CONFIG` only when you want to override those rules with your own TOML file.
 
 By default, KeyClaw creates a machine-local vault key next to the encrypted vault and reuses it on later runs. Set `KEYCLAW_VAULT_PASSPHRASE` only when you need to override that key material explicitly. Existing vaults written with the removed built-in default are migrated to a generated local key on the next successful write. If an existing vault cannot be decrypted or its key material is missing, KeyClaw fails closed and tells you how to recover.
