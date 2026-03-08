@@ -1,5 +1,3 @@
-use once_cell::sync::Lazy;
-use regex::Regex;
 use sha2::{Digest, Sha256};
 
 use crate::errors::KeyclawError;
@@ -8,12 +6,10 @@ use crate::gitleaks_rules::RuleSet;
 pub const CONTRACT_MARKER_KEY: &str = "_keyclaw_contract";
 pub const CONTRACT_MARKER_VALUE: &str = "placeholder:v1";
 
+const PLACEHOLDER_MARKER: &str = "{{KEYCLAW_SECRET_";
 const PREFIX_LEN: usize = 5;
-
-static PLACEHOLDER_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\{\{KEYCLAW_SECRET_([A-Za-z0-9*_-]{1,5})_([a-f0-9]{16})\}\}")
-        .expect("valid placeholder regex")
-});
+const HASH_LEN: usize = 16;
+const MAX_PARTIAL_PLACEHOLDER_LEN: usize = PLACEHOLDER_MARKER.len() + PREFIX_LEN + 1 + HASH_LEN + 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Replacement {
@@ -38,11 +34,14 @@ pub fn make_id(secret: &str) -> String {
 }
 
 pub fn make(id: &str) -> String {
-    format!("{{{{KEYCLAW_SECRET_{}}}}}", id)
+    format!("{PLACEHOLDER_MARKER}{id}}}}}")
 }
 
 pub fn is_placeholder(s: &str) -> bool {
-    PLACEHOLDER_RE.is_match(s)
+    matches!(
+        parse_placeholder(s),
+        PlaceholderParse::Complete(matched) if matched.full_len == s.len()
+    )
 }
 
 pub fn replace_secrets<F>(
@@ -85,72 +84,17 @@ where
 /// Returns `Some(byte_offset)` if text ends with a prefix of `{{KEYCLAW_SECRET_...}}` that
 /// could continue in the next chunk.
 pub fn find_partial_placeholder_start(text: &str) -> Option<usize> {
-    const MARKER: &str = "{{KEYCLAW_SECRET_";
-    // The maximum incomplete placeholder length: marker + prefix(5) + _ + hash(16) + "}" = 41 chars.
-    let scan_start = text.len().saturating_sub(MARKER.len() + 5 + 1 + 16 + 1);
+    let scan_start = text.len().saturating_sub(MAX_PARTIAL_PLACEHOLDER_LEN);
     let tail = &text[scan_start..];
 
-    tail.char_indices().rev().find_map(|(rel, ch)| {
+    tail.char_indices().find_map(|(rel, ch)| {
         if ch != '{' {
             return None;
         }
 
         let abs = scan_start + rel;
-        is_partial_placeholder_prefix(&text[abs..]).then_some(abs)
+        matches!(parse_placeholder(&text[abs..]), PlaceholderParse::Partial).then_some(abs)
     })
-}
-
-fn is_partial_placeholder_prefix(text: &str) -> bool {
-    const MARKER: &str = "{{KEYCLAW_SECRET_";
-
-    if text.is_empty() {
-        return false;
-    }
-    if text.len() < MARKER.len() {
-        return MARKER.starts_with(text);
-    }
-    if !text.starts_with(MARKER) {
-        return false;
-    }
-
-    let bytes = text.as_bytes();
-    let mut idx = MARKER.len();
-    let prefix_start = idx;
-
-    while idx < bytes.len()
-        && idx < prefix_start + 5
-        && (bytes[idx].is_ascii_alphanumeric() || matches!(bytes[idx], b'*' | b'_' | b'-'))
-    {
-        idx += 1;
-    }
-    if idx == bytes.len() {
-        return true;
-    }
-    if bytes[idx] != b'_' || idx == prefix_start {
-        return false;
-    }
-
-    idx += 1;
-    let hash_start = idx;
-    while idx < bytes.len() && idx < hash_start + 16 && bytes[idx].is_ascii_hexdigit() {
-        idx += 1;
-    }
-    if idx == bytes.len() {
-        return true;
-    }
-    if idx != hash_start + 16 || bytes[idx] != b'}' {
-        return false;
-    }
-
-    idx += 1;
-    if idx == bytes.len() {
-        return true;
-    }
-    if bytes[idx] != b'}' {
-        return false;
-    }
-
-    idx + 1 != bytes.len()
 }
 
 pub fn resolve_placeholders<F>(
@@ -161,39 +105,147 @@ pub fn resolve_placeholders<F>(
 where
     F: FnMut(&str) -> Result<Option<String>, KeyclawError>,
 {
-    let mut matches = PLACEHOLDER_RE.captures_iter(input).peekable();
-    if matches.peek().is_none() {
+    if !input.contains(PLACEHOLDER_MARKER) {
         return Ok(input.to_string());
     }
 
     let mut out = String::with_capacity(input.len());
-    let mut last = 0usize;
+    let mut cursor = 0usize;
 
-    for caps in PLACEHOLDER_RE.captures_iter(input) {
-        let full = caps.get(0).expect("full match exists");
-        let prefix = caps.get(1).expect("prefix group exists").as_str();
-        let hash = caps.get(2).expect("hash group exists").as_str();
-        let id = format!("{}_{}", prefix, hash);
+    while let Some(rel) = input[cursor..].find("{{") {
+        let start = cursor + rel;
+        out.push_str(&input[cursor..start]);
 
-        let resolved = resolver(&id)?;
-        match resolved {
-            Some(secret) => {
-                out.push_str(&input[last..full.start()]);
-                out.push_str(&secret);
-                last = full.end();
+        match parse_placeholder(&input[start..]) {
+            PlaceholderParse::Complete(matched) => {
+                let resolved = resolver(matched.id)?;
+                match resolved {
+                    Some(secret) => out.push_str(&secret),
+                    None if strict => {
+                        return Err(KeyclawError::uncoded(format!(
+                            "missing placeholder secret for id {}",
+                            matched.id
+                        )));
+                    }
+                    None => out.push_str(&input[start..start + matched.full_len]),
+                }
+                cursor = start + matched.full_len;
             }
-            None if strict => {
-                return Err(KeyclawError::uncoded(format!(
-                    "missing placeholder secret for id {id}"
-                )));
-            }
-            None => {
-                out.push_str(&input[last..full.end()]);
-                last = full.end();
+            PlaceholderParse::NoMatch | PlaceholderParse::Partial => {
+                out.push_str("{{");
+                cursor = start + 2;
             }
         }
     }
 
-    out.push_str(&input[last..]);
+    out.push_str(&input[cursor..]);
     Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlaceholderMatch<'a> {
+    id: &'a str,
+    full_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaceholderParse<'a> {
+    NoMatch,
+    Partial,
+    Complete(PlaceholderMatch<'a>),
+}
+
+fn parse_placeholder(text: &str) -> PlaceholderParse<'_> {
+    if text.is_empty() {
+        return PlaceholderParse::NoMatch;
+    }
+    if text.len() < PLACEHOLDER_MARKER.len() {
+        return if PLACEHOLDER_MARKER.starts_with(text) {
+            PlaceholderParse::Partial
+        } else {
+            PlaceholderParse::NoMatch
+        };
+    }
+    if !text.starts_with(PLACEHOLDER_MARKER) {
+        return PlaceholderParse::NoMatch;
+    }
+
+    let bytes = text.as_bytes();
+    let prefix_start = PLACEHOLDER_MARKER.len();
+    let mut saw_partial = bytes.len() == prefix_start;
+
+    for prefix_len in 1..=PREFIX_LEN {
+        let prefix_end = prefix_start + prefix_len;
+        if bytes.len() < prefix_end {
+            let candidate = &bytes[prefix_start..];
+            if candidate.iter().all(|byte| is_placeholder_id_byte(*byte)) {
+                saw_partial = true;
+            }
+            break;
+        }
+
+        let prefix = &bytes[prefix_start..prefix_end];
+        if !prefix.iter().all(|byte| is_placeholder_id_byte(*byte)) {
+            break;
+        }
+
+        if bytes.len() == prefix_end {
+            saw_partial = true;
+            continue;
+        }
+        if bytes[prefix_end] != b'_' {
+            continue;
+        }
+
+        let hash_start = prefix_end + 1;
+        let hash_end = hash_start + HASH_LEN;
+        if bytes.len() <= hash_start {
+            saw_partial = true;
+            continue;
+        }
+        if bytes.len() < hash_end {
+            if bytes[hash_start..]
+                .iter()
+                .all(|byte| byte.is_ascii_hexdigit())
+            {
+                saw_partial = true;
+            }
+            continue;
+        }
+        if !bytes[hash_start..hash_end]
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit())
+        {
+            continue;
+        }
+        if bytes.len() == hash_end {
+            saw_partial = true;
+            continue;
+        }
+        if bytes[hash_end] != b'}' {
+            continue;
+        }
+        if bytes.len() == hash_end + 1 {
+            saw_partial = true;
+            continue;
+        }
+        if bytes[hash_end + 1] != b'}' {
+            continue;
+        }
+
+        return PlaceholderParse::Complete(PlaceholderMatch {
+            id: &text[prefix_start..hash_end],
+            full_len: hash_end + 2,
+        });
+    }
+
+    if saw_partial {
+        PlaceholderParse::Partial
+    } else {
+        PlaceholderParse::NoMatch
+    }
+}
+
+fn is_placeholder_id_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'*' | b'_' | b'-')
 }

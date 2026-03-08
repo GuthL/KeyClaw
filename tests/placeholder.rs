@@ -1,5 +1,8 @@
 use keyclaw::gitleaks_rules::RuleSet;
-use keyclaw::placeholder::{find_partial_placeholder_start, replace_secrets, resolve_placeholders};
+use keyclaw::placeholder::{
+    find_partial_placeholder_start, is_placeholder, make, make_id, replace_secrets,
+    resolve_placeholders,
+};
 
 fn bundled_rules() -> RuleSet {
     RuleSet::bundled().expect("bundled rules")
@@ -89,4 +92,39 @@ fn partial_placeholder_detection_handles_short_marker_prefixes() {
         find_partial_placeholder_start("{{KEYCLAW_SECRET_prefx_0123456789abcdef}}"),
         None
     );
+}
+
+#[test]
+fn make_exact_matching_and_partial_detection_share_the_same_contract() {
+    let placeholder = make("prefx_0123456789abcdef");
+
+    assert!(is_placeholder(&placeholder));
+    assert!(!is_placeholder(&format!("{placeholder}x")));
+    assert_eq!(find_partial_placeholder_start(&placeholder), None);
+
+    for len in 1..placeholder.len() {
+        assert_eq!(
+            find_partial_placeholder_start(&placeholder[..len]),
+            Some(0),
+            "prefix len={len}"
+        );
+    }
+}
+
+#[test]
+fn resolve_placeholders_handles_star_prefixed_ids() {
+    let secret = "é漢";
+    let id = make_id(secret);
+    let placeholder = make(&id);
+
+    assert!(is_placeholder(&placeholder), "placeholder={placeholder}");
+    assert_eq!(find_partial_placeholder_start(&placeholder), None);
+
+    let resolved = resolve_placeholders(&placeholder, true, |seen_id| {
+        assert_eq!(seen_id, id);
+        Ok(Some(secret.to_string()))
+    })
+    .expect("resolve placeholder");
+
+    assert_eq!(resolved, secret);
 }
