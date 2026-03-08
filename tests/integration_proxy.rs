@@ -2,16 +2,19 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use keyclaw::certgen;
 use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::pipeline::Processor;
 use keyclaw::placeholder;
 use keyclaw::proxy::Server;
 use keyclaw::vault::Store;
 use once_cell::sync::Lazy;
+use rcgen::{
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyUsagePurpose,
+};
 use reqwest::blocking::Client;
 use serde_json::json;
 use tiny_http::{Response, Server as TinyServer, StatusCode};
@@ -41,17 +44,36 @@ impl Drop for UpstreamGuard {
 const CODEX_SECRET: &str = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
 const CLAUDE_SECRET: &str = "xY2zW4vU6tS8rQ0pO2nM4lK6jI8hG0f";
 
+static HOME_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
 // Reuse immutable test fixtures so integration tests exercise the proxy path,
 // not repeated CA parsing and gitleaks rule compilation.
-static TEST_CA: Lazy<(String, String)> = Lazy::new(|| {
-    let ca = certgen::ensure_ca().expect("generate test CA");
-    (ca.cert_pem, ca.key_pem)
-});
+static TEST_CA: Lazy<(String, String)> = Lazy::new(build_test_ca);
 static TEST_RULESET: Lazy<Arc<RuleSet>> =
     Lazy::new(|| Arc::new(RuleSet::bundled().expect("bundled rules")));
 
 fn test_ca() -> (String, String) {
     (TEST_CA.0.clone(), TEST_CA.1.clone())
+}
+
+fn build_test_ca() -> (String, String) {
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.distinguished_name = DistinguishedName::new();
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "KeyClaw Integration Test CA");
+    params
+        .distinguished_name
+        .push(DnType::OrganizationName, "KeyClaw Tests");
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+
+    let key_pair = rcgen::KeyPair::generate().expect("generate test CA key");
+    let cert = params
+        .self_signed(&key_pair)
+        .expect("self-sign test CA cert");
+
+    (cert.pem(), key_pair.serialize_pem())
 }
 
 #[test]
@@ -556,6 +578,30 @@ fn chunked_non_sse_responses_are_resolved_as_normal_bodies() {
     assert!(
         !real_placeholder_re.is_match(&resp_body),
         "placeholder leaked in chunked response: {resp_body}"
+    );
+}
+
+#[test]
+fn ca_fixture_ignores_broken_home_state() {
+    let _home_lock = HOME_LOCK.lock().expect("lock HOME");
+    let original_home = std::env::var_os("HOME");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let keyclaw_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&keyclaw_dir).expect("create keyclaw dir");
+    std::fs::write(keyclaw_dir.join("ca.crt"), "not-a-cert").expect("write broken cert");
+    std::fs::write(keyclaw_dir.join("ca.key"), "not-a-key").expect("write broken key");
+
+    std::env::set_var("HOME", temp.path());
+    let result = std::panic::catch_unwind(build_test_ca);
+
+    match original_home {
+        Some(home) => std::env::set_var("HOME", home),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert!(
+        result.is_ok(),
+        "integration proxy CA fixture should ignore broken ~/.keyclaw state"
     );
 }
 
