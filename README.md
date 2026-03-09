@@ -92,6 +92,14 @@ keyclaw --help
 keyclaw --version
 ```
 
+For a guided first-run setup, run:
+
+```bash
+keyclaw init
+```
+
+That generates the local CA and env script, creates the machine-local vault key when needed, offers to patch your shell rc file, and finishes by running `keyclaw doctor`.
+
 ### Supported Surface (v0.x)
 
 KeyClaw's first public release intentionally keeps the support matrix narrow:
@@ -175,7 +183,7 @@ The shorthand `keyclaw codex ...` and `keyclaw claude ...` forms are just aliase
 keyclaw doctor
 ```
 
-`keyclaw doctor` is the first thing to run after changing local config or before debugging a failed `mitm` session. It checks the proxy bind address, proxy URL, CA readiness, vault path, vault key material, custom gitleaks config, proxy-bypass risk, and other operator-facing safety knobs.
+`keyclaw doctor` is the first thing to run after changing local config or before debugging a failed `mitm` session. It checks `~/.keyclaw/config.toml`, the proxy bind address, proxy URL, CA readiness, vault path, vault key material, custom gitleaks config, allowlist status, proxy-bypass risk, and other operator-facing safety knobs.
 
 Interpret the output like this:
 
@@ -186,7 +194,7 @@ Interpret the output like this:
 
 ## Troubleshooting
 
-Start with `keyclaw doctor`. It is the fastest way to catch broken CA files, proxy bypass, custom ruleset problems, and missing vault key material before you debug the CLI itself.
+Start with `keyclaw doctor`. It is the fastest way to catch broken CA files, proxy bypass, invalid `~/.keyclaw/config.toml`, broken allowlist entries, custom ruleset problems, and missing vault key material before you debug the CLI itself.
 
 ### Certificate Trust Or TLS Errors
 
@@ -200,14 +208,69 @@ Start with `keyclaw doctor`. It is the fastest way to catch broken CA files, pro
 - Leave `KEYCLAW_REQUIRE_MITM_EFFECTIVE=true` enabled so `mitm` fails loudly instead of silently running without interception.
 - Set `KEYCLAW_LOG_LEVEL=debug` when you need to see per-request intercept and rewrite activity.
 
-### Custom Ruleset Or Vault Key Problems
+### Custom Ruleset, Config, Or Vault Key Problems
 
+- If `doctor` fails the `config-file` check, fix `~/.keyclaw/config.toml` or remove it to fall back to env vars and built-in defaults.
+- If `doctor` shows active allowlist entries, remember those matches are intentionally left unredacted.
 - If `doctor` fails the `ruleset` check, fix `KEYCLAW_GITLEAKS_CONFIG` or unset it to go back to the bundled rules.
 - If `doctor` fails the `vault-key` check, restore `~/.keyclaw/vault.key` or set `KEYCLAW_VAULT_PASSPHRASE` explicitly to the correct value.
 
 ## Configuration
 
-KeyClaw is configured via environment variables:
+KeyClaw reads `~/.keyclaw/config.toml` if it exists, then applies environment variable overrides on top. Precedence is:
+
+```text
+env vars > ~/.keyclaw/config.toml > built-in defaults
+```
+
+Missing `~/.keyclaw/config.toml` is fine; KeyClaw silently falls back to env vars and defaults. Invalid TOML is treated as a blocking configuration error, and `keyclaw doctor` reports it explicitly.
+
+### Config File
+
+Example `~/.keyclaw/config.toml`:
+
+```toml
+[proxy]
+addr = "127.0.0.1:8877"
+
+[logging]
+level = "info"
+
+[notice]
+mode = "minimal"
+
+[detection]
+entropy_enabled = true
+entropy_threshold = 3.5
+
+[audit]
+path = "~/.keyclaw/audit.log"
+
+[hosts]
+codex = ["api.openai.com", "chat.openai.com", "chatgpt.com"]
+claude = ["api.anthropic.com", "claude.ai"]
+
+[allowlist]
+rule_ids = ["generic-api-key"]
+patterns = ["^sk-test-"]
+secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+```
+
+Supported file sections today are `proxy`, `vault`, `logging`, `notice`, `detection`, `audit`, `hosts`, and `allowlist`. Use the file for steady-state local settings, then reach for env vars when you want a one-off override.
+
+Allowlist entries let you intentionally skip redaction for known-safe matches:
+
+- `rule_ids`: skip every match produced by specific gitleaks rule IDs
+- `patterns`: skip secrets whose matched value satisfies a regex
+- `secret_sha256`: skip one exact secret value by SHA-256 digest, without storing the plaintext in config
+
+To compute a `secret_sha256` entry locally:
+
+```bash
+printf '%s' 'your-known-safe-secret' | sha256sum
+```
+
+### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -221,6 +284,7 @@ KeyClaw is configured via environment variables:
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` (2MB) | Maximum request body size |
 | `KEYCLAW_DETECTOR_TIMEOUT` | `4s` | Timeout for request-body secret detection and streamed body reads (`250ms`, `4s`, `1m` formats supported) |
 | `KEYCLAW_GITLEAKS_CONFIG` | (bundled rules) | Path to custom gitleaks.toml rule file |
+| `KEYCLAW_AUDIT_LOG` | `~/.keyclaw/audit.log` | Append-only JSONL audit log path, or `off` to disable persistent audit logging |
 | `KEYCLAW_LOG_LEVEL` | `info` | Operator log verbosity for stderr runtime messages (`error`, `warn`, `info`, `debug`) |
 | `KEYCLAW_NOTICE_MODE` | `verbose` | Prompt notice injection mode after redaction (`verbose`, `minimal`, `off`) |
 | `KEYCLAW_UNSAFE_LOG` | `false` | Disable normal log scrubbing and log raw secret material for debugging only; unsafe and opt-in |
@@ -228,6 +292,8 @@ KeyClaw is configured via environment variables:
 | `KEYCLAW_REQUIRE_MITM_EFFECTIVE` | `true` | Fail if proxy bypass is detected |
 
 ### Setting Variables
+
+Environment variables override the config file when both are set.
 
 Inline for one command:
 
@@ -253,7 +319,7 @@ export KEYCLAW_NOTICE_MODE=minimal
 export KEYCLAW_GITLEAKS_CONFIG="$HOME/.config/keyclaw/gitleaks.toml"
 ```
 
-If you use `keyclaw proxy` as a detached daemon, or enable `keyclaw proxy autostart`, daemon-side settings are read when that proxy process starts. After changing variables such as `KEYCLAW_PROXY_ADDR`, `KEYCLAW_LOG_LEVEL`, `KEYCLAW_GITLEAKS_CONFIG`, `KEYCLAW_NOTICE_MODE`, or `KEYCLAW_REQUIRE_MITM_EFFECTIVE`, restart the proxy so the running daemon picks them up.
+If you use `keyclaw proxy` as a detached daemon, or enable `keyclaw proxy autostart`, daemon-side settings are read when that proxy process starts. After changing `~/.keyclaw/config.toml` or variables such as `KEYCLAW_PROXY_ADDR`, `KEYCLAW_LOG_LEVEL`, `KEYCLAW_GITLEAKS_CONFIG`, `KEYCLAW_NOTICE_MODE`, or `KEYCLAW_REQUIRE_MITM_EFFECTIVE`, restart the proxy so the running daemon picks them up.
 
 KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`. Secret detection uses the bundled gitleaks rules compiled natively into the binary; set `KEYCLAW_GITLEAKS_CONFIG` only when you want to override those rules with your own TOML file.
 
@@ -262,6 +328,14 @@ By default, KeyClaw creates a machine-local vault key next to the encrypted vaul
 `KEYCLAW_NOTICE_MODE=verbose` keeps the current full acknowledgment guidance, `minimal` injects a shorter notice, and `off` suppresses notice injection entirely while still redacting and reinjecting secrets normally.
 
 The only intentional exception to scrubbed runtime logging is `KEYCLAW_UNSAFE_LOG=true`. When enabled, KeyClaw may write raw request fragments to stderr or `~/.keyclaw/mitm.log` to help debug interception problems. Leave it unset for normal use.
+
+## Audit Log
+
+By default, KeyClaw appends one JSON line per redacted secret to `~/.keyclaw/audit.log`. Each entry includes the UTC timestamp, `rule_id`, placeholder, request host, and action, but never the raw secret value itself.
+
+Set `KEYCLAW_AUDIT_LOG=off` or `[audit] path = "off"` to disable the persistent audit log. Set `KEYCLAW_AUDIT_LOG=/path/to/audit.log` or `[audit] path = "/path/to/audit.log"` to move it somewhere else.
+
+KeyClaw does not rotate the audit log by itself; it always appends. For size management, point it at a path managed by `logrotate`, `newsyslog`, or your platform’s equivalent rotation tool.
 
 ## Logging
 
@@ -318,7 +392,7 @@ src/
 ├── main.rs            # Entry point
 ├── lib.rs             # Module declarations
 ├── certgen.rs         # Runtime CA certificate generation
-├── config.rs          # Environment-based configuration
+├── config.rs          # Env + TOML configuration
 ├── gitleaks_rules.rs  # Bundled gitleaks rule loading + native regex compilation
 ├── pipeline.rs        # Request rewrite pipeline
 ├── placeholder.rs     # Placeholder parsing, generation, and resolution

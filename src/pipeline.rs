@@ -240,6 +240,7 @@ mod tests {
                 rules: Vec::new(),
                 skipped_rules: 0,
                 entropy_config: crate::entropy::EntropyConfig::default(),
+                allowlist: crate::allowlist::Allowlist::default(),
             }),
             max_body_size,
             strict_mode: true,

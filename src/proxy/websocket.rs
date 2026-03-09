@@ -4,7 +4,7 @@ use hudsucker::{
     WebSocketContext, WebSocketHandler,
 };
 
-use super::common::{log_debug, log_warn};
+use super::common::{log_debug, log_warn, normalize_host_value};
 use super::KeyclawHttpHandler;
 
 fn is_expected_websocket_close_error(err: &tungstenite::Error) -> bool {
@@ -83,10 +83,22 @@ impl WebSocketHandler for KeyclawHttpHandler {
         }
 
         if let Message::Text(text) = &msg {
-            if let Some((value, count)) =
+            if let Some((value, replacements)) =
                 self.rewrite_ws_request_text(text.as_str(), uses_input_only_ws_rewrite(ctx))
             {
-                log_debug(format!("ws request: redacted {} secret(s)", count));
+                if let Some(host) = websocket_request_host(ctx) {
+                    if let Err(err) = crate::audit::append_redactions(
+                        self.audit_log_path.as_deref(),
+                        &host,
+                        &replacements,
+                    ) {
+                        log_warn(format!("audit log write failed: {err}"));
+                    }
+                }
+                log_debug(format!(
+                    "ws request: redacted {} secret(s)",
+                    replacements.len()
+                ));
                 return Some(Message::Text(value.into()));
             }
         }
@@ -95,7 +107,11 @@ impl WebSocketHandler for KeyclawHttpHandler {
 }
 
 impl KeyclawHttpHandler {
-    fn rewrite_ws_request_text(&self, text: &str, input_only: bool) -> Option<(String, usize)> {
+    fn rewrite_ws_request_text(
+        &self,
+        text: &str,
+        input_only: bool,
+    ) -> Option<(String, Vec<crate::placeholder::Replacement>)> {
         let payload = text.as_bytes().to_vec();
         let rewrite = if input_only {
             self.processor.rewrite_and_evaluate_codex_ws(&payload)
@@ -105,7 +121,7 @@ impl KeyclawHttpHandler {
         match rewrite {
             Ok(result) if !result.replacements.is_empty() => String::from_utf8(result.body)
                 .ok()
-                .map(|value| (value, result.replacements.len())),
+                .map(|value| (value, result.replacements)),
             _ => None,
         }
     }
@@ -119,6 +135,15 @@ impl KeyclawHttpHandler {
             .resolve_text(text.as_bytes())
             .ok()
             .and_then(|resolved| String::from_utf8(resolved).ok())
+    }
+}
+
+fn websocket_request_host(ctx: &WebSocketContext) -> Option<String> {
+    match ctx {
+        WebSocketContext::ClientToServer { dst, .. } => dst
+            .authority()
+            .map(|authority| normalize_host_value(authority.as_str())),
+        _ => None,
     }
 }
 
@@ -192,6 +217,7 @@ mod tests {
             processor,
             max_body_bytes: 1 << 20,
             body_timeout: Duration::from_secs(1),
+            audit_log_path: None,
             intercepted: Arc::new(AtomicI64::new(0)),
         };
         let secret = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
@@ -229,6 +255,7 @@ mod tests {
             processor,
             max_body_bytes: 1 << 20,
             body_timeout: Duration::from_secs(1),
+            audit_log_path: None,
             intercepted: Arc::new(AtomicI64::new(0)),
         };
         let request_secret = "api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";

@@ -1,5 +1,6 @@
 mod bootstrap;
 mod doctor;
+mod init;
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use self::bootstrap::{
     run_proxy_foreground, run_proxy_status, run_proxy_stop, Runner,
 };
 use self::doctor::run_doctor;
+use self::init::run_init;
 
 pub fn run_cli(args: Vec<String>) -> i32 {
     let command = match parse_cli(args) {
@@ -29,9 +31,16 @@ pub fn run_cli(args: Vec<String>) -> i32 {
 
     let cfg = Config::from_env();
     crate::logging::configure(cfg.log_level);
+    if !matches!(command, CliCommand::Doctor) {
+        if let Some(err) = cfg.config_file_error() {
+            print_error(&err);
+            return 1;
+        }
+    }
 
     match command {
         CliCommand::Doctor => run_doctor(&cfg),
+        CliCommand::Init { force } => run_init(&cfg, force),
         CliCommand::Mitm { tool, child_args } => {
             configure_unsafe_logging(&cfg);
             match build_processor(&cfg) {
@@ -81,7 +90,7 @@ pub fn run_cli(args: Vec<String>) -> i32 {
         CliCommand::RewriteJson => {
             configure_unsafe_logging(&cfg);
             match build_processor(&cfg) {
-                Ok(processor) => run_rewrite_json(processor),
+                Ok(processor) => run_rewrite_json(&cfg, processor),
                 Err(err) => {
                     print_error(&err);
                     1
@@ -109,6 +118,9 @@ enum ProxyAutostartAction {
 #[derive(Debug, PartialEq, Eq)]
 enum CliCommand {
     Doctor,
+    Init {
+        force: bool,
+    },
     Mitm {
         tool: String,
         child_args: Vec<String>,
@@ -125,6 +137,9 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
 
     match matches.subcommand() {
         Some(("doctor", _)) => Ok(CliCommand::Doctor),
+        Some(("init", subcommand)) => Ok(CliCommand::Init {
+            force: subcommand.get_flag("force"),
+        }),
         Some(("proxy", subcommand)) => {
             let action = match subcommand.subcommand() {
                 Some(("start", start_matches)) => ProxyAction::Start {
@@ -277,6 +292,16 @@ fn cli() -> clap::Command {
         .subcommand(tool_alias_command("codex"))
         .subcommand(tool_alias_command("claude"))
         .subcommand(
+            clap::Command::new("init")
+                .about("Run guided first-run setup")
+                .arg(
+                    Arg::new("force")
+                        .long("force")
+                        .help("Regenerate setup artifacts when it is safe to do so")
+                        .action(clap::ArgAction::SetTrue),
+                ),
+        )
+        .subcommand(
             clap::Command::new("rewrite-json")
                 .about("Read JSON from stdin, redact secrets, and write JSON to stdout"),
         )
@@ -314,7 +339,7 @@ fn run_mitm(cfg: &Config, processor: Arc<Processor>, tool: &str, child_args: Vec
     }
 }
 
-fn run_rewrite_json(processor: Arc<Processor>) -> i32 {
+fn run_rewrite_json(cfg: &Config, processor: Arc<Processor>) -> i32 {
     let mut input = Vec::new();
     if io::stdin().read_to_end(&mut input).is_err() {
         crate::logging::error("failed to read stdin");
@@ -323,6 +348,13 @@ fn run_rewrite_json(processor: Arc<Processor>) -> i32 {
 
     match processor.rewrite_and_evaluate(&input) {
         Ok(result) => {
+            if let Err(err) = crate::audit::append_redactions(
+                cfg.audit_log_path.as_deref(),
+                "stdin",
+                &result.replacements,
+            ) {
+                crate::logging::warn(&format!("audit log write failed: {err}"));
+            }
             if io::stdout().write_all(&result.body).is_err() {
                 crate::logging::error("failed to write stdout");
                 return 1;
@@ -357,6 +389,14 @@ mod tests {
         assert_eq!(
             super::parse_cli(vec!["doctor".into()]).unwrap(),
             super::CliCommand::Doctor
+        );
+        assert_eq!(
+            super::parse_cli(vec!["init".into()]).unwrap(),
+            super::CliCommand::Init { force: false }
+        );
+        assert_eq!(
+            super::parse_cli(vec!["init".into(), "--force".into()]).unwrap(),
+            super::CliCommand::Init { force: true }
         );
         assert_eq!(
             super::parse_cli(vec!["proxy".into()]).unwrap(),

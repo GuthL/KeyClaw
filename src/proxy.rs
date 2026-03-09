@@ -4,6 +4,7 @@ mod streaming;
 mod websocket;
 
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -24,6 +25,7 @@ pub struct Server {
     pub processor: Arc<Processor>,
     pub max_body_bytes: i64,
     pub body_timeout: Duration,
+    pub audit_log_path: Option<PathBuf>,
     pub ca_cert_pem: String,
     pub ca_key_pem: String,
     intercepted: Arc<AtomicI64>,
@@ -42,6 +44,7 @@ struct KeyclawHttpHandler {
     processor: Arc<Processor>,
     max_body_bytes: i64,
     body_timeout: Duration,
+    audit_log_path: Option<PathBuf>,
     intercepted: Arc<AtomicI64>,
 }
 
@@ -76,6 +79,7 @@ impl Server {
             processor,
             max_body_bytes: 2 * 1024 * 1024,
             body_timeout: Duration::from_secs(3),
+            audit_log_path: None,
             ca_cert_pem,
             ca_key_pem,
             intercepted: Arc::new(AtomicI64::new(0)),
@@ -122,6 +126,7 @@ impl Server {
         let intercepted = Arc::clone(&self.intercepted);
         let max_body_bytes = self.max_body_bytes;
         let body_timeout = self.body_timeout;
+        let audit_log_path = self.audit_log_path.clone();
 
         let ca_cert_pem = self.ca_cert_pem.clone();
         let ca_key_pem = self.ca_key_pem.clone();
@@ -154,6 +159,7 @@ impl Server {
                     processor,
                     max_body_bytes,
                     body_timeout,
+                    audit_log_path,
                     intercepted,
                 };
 

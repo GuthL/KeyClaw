@@ -16,6 +16,7 @@ pub(crate) const MAX_PLACEHOLDER_LEN: usize =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Replacement {
+    pub rule_id: String,
     pub id: String,
     pub placeholder: String,
     pub secret: String,
@@ -83,6 +84,7 @@ where
         let ph = make(&id);
 
         replacements.push(Replacement {
+            rule_id: m.rule_id.to_string(),
             id,
             placeholder: ph.clone(),
             secret: m.secret.to_string(),

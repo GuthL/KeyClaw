@@ -1,3 +1,5 @@
+pub mod allowlist;
+pub mod audit;
 pub mod certgen;
 pub mod config;
 pub mod entropy;

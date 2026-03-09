@@ -30,6 +30,7 @@ pub(super) fn run_proxy_foreground(cfg: &Config, processor: Arc<Processor>, ca: 
     );
     proxy_server.max_body_bytes = cfg.max_body_bytes;
     proxy_server.body_timeout = cfg.detector_timeout;
+    proxy_server.audit_log_path = cfg.audit_log_path.clone();
 
     let running_proxy = match proxy_server.start() {
         Ok(p) => p,
@@ -605,6 +606,7 @@ impl Runner {
         );
         proxy_server.max_body_bytes = self.config.max_body_bytes;
         proxy_server.body_timeout = self.config.detector_timeout;
+        proxy_server.audit_log_path = self.config.audit_log_path.clone();
 
         let running_proxy = proxy_server.start()?;
 
@@ -776,6 +778,7 @@ pub(super) fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawErr
         threshold: cfg.entropy_threshold,
         min_len: cfg.entropy_min_len,
     };
+    ruleset.allowlist = cfg.allowlist.clone();
 
     crate::logging::info(&format!("{} gitleaks rules loaded", ruleset.rules.len()));
 
@@ -1093,6 +1096,11 @@ mod tests {
             entropy_enabled: true,
             entropy_threshold: 3.5,
             entropy_min_len: 20,
+            audit_log_path: Some(crate::audit::default_audit_log_path()),
+            allowlist: crate::allowlist::Allowlist::default(),
+            config_file_status: crate::config::ConfigFileStatus::Missing(
+                crate::config::default_config_path(),
+            ),
         }
     }
 

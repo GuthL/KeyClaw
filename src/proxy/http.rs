@@ -157,6 +157,13 @@ impl HttpHandler for KeyclawHttpHandler {
                 self.processor.replacement_summary(&rewritten.replacements)
             ));
             log_replacements(&host, &original_payload, &rewritten.replacements);
+            if let Err(err) = crate::audit::append_redactions(
+                self.audit_log_path.as_deref(),
+                &host,
+                &rewritten.replacements,
+            ) {
+                log_warn(format!("audit log write failed: {err}"));
+            }
         }
 
         let mut rewritten_req = Request::from_parts(parts, body_from_vec(rewritten.body.clone()));

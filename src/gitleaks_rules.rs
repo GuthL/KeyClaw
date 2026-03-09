@@ -3,6 +3,7 @@ use std::path::Path;
 use regex::Regex;
 use serde::Deserialize;
 
+use crate::allowlist::Allowlist;
 use crate::entropy::EntropyConfig;
 use crate::errors::KeyclawError;
 
@@ -25,6 +26,7 @@ pub struct RuleSet {
     pub rules: Vec<Rule>,
     pub skipped_rules: usize,
     pub entropy_config: EntropyConfig,
+    pub allowlist: Allowlist,
 }
 
 // ── TOML deserialization shapes ──────────────────────────────
@@ -94,6 +96,7 @@ impl RuleSet {
             rules,
             skipped_rules: skipped,
             entropy_config: EntropyConfig::default(),
+            allowlist: Allowlist::default(),
         })
     }
 
@@ -139,6 +142,10 @@ impl RuleSet {
                     }
                 }
 
+                if self.allowlist.allows(&rule.id, secret) {
+                    continue;
+                }
+
                 // Skip if this range overlaps with an already-found match
                 if matches.iter().any(|m| m.start < end && start < m.end) {
                     continue;
@@ -171,6 +178,9 @@ impl RuleSet {
                 }
                 // Skip if inside an existing placeholder
                 if inside_placeholder(input, em.start, em.end) {
+                    continue;
+                }
+                if self.allowlist.allows(ENTROPY_RULE_ID, em.token) {
                     continue;
                 }
                 matches.push(SecretMatch {
@@ -218,6 +228,7 @@ fn inside_placeholder(input: &str, start: usize, end: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::RuleSet;
+    use crate::allowlist::Allowlist;
     use crate::placeholder::make;
 
     #[test]
@@ -252,6 +263,7 @@ regex = '[a-f0-9]{16}'
             rules: Vec::new(),
             skipped_rules: 0,
             entropy_config: EntropyConfig::default(),
+            allowlist: Allowlist::default(),
         };
         let input = "token=aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
         let matches = rules.find_secrets(input);
@@ -270,6 +282,7 @@ regex = '[a-f0-9]{16}'
                 enabled: false,
                 ..Default::default()
             },
+            allowlist: Allowlist::default(),
         };
         let input = "token=aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
         let matches = rules.find_secrets(input);

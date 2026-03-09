@@ -18,6 +18,42 @@ use support::{
     start_upstream, wait_until, TEST_SECRET_CLAUDE, TEST_SECRET_CODEX,
 };
 
+fn write_allowlist_test_rules(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        r#"
+[[rules]]
+id = "example-secret"
+regex = '''([A-Za-z0-9]{24,})'''
+keywords = ["secret="]
+secretGroup = 1
+"#,
+    )
+    .expect("write gitleaks config");
+}
+
+fn allowlist_test_payload() -> (&'static str, String) {
+    let secret = "AbC123DeF456GhI789JkL012";
+    (secret, format!(r#"{{"prompt":"secret={secret}"}}"#))
+}
+
+fn run_rewrite_json_with_input(home: &std::path::Path, payload: &str) -> std::process::Output {
+    let mut child = rewrite_json_command(home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn rewrite-json");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+
+    child.wait_with_output().expect("wait rewrite-json")
+}
+
 #[test]
 fn help_flag_returns_success_and_lists_supported_subcommands() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -34,6 +70,7 @@ fn help_flag_returns_success_and_lists_supported_subcommands() {
     assert!(out.contains("mitm"), "stdout={out}");
     assert!(out.contains("codex"), "stdout={out}");
     assert!(out.contains("claude"), "stdout={out}");
+    assert!(out.contains("init"), "stdout={out}");
     assert!(out.contains("rewrite-json"), "stdout={out}");
     assert!(out.contains("doctor"), "stdout={out}");
     assert!(stderr.trim().is_empty(), "stderr={stderr}");
@@ -55,6 +92,7 @@ fn short_help_flag_returns_success_and_lists_supported_subcommands() {
     assert!(out.contains("mitm"), "stdout={out}");
     assert!(out.contains("codex"), "stdout={out}");
     assert!(out.contains("claude"), "stdout={out}");
+    assert!(out.contains("init"), "stdout={out}");
     assert!(out.contains("rewrite-json"), "stdout={out}");
     assert!(out.contains("doctor"), "stdout={out}");
     assert!(stderr.trim().is_empty(), "stderr={stderr}");
@@ -73,6 +111,110 @@ fn version_flag_returns_success_and_prints_crate_version() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(out.trim(), format!("keyclaw {}", env!("CARGO_PKG_VERSION")));
     assert!(stderr.trim().is_empty(), "stderr={stderr}");
+}
+
+#[test]
+fn init_creates_first_run_artifacts_and_runs_doctor() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut child = keyclaw_command(temp.path())
+        .arg("init")
+        .env("KEYCLAW_PROXY_ADDR", "127.0.0.1:0")
+        .env("KEYCLAW_PROXY_URL", "http://127.0.0.1:0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn init");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"n\n")
+        .expect("write prompt response");
+
+    let output = child.wait_with_output().expect("wait init");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("doctor:"), "stdout={out}");
+    assert!(out.contains("env.sh"), "stdout={out}");
+
+    let keyclaw_dir = temp.path().join(".keyclaw");
+    assert!(keyclaw_dir.join("ca.crt").exists(), "missing ca.crt");
+    assert!(keyclaw_dir.join("ca.key").exists(), "missing ca.key");
+    assert!(keyclaw_dir.join("env.sh").exists(), "missing env.sh");
+    assert!(keyclaw_dir.join("vault.key").exists(), "missing vault.key");
+}
+
+#[test]
+fn init_patches_shell_rc_once_when_confirmed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bashrc = temp.path().join(".bashrc");
+    std::fs::write(&bashrc, "# existing\n").expect("write bashrc");
+
+    for _ in 0..2 {
+        let mut child = keyclaw_command(temp.path())
+            .arg("init")
+            .env("SHELL", "/bin/bash")
+            .env("KEYCLAW_PROXY_ADDR", "127.0.0.1:0")
+            .env("KEYCLAW_PROXY_URL", "http://127.0.0.1:0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn init");
+
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(b"y\n")
+            .expect("write prompt response");
+
+        let output = child.wait_with_output().expect("wait init");
+        assert_eq!(output.status.code(), Some(0));
+    }
+
+    let bashrc_contents = std::fs::read_to_string(&bashrc).expect("read bashrc");
+    let marker = "[ -f ~/.keyclaw/env.sh ] && source ~/.keyclaw/env.sh";
+    assert_eq!(
+        bashrc_contents.matches(marker).count(),
+        1,
+        "bashrc={bashrc_contents}"
+    );
+}
+
+#[test]
+fn init_force_regenerates_broken_ca_files() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let keyclaw_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&keyclaw_dir).expect("create keyclaw dir");
+    std::fs::write(keyclaw_dir.join("ca.crt"), "broken-cert").expect("write broken cert");
+    std::fs::write(keyclaw_dir.join("ca.key"), "broken-key").expect("write broken key");
+
+    let mut child = keyclaw_command(temp.path())
+        .arg("init")
+        .arg("--force")
+        .env("KEYCLAW_PROXY_ADDR", "127.0.0.1:0")
+        .env("KEYCLAW_PROXY_URL", "http://127.0.0.1:0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn init");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"n\n")
+        .expect("write prompt response");
+
+    let output = child.wait_with_output().expect("wait init");
+
+    assert_eq!(output.status.code(), Some(0));
+    let cert = std::fs::read_to_string(keyclaw_dir.join("ca.crt")).expect("read cert");
+    let key = std::fs::read_to_string(keyclaw_dir.join("ca.key")).expect("read key");
+    assert_ne!(cert, "broken-cert");
+    assert_ne!(key, "broken-key");
 }
 
 #[test]
@@ -278,6 +420,26 @@ fn doctor_warns_on_unsafe_log_but_exits_zero() {
 }
 
 #[test]
+fn doctor_reports_invalid_config_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[proxy]\naddr = [\"not-a-string\"\n",
+    )
+    .expect("write config");
+
+    let output = doctor_command(temp.path()).output().expect("run doctor");
+
+    assert_ne!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("FAIL config-file"), "output={out}");
+    assert!(out.contains("config.toml"), "output={out}");
+    assert!(out.contains("hint:"), "output={out}");
+}
+
+#[test]
 fn doctor_fails_on_invalid_custom_gitleaks_config() {
     let temp = tempfile::tempdir().expect("tempdir");
     let missing = temp.path().join("missing-gitleaks.toml");
@@ -291,6 +453,30 @@ fn doctor_fails_on_invalid_custom_gitleaks_config() {
     assert!(out.contains("FAIL ruleset"), "output={out}");
     assert!(out.contains("missing-gitleaks.toml"), "output={out}");
     assert!(out.contains("hint:"), "output={out}");
+}
+
+#[test]
+fn doctor_reports_allowlist_status() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        r#"
+[allowlist]
+rule_ids = ["example-secret"]
+patterns = ["^AbC123"]
+secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+"#,
+    )
+    .expect("write config");
+
+    let output = doctor_command(temp.path()).output().expect("run doctor");
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("PASS allowlist"), "output={out}");
+    assert!(out.contains("3 active"), "output={out}");
 }
 
 #[test]
@@ -570,6 +756,211 @@ fn rewrite_json_respects_custom_gitleaks_config() {
     assert_eq!(output.status.code(), Some(0));
     let out = String::from_utf8_lossy(&output.stdout);
     assert_eq!(out, payload);
+}
+
+#[test]
+fn rewrite_json_fails_on_invalid_config_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[logging]\nlevel = \"LOUD\"\n",
+    )
+    .expect("write config");
+
+    let output = rewrite_json_command(temp.path())
+        .output()
+        .expect("run rewrite-json");
+
+    assert_ne!(output.status.code(), Some(0));
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("config.toml"), "stderr={err}");
+    assert!(err.contains("logging.level"), "stderr={err}");
+}
+
+#[test]
+fn rewrite_json_skips_rule_id_allowlisted_matches() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let gitleaks_config = temp.path().join("gitleaks.toml");
+    write_allowlist_test_rules(&gitleaks_config);
+    let config_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"
+[detection]
+gitleaks_config = "{}"
+entropy_enabled = false
+
+[allowlist]
+rule_ids = ["example-secret"]
+"#,
+            gitleaks_config.display()
+        ),
+    )
+    .expect("write config");
+    let (_, payload) = allowlist_test_payload();
+
+    let output = run_rewrite_json_with_input(temp.path(), &payload);
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(out, payload);
+}
+
+#[test]
+fn rewrite_json_skips_regex_allowlisted_matches() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let gitleaks_config = temp.path().join("gitleaks.toml");
+    write_allowlist_test_rules(&gitleaks_config);
+    let config_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"
+[detection]
+gitleaks_config = "{}"
+entropy_enabled = false
+
+[allowlist]
+patterns = ["^AbC123"]
+"#,
+            gitleaks_config.display()
+        ),
+    )
+    .expect("write config");
+    let (_, payload) = allowlist_test_payload();
+
+    let output = run_rewrite_json_with_input(temp.path(), &payload);
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(out, payload);
+}
+
+#[test]
+fn rewrite_json_skips_sha256_allowlisted_matches() {
+    use sha2::{Digest, Sha256};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let gitleaks_config = temp.path().join("gitleaks.toml");
+    write_allowlist_test_rules(&gitleaks_config);
+    let config_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    let (secret, payload) = allowlist_test_payload();
+    let digest = hex::encode(Sha256::digest(secret.as_bytes()));
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"
+[detection]
+gitleaks_config = "{}"
+entropy_enabled = false
+
+[allowlist]
+secret_sha256 = ["{}"]
+"#,
+            gitleaks_config.display(),
+            digest
+        ),
+    )
+    .expect("write config");
+
+    let output = run_rewrite_json_with_input(temp.path(), &payload);
+
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(out, payload);
+}
+
+#[test]
+fn rewrite_json_writes_audit_log_without_secret_material() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let audit_log = temp.path().join("audit.log");
+    let payload = format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX);
+
+    let mut child = rewrite_json_command(temp.path())
+        .env("KEYCLAW_AUDIT_LOG", &audit_log)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn rewrite-json");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+    let output = child.wait_with_output().expect("wait rewrite-json");
+
+    assert_eq!(output.status.code(), Some(0));
+    let log = std::fs::read_to_string(&audit_log).expect("read audit log");
+    assert!(log.contains("\"action\":\"redacted\""), "log={log}");
+    assert!(log.contains("\"request_host\":\"stdin\""), "log={log}");
+    assert!(
+        log.contains("\"placeholder\":\"{{KEYCLAW_SECRET_"),
+        "log={log}"
+    );
+    assert!(!log.contains(TEST_SECRET_CODEX), "log={log}");
+}
+
+#[test]
+fn rewrite_json_disables_audit_log_with_off() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let payload = format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX);
+
+    let mut child = rewrite_json_command(temp.path())
+        .env("KEYCLAW_AUDIT_LOG", "off")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn rewrite-json");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+    let output = child.wait_with_output().expect("wait rewrite-json");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        !temp.path().join("audit.log").exists(),
+        "audit log should stay disabled"
+    );
+}
+
+#[test]
+fn rewrite_json_appends_audit_log_entries() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let audit_log = temp.path().join("audit.log");
+
+    for secret in [TEST_SECRET_CODEX, TEST_SECRET_CLAUDE] {
+        let payload = format!(r#"{{"prompt":"api_key = {}"}}"#, secret);
+        let mut child = rewrite_json_command(temp.path())
+            .env("KEYCLAW_AUDIT_LOG", &audit_log)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn rewrite-json");
+
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(payload.as_bytes())
+            .expect("write payload");
+        let output = child.wait_with_output().expect("wait rewrite-json");
+        assert_eq!(output.status.code(), Some(0));
+    }
+
+    let log = std::fs::read_to_string(&audit_log).expect("read audit log");
+    assert_eq!(log.lines().count(), 2, "log={log}");
 }
 
 #[test]

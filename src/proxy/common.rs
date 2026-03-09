@@ -85,6 +85,10 @@ pub(super) fn normalize_hosts(hosts: &[String]) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn normalize_host_value(host: &str) -> String {
+    normalize_host(host)
+}
+
 pub(super) fn allowed(allowed_hosts: &[String], host: &str) -> bool {
     if allowed_hosts.is_empty() {
         return true;
