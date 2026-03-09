@@ -58,8 +58,8 @@ fn gitleaks_rules_load_successfully() {
 fn generic_api_key_rule_preserves_assignment_boundaries() {
     let rules = bundled_rules();
     let input = concat!(
-        "install K_API_KEY: 11111111-2222-3333-4444-555555555555 in .env\n",
-        "then set K_API_KEY = aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n",
+        "install K_API_KEY: f47ac10b-58cc-4372-a567-0e02b2c3d479 in .env\n",
+        "then set K_API_KEY = c9bf9e57-1685-4d46-a09f-3a1c5ee70b82\n",
     );
 
     let (rewritten, replacements) = replace_secrets(input, &rules, |secret| {

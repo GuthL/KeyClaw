@@ -609,7 +609,7 @@ fn rewrite_json_creates_machine_local_vault_key_without_env_override() {
 #[test]
 fn rewrite_json_preserves_env_style_assignment_boundaries() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let payload = r#"{"messages":[{"role":"user","content":"install K_API_KEY: 11111111-2222-3333-4444-555555555555 in .env\nthen set K_API_KEY = aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]}"#;
+    let payload = r#"{"messages":[{"role":"user","content":"install K_API_KEY: f47ac10b-58cc-4372-a567-0e02b2c3d479 in .env\nthen set K_API_KEY = c9bf9e57-1685-4d46-a09f-3a1c5ee70b82"}]}"#;
 
     let mut child = rewrite_json_command(temp.path())
         .stdin(Stdio::piped())
