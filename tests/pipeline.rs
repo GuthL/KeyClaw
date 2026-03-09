@@ -230,3 +230,18 @@ fn resolve_text_reinjects_known_placeholders_even_with_example_notice_present() 
         "resolved={resolved}"
     );
 }
+
+#[test]
+fn rewrite_detects_high_entropy_token_not_matched_by_regex() {
+    let processor = make_processor(false);
+
+    // A custom internal token that has high entropy — entropy analysis should catch it
+    let body = br#"{"messages":[{"role":"user","content":"connect with token xK9mP2vL8nQ4wR6tY0uI3oA5sD7fG1hJ"}]}"#;
+    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
+
+    let rewritten = String::from_utf8_lossy(&result.body);
+    assert!(
+        !rewritten.contains("xK9mP2vL8nQ4wR6tY0uI3oA5sD7fG1hJ"),
+        "high-entropy token should be redacted: {rewritten}"
+    );
+}
