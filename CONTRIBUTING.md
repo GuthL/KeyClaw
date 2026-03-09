@@ -62,7 +62,6 @@ When you change public behavior, keep the launch-facing docs aligned:
 - Proxy setup docs should stay source-first: `keyclaw proxy` starts the daemon, `source ~/.keyclaw/env.sh` wires a shell to it, Linux `keyclaw proxy autostart enable` keeps the daemon alive across login/reboot, and shell env wiring stays separate from daemon autostart
 - Check `cargo run -- --help` and `cargo run -- --version` when CLI examples or command text change
 - Rerun the relevant CLI integration tests when changing command examples, stderr/stdout contracts, or operator guidance
-- Refresh `docs/plans/2026-03-07-production-readiness-project.md` with `scripts/sync-production-readiness-project.py` when production-readiness issues or acceptance criteria change
 
 ### CI
 
@@ -76,7 +75,7 @@ If CI fails, reproduce the same commands locally before pushing a fix so the fai
 
 ### Releases
 
-Maintainers should use [docs/release/maintainer-checklist.md](docs/release/maintainer-checklist.md) as the release source of truth for artifact naming, verification, publication, and rollback handling.
+Maintainers should use `scripts/package-release.sh`, `scripts/verify-release-contract.sh`, and `.github/workflows/release.yml` as the release source of truth for artifact naming, verification, publication, and rollback handling.
 
 Tagged releases (`v{version}`) also run `.github/workflows/release.yml`, which builds the supported targets, packages the documented `.tar.gz` archives, generates `SHA256SUMS`, and attaches those assets to a draft GitHub Release for maintainer verification.
 
