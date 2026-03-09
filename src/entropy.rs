@@ -164,10 +164,7 @@ mod tests {
         // Each of 62 alphanumeric chars once → log2(62) ≈ 5.954
         let alnum: String = ('a'..='z').chain('A'..='Z').chain('0'..='9').collect();
         let e = shannon_entropy(&alnum);
-        assert!(
-            (e - 62f64.log2()).abs() < 0.01,
-            "expected ~5.954, got {e}"
-        );
+        assert!((e - 62f64.log2()).abs() < 0.01, "expected ~5.954, got {e}");
     }
 
     #[test]
@@ -193,7 +190,10 @@ mod tests {
     fn skips_english_prose() {
         let input = "this is a perfectly normal sentence with only regular words";
         let matches = find_high_entropy_tokens(input, 5, 3.5);
-        assert!(matches.is_empty(), "prose should not trigger entropy detection");
+        assert!(
+            matches.is_empty(),
+            "prose should not trigger entropy detection"
+        );
     }
 
     #[test]

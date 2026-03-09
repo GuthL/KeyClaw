@@ -324,7 +324,11 @@ mod tests {
     #[test]
     fn from_env_reads_entropy_settings() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let keys = ["KEYCLAW_ENTROPY_ENABLED", "KEYCLAW_ENTROPY_THRESHOLD", "KEYCLAW_ENTROPY_MIN_LEN"];
+        let keys = [
+            "KEYCLAW_ENTROPY_ENABLED",
+            "KEYCLAW_ENTROPY_THRESHOLD",
+            "KEYCLAW_ENTROPY_MIN_LEN",
+        ];
         let saved = capture_env(&keys);
         env::set_var("KEYCLAW_ENTROPY_ENABLED", "false");
         env::set_var("KEYCLAW_ENTROPY_THRESHOLD", "4.0");
@@ -339,7 +343,11 @@ mod tests {
     #[test]
     fn from_env_uses_entropy_defaults() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let keys = ["KEYCLAW_ENTROPY_ENABLED", "KEYCLAW_ENTROPY_THRESHOLD", "KEYCLAW_ENTROPY_MIN_LEN"];
+        let keys = [
+            "KEYCLAW_ENTROPY_ENABLED",
+            "KEYCLAW_ENTROPY_THRESHOLD",
+            "KEYCLAW_ENTROPY_MIN_LEN",
+        ];
         let saved = capture_env(&keys);
         env::remove_var("KEYCLAW_ENTROPY_ENABLED");
         env::remove_var("KEYCLAW_ENTROPY_THRESHOLD");

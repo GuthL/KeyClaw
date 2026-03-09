@@ -276,7 +276,6 @@ regex = '[a-f0-9]{16}'
         assert!(matches.is_empty());
     }
 
-
     #[test]
     fn find_secrets_respects_per_rule_entropy_threshold() {
         // Rule requires entropy >= 3.0; a low-entropy match should be skipped
@@ -318,13 +317,21 @@ regex = '[a-zA-Z]{20,}'
 
         let input = "abcabcabcabcabcabcabcabc";
         let matches = rules.find_secrets(input);
-        assert_eq!(matches.len(), 1, "without entropy threshold, all matches pass");
+        assert_eq!(
+            matches.len(),
+            1,
+            "without entropy threshold, all matches pass"
+        );
     }
 
     #[test]
     fn bundled_rules_parse_entropy_field() {
         let rules = RuleSet::bundled().expect("bundled rules");
-        let with_entropy = rules.rules.iter().filter(|r| r.min_entropy.is_some()).count();
+        let with_entropy = rules
+            .rules
+            .iter()
+            .filter(|r| r.min_entropy.is_some())
+            .count();
         assert!(
             with_entropy >= 100,
             "expected at least 100 rules with entropy thresholds, found {with_entropy}"

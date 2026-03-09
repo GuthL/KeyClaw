@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 
 use crate::certgen::CaPair;
-use crate::entropy::EntropyConfig;
 use crate::config::Config;
+use crate::entropy::EntropyConfig;
 use crate::errors::{KeyclawError, CODE_MITM_NOT_EFFECTIVE};
 use crate::gitleaks_rules::RuleSet;
 use crate::pipeline::Processor;
