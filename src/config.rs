@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,31 +30,96 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
+        let file = load_config_file();
+
         Self {
-            proxy_listen_addr: env_or("KEYCLAW_PROXY_ADDR", "127.0.0.1:8877"),
-            proxy_url: env_or("KEYCLAW_PROXY_URL", "http://127.0.0.1:8877"),
-            ca_cert_path: env_or("KEYCLAW_CA_CERT", ""),
-            vault_path: path_env("KEYCLAW_VAULT_PATH").unwrap_or_else(default_vault_path),
-            vault_passphrase: optional_env("KEYCLAW_VAULT_PASSPHRASE"),
-            fail_closed: bool_env("KEYCLAW_FAIL_CLOSED", true),
-            max_body_bytes: int64_env("KEYCLAW_MAX_BODY_BYTES", 2 * 1024 * 1024),
-            detector_timeout: duration_env("KEYCLAW_DETECTOR_TIMEOUT", Duration::from_secs(4)),
-            known_codex_hosts: split_csv(&env_or(
+            proxy_listen_addr: env_or_file(
+                "KEYCLAW_PROXY_ADDR",
+                "proxy_addr",
+                &file,
+                "127.0.0.1:8877",
+            ),
+            proxy_url: env_or_file(
+                "KEYCLAW_PROXY_URL",
+                "proxy_url",
+                &file,
+                "http://127.0.0.1:8877",
+            ),
+            ca_cert_path: env_or_file("KEYCLAW_CA_CERT", "ca_cert", &file, ""),
+            vault_path: path_env_or_file("KEYCLAW_VAULT_PATH", "vault_path", &file)
+                .unwrap_or_else(default_vault_path),
+            vault_passphrase: optional_env_or_file(
+                "KEYCLAW_VAULT_PASSPHRASE",
+                "vault_passphrase",
+                &file,
+            ),
+            fail_closed: bool_env_or_file("KEYCLAW_FAIL_CLOSED", "fail_closed", &file, true),
+            max_body_bytes: int64_env_or_file(
+                "KEYCLAW_MAX_BODY_BYTES",
+                "max_body_bytes",
+                &file,
+                2 * 1024 * 1024,
+            ),
+            detector_timeout: duration_env_or_file(
+                "KEYCLAW_DETECTOR_TIMEOUT",
+                "detector_timeout",
+                &file,
+                Duration::from_secs(4),
+            ),
+            known_codex_hosts: split_csv(&env_or_file(
                 "KEYCLAW_CODEX_HOSTS",
+                "codex_hosts",
+                &file,
                 "api.openai.com,chat.openai.com,chatgpt.com",
             )),
-            known_claude_hosts: split_csv(&env_or(
+            known_claude_hosts: split_csv(&env_or_file(
                 "KEYCLAW_CLAUDE_HOSTS",
+                "claude_hosts",
+                &file,
                 "api.anthropic.com,claude.ai",
             )),
-            gitleaks_config_path: path_env("KEYCLAW_GITLEAKS_CONFIG"),
-            log_level: log_level_env("KEYCLAW_LOG_LEVEL", LogLevel::Info),
-            unsafe_log: bool_env("KEYCLAW_UNSAFE_LOG", false),
-            require_mitm_effective: bool_env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", true),
-            notice_mode: notice_mode_env("KEYCLAW_NOTICE_MODE", NoticeMode::Verbose),
-            entropy_enabled: bool_env("KEYCLAW_ENTROPY_ENABLED", true),
-            entropy_threshold: f64_env("KEYCLAW_ENTROPY_THRESHOLD", 3.5),
-            entropy_min_len: usize_env("KEYCLAW_ENTROPY_MIN_LEN", 20),
+            gitleaks_config_path: path_env_or_file(
+                "KEYCLAW_GITLEAKS_CONFIG",
+                "gitleaks_config",
+                &file,
+            ),
+            log_level: log_level_env_or_file(
+                "KEYCLAW_LOG_LEVEL",
+                "log_level",
+                &file,
+                LogLevel::Info,
+            ),
+            unsafe_log: bool_env_or_file("KEYCLAW_UNSAFE_LOG", "unsafe_log", &file, false),
+            require_mitm_effective: bool_env_or_file(
+                "KEYCLAW_REQUIRE_MITM_EFFECTIVE",
+                "require_mitm_effective",
+                &file,
+                true,
+            ),
+            notice_mode: notice_mode_env_or_file(
+                "KEYCLAW_NOTICE_MODE",
+                "notice_mode",
+                &file,
+                NoticeMode::Verbose,
+            ),
+            entropy_enabled: bool_env_or_file(
+                "KEYCLAW_ENTROPY_ENABLED",
+                "entropy_enabled",
+                &file,
+                true,
+            ),
+            entropy_threshold: f64_env_or_file(
+                "KEYCLAW_ENTROPY_THRESHOLD",
+                "entropy_threshold",
+                &file,
+                3.5,
+            ),
+            entropy_min_len: usize_env_or_file(
+                "KEYCLAW_ENTROPY_MIN_LEN",
+                "entropy_min_len",
+                &file,
+                20,
+            ),
         }
     }
 
@@ -74,78 +140,228 @@ pub fn allowed_hosts(tool: &str, cfg: &Config) -> Vec<String> {
     Config::allowed_hosts(tool, cfg)
 }
 
-fn env_or(key: &str, fallback: &str) -> String {
+// ---------------------------------------------------------------------------
+// Config file loading
+// ---------------------------------------------------------------------------
+
+type FileMap = HashMap<String, toml::Value>;
+
+fn config_file_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".keyclaw").join("config.toml")
+}
+
+fn load_config_file() -> Option<FileMap> {
+    let path = config_file_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    match content.parse::<toml::Value>() {
+        Ok(toml::Value::Table(table)) => {
+            let map: FileMap = table.into_iter().collect();
+            Some(map)
+        }
+        Ok(_) => {
+            crate::logging::warn(&format!(
+                "config file {} is not a TOML table",
+                path.display()
+            ));
+            None
+        }
+        Err(e) => {
+            crate::logging::warn(&format!("failed to parse {}: {e}", path.display()));
+            None
+        }
+    }
+}
+
+/// Validate the config file and return the number of keys if it exists.
+pub fn validate_config_file() -> Result<Option<usize>, String> {
+    let path = config_file_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    match content.parse::<toml::Value>() {
+        Ok(toml::Value::Table(table)) => Ok(Some(table.len())),
+        Ok(_) => Err(format!(
+            "config file {} is not a TOML table",
+            path.display()
+        )),
+        Err(e) => Err(format!("failed to parse {}: {e}", path.display())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: read a string value from the file map
+// ---------------------------------------------------------------------------
+
+fn file_string(file_key: &str, file: &Option<FileMap>) -> Option<String> {
+    let map = file.as_ref()?;
+    match map.get(file_key)? {
+        toml::Value::String(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
+        toml::Value::Boolean(b) => Some(b.to_string()),
+        toml::Value::Integer(n) => Some(n.to_string()),
+        toml::Value::Float(f) => Some(f.to_string()),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// env-or-file helpers (env var > config file > hardcoded default)
+// ---------------------------------------------------------------------------
+
+fn env_or_file(key: &str, file_key: &str, file: &Option<FileMap>, fallback: &str) -> String {
     match env::var(key) {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => fallback.to_string(),
+        _ => file_string(file_key, file).unwrap_or_else(|| fallback.to_string()),
     }
 }
 
-fn bool_env(key: &str, fallback: bool) -> bool {
-    match env::var(key) {
-        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
-            "1" | "t" | "true" | "y" | "yes" | "on" => true,
-            "0" | "f" | "false" | "n" | "no" | "off" => false,
-            _ => fallback,
-        },
-        Err(_) => fallback,
+fn bool_env_or_file(key: &str, file_key: &str, file: &Option<FileMap>, fallback: bool) -> bool {
+    if let Ok(v) = env::var(key) {
+        return parse_bool_str(v.trim()).unwrap_or(fallback);
     }
+    if let Some(map) = file {
+        if let Some(toml::Value::Boolean(b)) = map.get(file_key) {
+            return *b;
+        }
+        if let Some(toml::Value::String(s)) = map.get(file_key) {
+            if let Some(b) = parse_bool_str(s.trim()) {
+                return b;
+            }
+        }
+    }
+    fallback
 }
 
-fn int64_env(key: &str, fallback: i64) -> i64 {
-    match env::var(key) {
-        Ok(v) => v.trim().parse::<i64>().unwrap_or(fallback),
-        Err(_) => fallback,
-    }
-}
-
-fn log_level_env(key: &str, fallback: LogLevel) -> LogLevel {
-    match env::var(key) {
-        Ok(v) => LogLevel::parse(v.trim()).unwrap_or(fallback),
-        Err(_) => fallback,
-    }
-}
-
-fn notice_mode_env(key: &str, fallback: NoticeMode) -> NoticeMode {
-    match env::var(key) {
-        Ok(v) => NoticeMode::parse(v.trim()).unwrap_or(fallback),
-        Err(_) => fallback,
-    }
-}
-
-fn f64_env(key: &str, fallback: f64) -> f64 {
-    match env::var(key) {
-        Ok(v) => v.trim().parse::<f64>().unwrap_or(fallback),
-        Err(_) => fallback,
-    }
-}
-
-fn usize_env(key: &str, fallback: usize) -> usize {
-    match env::var(key) {
-        Ok(v) => v.trim().parse::<usize>().unwrap_or(fallback),
-        Err(_) => fallback,
-    }
-}
-
-fn path_env(key: &str) -> Option<PathBuf> {
-    match env::var(key) {
-        Ok(v) if !v.trim().is_empty() => Some(PathBuf::from(v.trim())),
+fn parse_bool_str(s: &str) -> Option<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "1" | "t" | "true" | "y" | "yes" | "on" => Some(true),
+        "0" | "f" | "false" | "n" | "no" | "off" => Some(false),
         _ => None,
     }
 }
 
-fn optional_env(key: &str) -> Option<String> {
-    match env::var(key) {
-        Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
-        _ => None,
+fn int64_env_or_file(key: &str, file_key: &str, file: &Option<FileMap>, fallback: i64) -> i64 {
+    if let Ok(v) = env::var(key) {
+        return v.trim().parse::<i64>().unwrap_or(fallback);
     }
+    if let Some(map) = file {
+        if let Some(toml::Value::Integer(n)) = map.get(file_key) {
+            return *n;
+        }
+        if let Some(toml::Value::String(s)) = map.get(file_key) {
+            if let Ok(n) = s.trim().parse::<i64>() {
+                return n;
+            }
+        }
+    }
+    fallback
 }
 
-fn duration_env(key: &str, fallback: Duration) -> Duration {
-    match env::var(key) {
-        Ok(v) => parse_duration(v.trim()).unwrap_or(fallback),
-        Err(_) => fallback,
+fn f64_env_or_file(key: &str, file_key: &str, file: &Option<FileMap>, fallback: f64) -> f64 {
+    if let Ok(v) = env::var(key) {
+        return v.trim().parse::<f64>().unwrap_or(fallback);
     }
+    if let Some(map) = file {
+        if let Some(toml::Value::Float(f)) = map.get(file_key) {
+            return *f;
+        }
+        if let Some(toml::Value::Integer(n)) = map.get(file_key) {
+            return *n as f64;
+        }
+        if let Some(toml::Value::String(s)) = map.get(file_key) {
+            if let Ok(f) = s.trim().parse::<f64>() {
+                return f;
+            }
+        }
+    }
+    fallback
+}
+
+fn usize_env_or_file(
+    key: &str,
+    file_key: &str,
+    file: &Option<FileMap>,
+    fallback: usize,
+) -> usize {
+    if let Ok(v) = env::var(key) {
+        return v.trim().parse::<usize>().unwrap_or(fallback);
+    }
+    if let Some(map) = file {
+        if let Some(toml::Value::Integer(n)) = map.get(file_key) {
+            if *n >= 0 {
+                return *n as usize;
+            }
+        }
+        if let Some(toml::Value::String(s)) = map.get(file_key) {
+            if let Ok(n) = s.trim().parse::<usize>() {
+                return n;
+            }
+        }
+    }
+    fallback
+}
+
+fn path_env_or_file(key: &str, file_key: &str, file: &Option<FileMap>) -> Option<PathBuf> {
+    match env::var(key) {
+        Ok(v) if !v.trim().is_empty() => return Some(PathBuf::from(v.trim())),
+        _ => {}
+    }
+    file_string(file_key, file).map(PathBuf::from)
+}
+
+fn optional_env_or_file(key: &str, file_key: &str, file: &Option<FileMap>) -> Option<String> {
+    match env::var(key) {
+        Ok(v) if !v.trim().is_empty() => return Some(v.trim().to_string()),
+        _ => {}
+    }
+    file_string(file_key, file)
+}
+
+fn duration_env_or_file(
+    key: &str,
+    file_key: &str,
+    file: &Option<FileMap>,
+    fallback: Duration,
+) -> Duration {
+    if let Ok(v) = env::var(key) {
+        return parse_duration(v.trim()).unwrap_or(fallback);
+    }
+    if let Some(s) = file_string(file_key, file) {
+        return parse_duration(s.trim()).unwrap_or(fallback);
+    }
+    fallback
+}
+
+fn log_level_env_or_file(
+    key: &str,
+    file_key: &str,
+    file: &Option<FileMap>,
+    fallback: LogLevel,
+) -> LogLevel {
+    if let Ok(v) = env::var(key) {
+        return LogLevel::parse(v.trim()).unwrap_or(fallback);
+    }
+    if let Some(s) = file_string(file_key, file) {
+        return LogLevel::parse(s.trim()).unwrap_or(fallback);
+    }
+    fallback
+}
+
+fn notice_mode_env_or_file(
+    key: &str,
+    file_key: &str,
+    file: &Option<FileMap>,
+    fallback: NoticeMode,
+) -> NoticeMode {
+    if let Ok(v) = env::var(key) {
+        return NoticeMode::parse(v.trim()).unwrap_or(fallback);
+    }
+    if let Some(s) = file_string(file_key, file) {
+        return NoticeMode::parse(s.trim()).unwrap_or(fallback);
+    }
+    fallback
 }
 
 fn split_csv(input: &str) -> Vec<String> {
@@ -185,8 +401,8 @@ fn parse_duration(input: &str) -> Option<Duration> {
             ("ns", 1.0)
         } else if rest.starts_with("us") {
             ("us", 1_000.0)
-        } else if rest.starts_with("µs") {
-            ("µs", 1_000.0)
+        } else if rest.starts_with("\u{b5}s") {
+            ("\u{b5}s", 1_000.0)
         } else if rest.starts_with("ms") {
             ("ms", 1_000_000.0)
         } else if rest.starts_with('s') {
@@ -372,5 +588,191 @@ mod tests {
                 None => env::remove_var(key),
             }
         }
+    }
+
+    fn all_env_keys() -> Vec<&'static str> {
+        vec![
+            "HOME",
+            "KEYCLAW_PROXY_ADDR",
+            "KEYCLAW_PROXY_URL",
+            "KEYCLAW_CA_CERT",
+            "KEYCLAW_VAULT_PATH",
+            "KEYCLAW_VAULT_PASSPHRASE",
+            "KEYCLAW_FAIL_CLOSED",
+            "KEYCLAW_MAX_BODY_BYTES",
+            "KEYCLAW_DETECTOR_TIMEOUT",
+            "KEYCLAW_CODEX_HOSTS",
+            "KEYCLAW_CLAUDE_HOSTS",
+            "KEYCLAW_GITLEAKS_CONFIG",
+            "KEYCLAW_LOG_LEVEL",
+            "KEYCLAW_UNSAFE_LOG",
+            "KEYCLAW_REQUIRE_MITM_EFFECTIVE",
+            "KEYCLAW_NOTICE_MODE",
+            "KEYCLAW_ENTROPY_ENABLED",
+            "KEYCLAW_ENTROPY_THRESHOLD",
+            "KEYCLAW_ENTROPY_MIN_LEN",
+        ]
+    }
+
+    #[test]
+    fn from_env_reads_config_file_values() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let all_keys = all_env_keys();
+        let saved = capture_env(&all_keys);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+        let keyclaw_dir = home.join(".keyclaw");
+        std::fs::create_dir_all(&keyclaw_dir).expect("mkdir");
+
+        let config_content = r#"
+proxy_addr = "127.0.0.1:7777"
+proxy_url = "http://127.0.0.1:7777"
+fail_closed = false
+max_body_bytes = 1048576
+detector_timeout = "2s"
+log_level = "debug"
+notice_mode = "minimal"
+entropy_threshold = 4.2
+entropy_min_len = 25
+entropy_enabled = false
+unsafe_log = true
+"#;
+        std::fs::write(keyclaw_dir.join("config.toml"), config_content).expect("write config");
+
+        env::set_var("HOME", home.to_str().unwrap());
+        for key in &all_keys[1..] {
+            env::remove_var(key);
+        }
+
+        let cfg = Config::from_env();
+
+        assert_eq!(cfg.proxy_listen_addr, "127.0.0.1:7777");
+        assert_eq!(cfg.proxy_url, "http://127.0.0.1:7777");
+        assert!(!cfg.fail_closed);
+        assert_eq!(cfg.max_body_bytes, 1_048_576);
+        assert_eq!(cfg.detector_timeout, Duration::from_secs(2));
+        assert_eq!(cfg.log_level, LogLevel::Debug);
+        assert_eq!(cfg.notice_mode, NoticeMode::Minimal);
+        assert!((cfg.entropy_threshold - 4.2).abs() < 0.001);
+        assert_eq!(cfg.entropy_min_len, 25);
+        assert!(!cfg.entropy_enabled);
+        assert!(cfg.unsafe_log);
+
+        restore_env(saved);
+    }
+
+    #[test]
+    fn env_vars_override_config_file() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let all_keys = all_env_keys();
+        let saved = capture_env(&all_keys);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+        let keyclaw_dir = home.join(".keyclaw");
+        std::fs::create_dir_all(&keyclaw_dir).expect("mkdir");
+
+        let config_content = r#"
+proxy_addr = "127.0.0.1:7777"
+log_level = "debug"
+fail_closed = false
+"#;
+        std::fs::write(keyclaw_dir.join("config.toml"), config_content).expect("write config");
+
+        env::set_var("HOME", home.to_str().unwrap());
+        for key in &all_keys[1..] {
+            env::remove_var(key);
+        }
+        env::set_var("KEYCLAW_PROXY_ADDR", "127.0.0.1:9999");
+        env::set_var("KEYCLAW_LOG_LEVEL", "warn");
+        env::set_var("KEYCLAW_FAIL_CLOSED", "true");
+
+        let cfg = Config::from_env();
+
+        assert_eq!(cfg.proxy_listen_addr, "127.0.0.1:9999");
+        assert_eq!(cfg.log_level, LogLevel::Warn);
+        assert!(cfg.fail_closed);
+
+        restore_env(saved);
+    }
+
+    #[test]
+    fn missing_config_file_uses_defaults() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let all_keys = all_env_keys();
+        let saved = capture_env(&all_keys);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+
+        env::set_var("HOME", home.to_str().unwrap());
+        for key in &all_keys[1..] {
+            env::remove_var(key);
+        }
+
+        let cfg = Config::from_env();
+
+        assert_eq!(cfg.proxy_listen_addr, "127.0.0.1:8877");
+        assert_eq!(cfg.proxy_url, "http://127.0.0.1:8877");
+        assert!(cfg.fail_closed);
+        assert_eq!(cfg.max_body_bytes, 2 * 1024 * 1024);
+        assert_eq!(cfg.log_level, LogLevel::Info);
+
+        restore_env(saved);
+    }
+
+    #[test]
+    fn validate_config_file_returns_key_count() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let saved = capture_env(&["HOME"]);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+        let keyclaw_dir = home.join(".keyclaw");
+        std::fs::create_dir_all(&keyclaw_dir).expect("mkdir");
+        std::fs::write(
+            keyclaw_dir.join("config.toml"),
+            "proxy_addr = \"127.0.0.1:7777\"\nlog_level = \"debug\"\n",
+        )
+        .expect("write");
+
+        env::set_var("HOME", home.to_str().unwrap());
+        let result = validate_config_file();
+        assert_eq!(result, Ok(Some(2)));
+
+        restore_env(saved);
+    }
+
+    #[test]
+    fn validate_config_file_returns_none_when_missing() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let saved = capture_env(&["HOME"]);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        env::set_var("HOME", tmp.path().to_str().unwrap());
+
+        let result = validate_config_file();
+        assert_eq!(result, Ok(None));
+
+        restore_env(saved);
+    }
+
+    #[test]
+    fn validate_config_file_returns_err_on_bad_toml() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let saved = capture_env(&["HOME"]);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+        let keyclaw_dir = home.join(".keyclaw");
+        std::fs::create_dir_all(&keyclaw_dir).expect("mkdir");
+        std::fs::write(keyclaw_dir.join("config.toml"), "not valid [ toml @@").expect("write");
+
+        env::set_var("HOME", home.to_str().unwrap());
+        let result = validate_config_file();
+        assert!(result.is_err());
+
+        restore_env(saved);
     }
 }

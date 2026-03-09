@@ -69,6 +69,7 @@ struct DoctorCheck {
 
 fn doctor_checks(cfg: &Config) -> Vec<DoctorCheck> {
     vec![
+        check_config_file(),
         check_proxy_bind(cfg),
         check_proxy_url(cfg),
         check_ca_cert(cfg),
@@ -78,6 +79,24 @@ fn doctor_checks(cfg: &Config) -> Vec<DoctorCheck> {
         check_unsafe_log(cfg),
         check_vault_passphrase(cfg),
     ]
+}
+
+fn check_config_file() -> DoctorCheck {
+    match crate::config::validate_config_file() {
+        Ok(Some(n)) => pass_check(
+            "config-file",
+            format!("loaded {n} settings from config file"),
+        ),
+        Ok(None) => pass_check(
+            "config-file",
+            "no config file (using env/defaults)".to_string(),
+        ),
+        Err(e) => warn_check(
+            "config-file",
+            format!("config file error: {e}"),
+            "fix or remove ~/.keyclaw/config.toml".to_string(),
+        ),
+    }
 }
 
 fn check_proxy_bind(cfg: &Config) -> DoctorCheck {
