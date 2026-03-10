@@ -35,6 +35,9 @@ pub struct Server {
     pub body_timeout: Duration,
     /// Optional persistent audit log path.
     pub audit_log_path: Option<PathBuf>,
+    /// Whether to fall back to an ephemeral localhost port when the requested
+    /// listen address is already in use.
+    pub allow_addr_in_use_fallback: bool,
     /// PEM-encoded local CA certificate.
     pub ca_cert_pem: String,
     /// PEM-encoded local CA private key.
@@ -96,6 +99,7 @@ impl Server {
             max_body_bytes: 2 * 1024 * 1024,
             body_timeout: Duration::from_secs(3),
             audit_log_path: None,
+            allow_addr_in_use_fallback: true,
             ca_cert_pem,
             ca_key_pem,
             intercepted: Arc::new(AtomicI64::new(0)),
@@ -115,7 +119,9 @@ impl Server {
 
         let listener = match TcpListener::bind(&bind_addr) {
             Ok(listener) => listener,
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::AddrInUse && self.allow_addr_in_use_fallback =>
+            {
                 let fallback = "127.0.0.1:0";
                 log_warn(format!(
                     "proxy listen address {bind_addr} is busy, falling back to {fallback}"

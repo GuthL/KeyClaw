@@ -1,9 +1,9 @@
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::process::Command;
 use std::time::Duration;
 
 use crate::support::{can_bind, free_addr, keyclaw_command, wait_until};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::support::{install_fake_tool, prepend_path};
 
 #[test]
@@ -106,6 +106,37 @@ fn proxy_detaches_by_default_and_prints_stop_instructions() {
     guard.0 = None;
 }
 
+#[test]
+fn proxy_detached_fails_fast_when_configured_port_is_busy() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let addr = free_addr();
+    let _busy_listener = TcpListener::bind(&addr).expect("bind busy listener");
+
+    let output = keyclaw_command(temp.path())
+        .arg("proxy")
+        .env("KEYCLAW_PROXY_ADDR", &addr)
+        .env("KEYCLAW_PROXY_URL", format!("http://{addr}"))
+        .output()
+        .expect("run proxy");
+
+    assert_ne!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("listen on {addr} failed")),
+        "stderr={stderr}"
+    );
+
+    let keyclaw_dir = temp.path().join(".keyclaw");
+    assert!(
+        !keyclaw_dir.join("proxy.pid").exists(),
+        "proxy pid should not exist when startup fails"
+    );
+    assert!(
+        !keyclaw_dir.join("env.sh").exists(),
+        "proxy env.sh should not exist when startup fails"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn proxy_autostart_enable_writes_systemd_unit_and_invokes_systemctl() {
@@ -155,5 +186,70 @@ exit 0
         calls.contains("--user enable --now")
             && calls.contains(&service_path.display().to_string()),
         "calls should enable and start the service by path: {calls}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn proxy_autostart_enable_writes_launch_agent_and_invokes_launchctl() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fake_bin = temp.path().join("bin");
+    std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+    let launchctl_log = temp.path().join("launchctl.log");
+
+    install_fake_tool(
+        &fake_bin,
+        "launchctl",
+        r#"#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KEYCLAW_TEST_LAUNCHCTL_LOG"
+exit 0
+"#,
+    );
+
+    let mut cmd = keyclaw_command(temp.path());
+    prepend_path(&mut cmd, &fake_bin);
+    let output = cmd
+        .arg("proxy")
+        .arg("autostart")
+        .arg("enable")
+        .env("KEYCLAW_TEST_LAUNCHCTL_LOG", &launchctl_log)
+        .output()
+        .expect("enable autostart");
+
+    assert_eq!(output.status.code(), Some(0));
+    let plist_path = temp
+        .path()
+        .join("Library")
+        .join("LaunchAgents")
+        .join("com.keyclaw.proxy.plist");
+    let plist = std::fs::read_to_string(&plist_path).expect("read plist");
+    assert!(
+        plist.contains("<string>proxy</string>") && plist.contains("<string>--foreground</string>"),
+        "plist={plist}"
+    );
+    assert!(
+        plist.contains("<key>RunAtLoad</key>") && plist.contains("<key>KeepAlive</key>"),
+        "plist={plist}"
+    );
+
+    let calls = std::fs::read_to_string(&launchctl_log).expect("read launchctl log");
+    let uid = unsafe { libc::geteuid() };
+    let label_target = format!("gui/{uid}/com.keyclaw.proxy");
+    let domain = format!("gui/{uid}");
+    assert!(
+        calls.contains(&format!("bootout {label_target}")),
+        "calls should boot out any existing launch agent first: {calls}"
+    );
+    assert!(
+        calls.contains(&format!("enable {label_target}")),
+        "calls should enable the launch agent target: {calls}"
+    );
+    assert!(
+        calls.contains(&format!("bootstrap {domain} {}", plist_path.display())),
+        "calls should bootstrap the launch agent plist into the gui domain: {calls}"
+    );
+    assert!(
+        calls.contains(&format!("kickstart -k {label_target}")),
+        "calls should kickstart the launch agent after bootstrap: {calls}"
     );
 }

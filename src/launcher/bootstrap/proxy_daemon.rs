@@ -1,4 +1,7 @@
 use std::fs;
+use std::net::{TcpStream, ToSocketAddrs};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -23,6 +26,7 @@ pub(crate) fn run_proxy_foreground(cfg: &Config, processor: Arc<Processor>, ca: 
     proxy_server.max_body_bytes = cfg.max_body_bytes;
     proxy_server.body_timeout = cfg.detector_timeout;
     proxy_server.audit_log_path = cfg.audit_log_path.clone();
+    proxy_server.allow_addr_in_use_fallback = false;
 
     let running_proxy = match proxy_server.start() {
         Ok(p) => p,
@@ -97,14 +101,30 @@ pub(crate) fn run_proxy_detached(cfg: &Config) -> Result<i32, KeyclawError> {
         .try_clone()
         .map_err(|e| KeyclawError::uncoded(format!("clone proxy log handle: {e}")))?;
 
-    let mut child = Command::new(current_exe)
+    let mut command = Command::new(current_exe);
+    command
         .arg("proxy")
         .arg("--foreground")
         .envs(std::env::vars())
         .envs(detached_proxy_env(cfg))
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file_err))
+        .stderr(Stdio::from(log_file_err));
+
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            // SAFETY: `pre_exec` runs in the child after `fork` and before
+            // `exec`. Calling `setsid` here detaches the proxy into its own
+            // session so parent-terminal teardown does not also tear it down.
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = command
         .spawn()
         .map_err(|e| KeyclawError::uncoded(format!("start detached proxy: {e}")))?;
 
@@ -193,6 +213,12 @@ pub(crate) fn run_proxy_status() -> i32 {
     };
 
     let addr = read_proxy_addr_from_env(&env_path).unwrap_or_else(|| "127.0.0.1:8877".to_string());
+    if !proxy_addr_is_listening(&addr) {
+        crate::logging::error(&format!(
+            "proxy process is alive but not listening on {addr}"
+        ));
+        return 1;
+    }
     crate::logging::info(&format!("proxy running (pid={pid}, addr={addr})"));
     0
 }
@@ -263,6 +289,18 @@ pub(super) fn read_proxy_addr_from_env(env_path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+pub(super) fn proxy_addr_is_listening(addr: &str) -> bool {
+    let timeout = Duration::from_millis(250);
+    let addrs = match addr.to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(_) => return false,
+    };
+
+    addrs
+        .into_iter()
+        .any(|socket_addr| TcpStream::connect_timeout(&socket_addr, timeout).is_ok())
 }
 
 pub(crate) fn render_proxy_env_script(
@@ -347,7 +385,11 @@ fn wait_for_detached_proxy_ready(
 
     while Instant::now() < deadline {
         if pid_matches_child(pid_path, child.id())? && env_path.exists() {
-            return Ok(());
+            if let Some(addr) = read_proxy_addr_from_env(env_path) {
+                if proxy_addr_is_listening(&addr) {
+                    return Ok(());
+                }
+            }
         }
 
         if let Some(status) = child

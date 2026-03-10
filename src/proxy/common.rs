@@ -105,9 +105,8 @@ pub(super) fn allowed(allowed_hosts: &[String], host: &str) -> bool {
 
 pub(super) fn is_json(content_type: &str) -> bool {
     let content_type = content_type.trim().to_lowercase();
-    content_type.is_empty()
-        || content_type.contains("application/json")
-        || content_type.contains("+json")
+    !content_type.is_empty()
+        && (content_type.contains("application/json") || content_type.contains("+json"))
 }
 
 pub(super) fn is_json_payload(payload: &[u8]) -> bool {
@@ -289,7 +288,7 @@ mod tests {
     use hudsucker::Body;
     use hudsucker::hyper::{Request, StatusCode, Uri, header::CONTENT_TYPE, header::HOST};
 
-    use super::{allowed, json_error_response, normalize_hosts, request_host};
+    use super::{allowed, is_json, json_error_response, normalize_hosts, request_host};
 
     #[test]
     fn json_error_response_sets_status_and_json_content_type() {
@@ -372,5 +371,14 @@ mod tests {
         assert!(allowed(&allowed_hosts, "LOCALHOST:8877"));
         assert!(allowed(&allowed_hosts, "[2001:db8::1]:443"));
         assert!(!allowed(&allowed_hosts, "badopenai.com"));
+    }
+
+    #[test]
+    fn is_json_requires_an_explicit_json_content_type() {
+        assert!(!is_json(""));
+        assert!(!is_json("   "));
+        assert!(!is_json("text/plain"));
+        assert!(is_json("application/json"));
+        assert!(is_json("application/vnd.api+json"));
     }
 }

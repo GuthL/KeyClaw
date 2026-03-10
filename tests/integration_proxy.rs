@@ -390,6 +390,108 @@ fn malformed_json_is_blocked_in_fail_closed_mode() {
 }
 
 #[test]
+fn non_json_body_without_content_type_is_passed_through_in_fail_closed_mode() {
+    let (upstream_url, rx, _upstream_guard) = start_echo_upstream();
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+    let body = "feature_gate=desktop_startup&build=stable";
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+
+    let client = Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+
+    let resp = client
+        .post(&upstream_url)
+        .body(body.to_string())
+        .send()
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let capture = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream capture");
+    assert_eq!(capture.body, body);
+    assert!(
+        capture
+            .headers
+            .iter()
+            .all(|(name, _)| name != "x-keyclaw-contract"),
+        "non-json request should not receive a rewrite marker"
+    );
+}
+
+#[test]
+fn json_body_without_content_type_is_still_rewritten() {
+    let (upstream_url, rx, _upstream_guard) = start_upstream();
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+
+    let client = Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+
+    let resp = client
+        .post(&upstream_url)
+        .body(format!(r#"{{"prompt":"api_key = {}"}}"#, CODEX_SECRET))
+        .send()
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let capture = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream capture");
+    assert!(
+        !capture.body.contains(CODEX_SECRET),
+        "secret leaked: {}",
+        capture.body
+    );
+    assert!(
+        placeholder::contains_complete_placeholder(&capture.body),
+        "no placeholder: {}",
+        capture.body
+    );
+    assert!(capture.headers.iter().any(|(k, v)| {
+        k == placeholder::CONTRACT_MARKER_KEY && v == placeholder::CONTRACT_MARKER_VALUE
+    }));
+}
+
+#[test]
 fn malformed_json_is_passed_through_when_fail_closed_disabled() {
     let (upstream_url, rx, _upstream_guard) = start_echo_upstream();
     let (mut processor, ca_cert, ca_key) = new_processor_with_ca();

@@ -103,6 +103,22 @@ fn read_proxy_addr_from_env_returns_none_for_missing_file() {
 }
 
 #[test]
+fn proxy_addr_is_listening_detects_live_listener() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+
+    assert!(super::proxy_daemon::proxy_addr_is_listening(
+        &addr.to_string()
+    ));
+
+    drop(listener);
+
+    assert!(!super::proxy_daemon::proxy_addr_is_listening(
+        &addr.to_string()
+    ));
+}
+
+#[test]
 fn detached_proxy_env_forwards_include_hosts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mut cfg = test_config(temp.path().join("vault.enc"));
