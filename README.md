@@ -38,35 +38,21 @@ KeyClaw sits between your AI tool and the upstream API, detects secrets in outbo
 ## Architecture
 
 ```
-                         +-----------------------------------+
-                         |   Claude Code / Codex / Client    |
-                         +-----------------+-----------------+
-                                           |  outbound request
-                                           v
-                         +-----------------------------------+
-                         |       KeyClaw local proxy         |
-                         |                                   |
-                         |  1. Detect secrets in body        |
-                         |  2. Replace with placeholders     |
-                         |  3. Store mapping in vault --+    |
-                         |                              |    |
-                         +-----------------+------------+----+
-                                           |  sanitized      |
-                                           v  request        |
-                         +-----------------------------------+
-                         |   OpenAI / Anthropic / API        |
-                         +-----------------+-----------------+
-                                           |  response       |
-                                           v                 |
-                         +-----------------------------------+
-                         |  Resolve placeholders back   <----+
-                         |  (HTTP, SSE, WebSocket)           |
-                         +-----------------+-----------------+
-                                           |
-                                           v
-                         +-----------------------------------+
-                         |   Claude Code / Codex / Client    |
-                         +-----------------------------------+
++-------------+   request   +-----------------+  sanitized   +------------------+
+|  Claude Code | ---------->|    KeyClaw      |  request     | OpenAI/Anthropic |
+|  Codex       |            |   local proxy   |------------>|       API        |
+|  Client      |<---------- |                 |<----------- |                  |
++-------------+   response  +---------+-------+  response   +------------------+
+                  (resolved)          |
+                             +--------v--------+
+                             | Encrypted vault  |
+                             | (placeholder map)|
+                             +-----------------+
+
+    1. Detect secrets in outbound request body
+    2. Replace with deterministic placeholders, store mapping in vault
+    3. Forward sanitized request upstream
+    4. Resolve placeholders in response (HTTP, SSE, WebSocket)
 ```
 
 ## Used With
