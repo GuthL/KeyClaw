@@ -6,7 +6,7 @@ use tempfile::NamedTempFile;
 use url::Url;
 
 use crate::config::Config;
-use crate::errors::{KeyclawError, CODE_MITM_NOT_EFFECTIVE};
+use crate::errors::{CODE_MITM_NOT_EFFECTIVE, KeyclawError};
 use crate::gitleaks_rules::RuleSet;
 use crate::vault::VaultPassphraseStatus;
 
@@ -36,11 +36,7 @@ pub(super) fn run_doctor(cfg: &Config) -> i32 {
 
     println!("doctor: summary: {passed} passed, {warnings} warnings, {failures} blocking");
 
-    if failures == 0 {
-        0
-    } else {
-        1
-    }
+    if failures == 0 { 0 } else { 1 }
 }
 
 #[derive(Clone, Copy)]
@@ -75,6 +71,7 @@ fn doctor_checks(cfg: &Config) -> Vec<DoctorCheck> {
         check_ca_cert(cfg),
         check_vault_path(cfg),
         check_ruleset(cfg),
+        check_kingfisher(),
         check_allowlist(cfg),
         check_proxy_bypass(cfg),
         check_unsafe_log(cfg),
@@ -258,6 +255,21 @@ fn check_ruleset(cfg: &Config) -> DoctorCheck {
             ),
         },
         None => pass_check("ruleset", "using bundled gitleaks rules".to_string()),
+    }
+}
+
+fn check_kingfisher() -> DoctorCheck {
+    if crate::kingfisher::default_binary_available() {
+        pass_check(
+            "kingfisher",
+            "kingfisher binary is available for second-pass detection".to_string(),
+        )
+    } else {
+        warn_check(
+            "kingfisher",
+            "kingfisher binary not found; second-pass detection is disabled".to_string(),
+            "install `kingfisher` and ensure it is on PATH to enable the second pass".to_string(),
+        )
     }
 }
 

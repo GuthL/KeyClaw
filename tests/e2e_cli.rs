@@ -18,3 +18,5 @@ mod process_lifecycle;
 mod proxy;
 #[path = "e2e_cli/rewrite_json.rs"]
 mod rewrite_json;
+#[path = "e2e_cli/stats.rs"]
+mod stats;

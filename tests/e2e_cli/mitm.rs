@@ -3,8 +3,8 @@ use std::time::Duration;
 use keyclaw::placeholder;
 
 use crate::support::{
-    free_addr, run_mitm, run_mitm_with_args, run_tool_alias, start_upstream, TEST_SECRET_CLAUDE,
-    TEST_SECRET_CODEX,
+    TEST_SECRET_CLAUDE, TEST_SECRET_CODEX, free_addr, run_mitm, run_mitm_with_args,
+    run_mitm_with_include, run_tool_alias, start_upstream,
 };
 
 #[test]
@@ -145,4 +145,31 @@ fn mitm_codex_forwards_child_args_without_repeating_executable() {
         "stderr={}",
         run.stderr
     );
+}
+
+#[test]
+fn mitm_include_glob_intercepts_custom_host() {
+    let (upstream_url, rx, _guard) = start_upstream();
+
+    let (stderr, exit_code) = run_mitm_with_include(
+        "codex",
+        "*127.0.0.1*",
+        free_addr(),
+        &upstream_url,
+        &format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX),
+    );
+
+    assert_eq!(exit_code, 0, "stderr={stderr}");
+    let body = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream body");
+    assert!(
+        !body.contains(TEST_SECRET_CODEX),
+        "secret leaked to upstream: {body}"
+    );
+    assert!(
+        placeholder::contains_complete_placeholder(&body),
+        "no placeholder in upstream body: {body}"
+    );
+    assert!(!stderr.contains(TEST_SECRET_CODEX));
 }

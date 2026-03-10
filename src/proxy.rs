@@ -8,11 +8,11 @@ mod websocket;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use hudsucker::{rustls::crypto::aws_lc_rs, Proxy};
+use hudsucker::{Proxy, rustls::crypto::aws_lc_rs};
 
 use crate::errors::KeyclawError;
 use crate::pipeline::Processor;

@@ -9,11 +9,11 @@ use std::sync::{Mutex, MutexGuard};
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use rand::rngs::OsRng;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use rand::RngCore;
-use scrypt::{scrypt, Params as ScryptParams};
+use rand::rngs::OsRng;
+use scrypt::{Params as ScryptParams, scrypt};
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
 
@@ -275,13 +275,13 @@ fn load_entries(
     let bytes = match fs::read(path) {
         Ok(v) => v,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(VaultLoadFailure::Missing)
+            return Err(VaultLoadFailure::Missing);
         }
         Err(e) => {
             return Err(VaultLoadFailure::Error(KeyclawError::uncoded_with_source(
                 format!("read vault file {}", path.display()),
                 e,
-            )))
+            )));
         }
     };
 

@@ -119,7 +119,8 @@ fn agent_guide_points_common_edits_at_split_modules() {
         "AGENTS.md should point proxy changes at the split proxy modules: {agents}"
     );
     assert!(
-        !agents.contains("Edit `src/proxy.rs`. The `HttpHandler` impl on `KeyclawHttpHandler` has:"),
+        !agents
+            .contains("Edit `src/proxy.rs`. The `HttpHandler` impl on `KeyclawHttpHandler` has:"),
         "AGENTS.md should not describe proxy changes as if src/proxy.rs still held the handler implementation: {agents}"
     );
     assert!(

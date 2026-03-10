@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::errors::{KeyclawError, CODE_STRICT_RESOLVE_FAILED};
+use crate::errors::{CODE_STRICT_RESOLVE_FAILED, KeyclawError};
 use crate::placeholder::{self};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +69,7 @@ pub fn inject_redaction_notice_with_mode(
         Some(o) => o,
         None => {
             return serde_json::to_vec(&parsed)
-                .map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
+                .map_err(|e| KeyclawError::uncoded_with_source("encode json", e));
         }
     };
 

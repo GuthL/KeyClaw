@@ -240,7 +240,7 @@ fn drain_complete_sse_events(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
 mod tests {
     use std::sync::Arc;
 
-    use super::{drain_complete_sse_events, BufferedInputJsonDeltaEvent, SseStreamResolver};
+    use super::{BufferedInputJsonDeltaEvent, SseStreamResolver, drain_complete_sse_events};
     use crate::gitleaks_rules::RuleSet;
     use crate::pipeline::Processor;
     use crate::placeholder;
@@ -322,12 +322,16 @@ mod tests {
             vec!["".to_string(), "é".to_string(), "漢".to_string()]
         );
         assert_eq!(fragments.concat(), secret);
-        assert!(!String::from_utf8(out2)
-            .expect("utf8")
-            .contains(&placeholder));
-        assert!(!String::from_utf8(out3)
-            .expect("utf8")
-            .contains(&placeholder));
+        assert!(
+            !String::from_utf8(out2)
+                .expect("utf8")
+                .contains(&placeholder)
+        );
+        assert!(
+            !String::from_utf8(out3)
+                .expect("utf8")
+                .contains(&placeholder)
+        );
     }
 
     fn input_json_delta_event(fragment: &str) -> String {
@@ -362,6 +366,7 @@ mod tests {
         Arc::new(Processor {
             vault: None,
             ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
+            second_pass_scanner: None,
             max_body_size: 1 << 20,
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
@@ -373,6 +378,7 @@ mod tests {
         Arc::new(Processor {
             vault: Some(vault),
             ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
+            second_pass_scanner: None,
             max_body_size: 1 << 20,
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,

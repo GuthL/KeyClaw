@@ -32,9 +32,17 @@ pub(crate) fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawErr
         crate::logging::info("dry-run enabled; traffic will be scanned but not rewritten");
     }
 
+    let second_pass_scanner = crate::kingfisher::default_scanner();
+    if second_pass_scanner.is_some() {
+        crate::logging::info("kingfisher second-pass detection enabled");
+    } else {
+        crate::logging::info("kingfisher second-pass detection disabled; binary not found");
+    }
+
     Ok(Arc::new(Processor {
         vault: Some(vault),
         ruleset: Arc::new(ruleset),
+        second_pass_scanner,
         max_body_size: cfg.max_body_bytes,
         strict_mode: cfg.fail_closed,
         notice_mode: cfg.notice_mode,

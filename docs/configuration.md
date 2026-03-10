@@ -53,6 +53,15 @@ path = "~/.keyclaw/audit.log"
 [hosts]
 codex = ["api.openai.com", "chat.openai.com", "chatgpt.com"]
 claude = ["api.anthropic.com", "claude.ai"]
+providers = [
+  "generativelanguage.googleapis.com",
+  "api.together.xyz",
+  "api.groq.com",
+  "api.mistral.ai",
+  "api.cohere.ai",
+  "api.deepseek.com",
+]
+include = ["*my-custom-api.com*"]
 
 [allowlist]
 rule_ids = ["generic-api-key"]
@@ -82,6 +91,8 @@ Supported top-level sections today:
 | `KEYCLAW_VAULT_PASSPHRASE` | unset | Explicit passphrase override |
 | `KEYCLAW_CODEX_HOSTS` | `api.openai.com,chat.openai.com,chatgpt.com` | OpenAI-family hosts to intercept |
 | `KEYCLAW_CLAUDE_HOSTS` | `api.anthropic.com,claude.ai` | Anthropic-family hosts to intercept |
+| `KEYCLAW_PROVIDER_HOSTS` | `generativelanguage.googleapis.com,api.together.xyz,api.groq.com,api.mistral.ai,api.cohere.ai,api.deepseek.com` | Additional provider API hosts intercepted by default |
+| `KEYCLAW_INCLUDE_HOSTS` | unset | Extra exact hosts or glob patterns to intercept |
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` | Request-body size limit |
 | `KEYCLAW_DETECTOR_TIMEOUT` | `4s` | Request inspection timeout |
 | `KEYCLAW_GITLEAKS_CONFIG` | bundled rules | Path to override `gitleaks.toml` |
@@ -124,6 +135,7 @@ If you run KeyClaw as a detached daemon with `keyclaw proxy`, daemon-side settin
 
 ## Notes
 
+- Repeated `--include` flags are available on `keyclaw proxy`, `keyclaw proxy start`, `keyclaw mitm`, `keyclaw codex`, and `keyclaw claude`. They are merged into the effective interception list for that process and accept `*` / `?` glob patterns.
 - KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`.
 - By default, KeyClaw creates a machine-local `vault.key` next to the vault instead of relying on a built-in shared passphrase.
 - `KEYCLAW_UNSAFE_LOG=true` is strictly for debugging and may expose raw secret material in logs.

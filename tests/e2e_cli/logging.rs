@@ -3,8 +3,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::support::{
-    free_addr, rewrite_json_command, run_mitm, run_mitm_with_log_level, start_upstream,
-    TEST_SECRET_CODEX,
+    TEST_SECRET_CODEX, free_addr, rewrite_json_command, run_mitm, run_mitm_with_log_level,
+    start_upstream,
 };
 
 #[test]

@@ -3,16 +3,17 @@
 
 use std::sync::Arc;
 
-use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
+use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;
 
 use crate::errors::{
-    KeyclawError, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_STRICT_RESOLVE_FAILED,
+    CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_STRICT_RESOLVE_FAILED, KeyclawError,
 };
 use crate::gitleaks_rules::RuleSet;
+use crate::kingfisher::SecondPassScanner;
 use crate::placeholder::{self, Replacement};
 use crate::redaction;
 use crate::vault::Store;
@@ -30,6 +31,8 @@ pub struct Processor {
     pub vault: Option<Arc<Store>>,
     /// Compiled bundled or custom gitleaks rules.
     pub ruleset: Arc<RuleSet>,
+    /// Provider-specific second-pass scanner used when the first pass misses.
+    pub second_pass_scanner: Option<Arc<SecondPassScanner>>,
     /// Maximum request body size accepted for rewriting.
     pub max_body_size: i64,
     /// Whether placeholder-resolution failures should be treated as errors.
@@ -95,8 +98,13 @@ impl Processor {
                     for (idx, item) in arr.iter_mut().enumerate() {
                         let before = replacements.len();
                         redaction::rewrite_message_content_fields(item, &mut |s| {
-                            let (rewritten, reps) =
-                                rewrite_string(s, ruleset, self.vault.as_ref(), self.dry_run)?;
+                            let (rewritten, reps) = rewrite_string(
+                                s,
+                                ruleset,
+                                self.second_pass_scanner.as_ref(),
+                                self.vault.as_ref(),
+                                self.dry_run,
+                            )?;
                             replacements.extend(reps);
                             Ok(rewritten)
                         })?;
@@ -227,8 +235,13 @@ impl Processor {
 
         let mut replacements: Vec<Replacement> = Vec::new();
         let mut rewrite = |input: &str| {
-            let (rewritten, reps) =
-                rewrite_string(input, &self.ruleset, self.vault.as_ref(), self.dry_run)?;
+            let (rewritten, reps) = rewrite_string(
+                input,
+                &self.ruleset,
+                self.second_pass_scanner.as_ref(),
+                self.vault.as_ref(),
+                self.dry_run,
+            )?;
             replacements.extend(reps);
             Ok(rewritten)
         };
@@ -265,15 +278,17 @@ fn is_user_message(item: &Value) -> bool {
 fn rewrite_string(
     input: &str,
     ruleset: &RuleSet,
+    second_pass_scanner: Option<&Arc<SecondPassScanner>>,
     vault: Option<&Arc<Store>>,
     dry_run: bool,
 ) -> Result<(String, Vec<Replacement>), KeyclawError> {
-    rewrite_string_recursive(input, ruleset, vault, dry_run, 0)
+    rewrite_string_recursive(input, ruleset, second_pass_scanner, vault, dry_run, 0)
 }
 
 fn rewrite_string_recursive(
     input: &str,
     ruleset: &RuleSet,
+    second_pass_scanner: Option<&Arc<SecondPassScanner>>,
     vault: Option<&Arc<Store>>,
     dry_run: bool,
     decoded_depth: u8,
@@ -282,15 +297,26 @@ fn rewrite_string_recursive(
     let mut replacements = Vec::new();
 
     if decoded_depth < MAX_DECODE_DEPTH && rewritten.len() <= MAX_DECODE_INPUT_BYTES {
-        if let Some((json_rewritten, json_replacements)) =
-            rewrite_json_stringified(&rewritten, ruleset, vault, dry_run, decoded_depth)?
-        {
+        if let Some((json_rewritten, json_replacements)) = rewrite_json_stringified(
+            &rewritten,
+            ruleset,
+            second_pass_scanner,
+            vault,
+            dry_run,
+            decoded_depth,
+        )? {
             rewritten = json_rewritten;
             replacements.extend(json_replacements);
         }
 
-        let (base64_rewritten, base64_replacements) =
-            rewrite_base64_tokens(&rewritten, ruleset, vault, dry_run, decoded_depth)?;
+        let (base64_rewritten, base64_replacements) = rewrite_base64_tokens(
+            &rewritten,
+            ruleset,
+            second_pass_scanner,
+            vault,
+            dry_run,
+            decoded_depth,
+        )?;
         if !base64_replacements.is_empty() {
             rewritten = base64_rewritten;
             replacements.extend(base64_replacements);
@@ -315,12 +341,25 @@ fn rewrite_string_recursive(
     rewritten = direct_rewritten;
     replacements.extend(direct_replacements);
 
+    if replacements.is_empty() {
+        let (second_pass_rewritten, second_pass_replacements) = rewrite_with_second_pass(
+            &rewritten,
+            second_pass_scanner,
+            vault,
+            dry_run,
+            decoded_depth,
+        )?;
+        rewritten = second_pass_rewritten;
+        replacements.extend(second_pass_replacements);
+    }
+
     Ok((rewritten, replacements))
 }
 
 fn rewrite_json_stringified(
     input: &str,
     ruleset: &RuleSet,
+    second_pass_scanner: Option<&Arc<SecondPassScanner>>,
     vault: Option<&Arc<Store>>,
     dry_run: bool,
     decoded_depth: u8,
@@ -340,8 +379,14 @@ fn rewrite_json_stringified(
         Ok(_) | Err(_) => return Ok(None),
     };
 
-    let (rewritten_value, replacements) =
-        rewrite_json_value(parsed, ruleset, vault, dry_run, decoded_depth + 1)?;
+    let (rewritten_value, replacements) = rewrite_json_value(
+        parsed,
+        ruleset,
+        second_pass_scanner,
+        vault,
+        dry_run,
+        decoded_depth + 1,
+    )?;
     if replacements.is_empty() {
         return Ok(None);
     }
@@ -358,6 +403,7 @@ fn rewrite_json_stringified(
 fn rewrite_json_value(
     value: Value,
     ruleset: &RuleSet,
+    second_pass_scanner: Option<&Arc<SecondPassScanner>>,
     vault: Option<&Arc<Store>>,
     dry_run: bool,
     decoded_depth: u8,
@@ -367,8 +413,14 @@ fn rewrite_json_value(
             let mut out = serde_json::Map::with_capacity(map.len());
             let mut replacements = Vec::new();
             for (key, value) in map {
-                let (rewritten, reps) =
-                    rewrite_json_value(value, ruleset, vault, dry_run, decoded_depth)?;
+                let (rewritten, reps) = rewrite_json_value(
+                    value,
+                    ruleset,
+                    second_pass_scanner,
+                    vault,
+                    dry_run,
+                    decoded_depth,
+                )?;
                 out.insert(key, rewritten);
                 replacements.extend(reps);
             }
@@ -378,16 +430,28 @@ fn rewrite_json_value(
             let mut out = Vec::with_capacity(items.len());
             let mut replacements = Vec::new();
             for item in items {
-                let (rewritten, reps) =
-                    rewrite_json_value(item, ruleset, vault, dry_run, decoded_depth)?;
+                let (rewritten, reps) = rewrite_json_value(
+                    item,
+                    ruleset,
+                    second_pass_scanner,
+                    vault,
+                    dry_run,
+                    decoded_depth,
+                )?;
                 out.push(rewritten);
                 replacements.extend(reps);
             }
             Ok((Value::Array(out), replacements))
         }
         Value::String(text) => {
-            let (rewritten, replacements) =
-                rewrite_string_recursive(&text, ruleset, vault, dry_run, decoded_depth)?;
+            let (rewritten, replacements) = rewrite_string_recursive(
+                &text,
+                ruleset,
+                second_pass_scanner,
+                vault,
+                dry_run,
+                decoded_depth,
+            )?;
             Ok((Value::String(rewritten), replacements))
         }
         other => Ok((other, Vec::new())),
@@ -397,6 +461,7 @@ fn rewrite_json_value(
 fn rewrite_base64_tokens(
     input: &str,
     ruleset: &RuleSet,
+    second_pass_scanner: Option<&Arc<SecondPassScanner>>,
     vault: Option<&Arc<Store>>,
     dry_run: bool,
     decoded_depth: u8,
@@ -411,8 +476,14 @@ fn rewrite_base64_tokens(
             continue;
         };
 
-        let (rewritten_decoded, mut nested_replacements) =
-            rewrite_string_recursive(&decoded, ruleset, vault, dry_run, decoded_depth + 1)?;
+        let (rewritten_decoded, mut nested_replacements) = rewrite_string_recursive(
+            &decoded,
+            ruleset,
+            second_pass_scanner,
+            vault,
+            dry_run,
+            decoded_depth + 1,
+        )?;
         if nested_replacements.is_empty() {
             continue;
         }
@@ -429,6 +500,28 @@ fn rewrite_base64_tokens(
 
     out.push_str(&input[last..]);
     Ok((out, replacements))
+}
+
+fn rewrite_with_second_pass(
+    input: &str,
+    second_pass_scanner: Option<&Arc<SecondPassScanner>>,
+    vault: Option<&Arc<Store>>,
+    dry_run: bool,
+    decoded_depth: u8,
+) -> Result<(String, Vec<Replacement>), KeyclawError> {
+    let Some(scanner) = second_pass_scanner else {
+        return Ok((input.to_string(), Vec::new()));
+    };
+
+    scanner.replace_secrets(input, decoded_depth, |secret| {
+        if dry_run {
+            Ok(placeholder::make_id(secret))
+        } else if let Some(vault) = vault {
+            vault.store_secret(secret)
+        } else {
+            Ok(placeholder::make_id(secret))
+        }
+    })
 }
 
 fn decode_base64_candidate(token: &str) -> Option<(String, Base64Variant)> {
@@ -537,13 +630,14 @@ mod tests {
     use std::sync::Arc;
 
     use super::Processor;
-    use crate::errors::{code_of, CODE_BODY_TOO_LARGE};
+    use crate::errors::{CODE_BODY_TOO_LARGE, code_of};
     use crate::gitleaks_rules::RuleSet;
 
     fn processor_with_limit(max_body_size: i64) -> Processor {
         Processor {
             vault: None,
             ruleset: Arc::new(RuleSet::from_toml("rules = []").expect("empty ruleset")),
+            second_pass_scanner: None,
             max_body_size,
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,

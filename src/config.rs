@@ -1,6 +1,7 @@
 //! Runtime configuration loaded from defaults, an optional TOML file, and
 //! environment variable overrides.
 
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io;
@@ -36,6 +37,10 @@ pub struct Config {
     pub known_codex_hosts: Vec<String>,
     /// Hostnames considered in-scope for Claude/Anthropic traffic.
     pub known_claude_hosts: Vec<String>,
+    /// Hostnames considered in-scope across supported provider APIs.
+    pub known_provider_hosts: Vec<String>,
+    /// Additional exact hosts or glob patterns to intercept.
+    pub include_hosts: Vec<String>,
     /// Optional custom gitleaks rule file.
     pub gitleaks_config_path: Option<PathBuf>,
     /// Operator-visible runtime log level.
@@ -133,6 +138,8 @@ struct FileAuditConfig {
 struct FileHostsConfig {
     codex: Option<Vec<String>>,
     claude: Option<Vec<String>>,
+    providers: Option<Vec<String>>,
+    include: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -155,18 +162,31 @@ impl Config {
 
     /// Return the currently allowed hosts for the named tool family.
     ///
-    /// `codex` returns the OpenAI-family list, `claude` returns the
-    /// Anthropic-family list, and any other value returns both.
+    /// Tool-specific lookups include the corresponding first-class tool
+    /// hosts, the shared provider host list, and any custom includes. Any
+    /// other value returns the union of all shipped hosts plus custom
+    /// includes.
     pub fn allowed_hosts(tool: &str, cfg: &Config) -> Vec<String> {
-        match tool.trim().to_ascii_lowercase().as_str() {
-            "codex" => cfg.known_codex_hosts.clone(),
-            "claude" => cfg.known_claude_hosts.clone(),
+        let mut allowed = match tool.trim().to_ascii_lowercase().as_str() {
+            "codex" => {
+                let mut hosts = cfg.known_codex_hosts.clone();
+                hosts.extend(cfg.known_provider_hosts.iter().cloned());
+                hosts
+            }
+            "claude" => {
+                let mut hosts = cfg.known_claude_hosts.clone();
+                hosts.extend(cfg.known_provider_hosts.iter().cloned());
+                hosts
+            }
             _ => {
                 let mut all = cfg.known_codex_hosts.clone();
                 all.extend(cfg.known_claude_hosts.iter().cloned());
+                all.extend(cfg.known_provider_hosts.iter().cloned());
                 all
             }
-        }
+        };
+        allowed.extend(cfg.include_hosts.iter().cloned());
+        dedup_hosts(allowed)
     }
 
     pub(crate) fn config_file_status(&self) -> &ConfigFileStatus {
@@ -196,6 +216,8 @@ impl Config {
             detector_timeout: Duration::from_secs(4),
             known_codex_hosts: default_codex_hosts(),
             known_claude_hosts: default_claude_hosts(),
+            known_provider_hosts: default_provider_hosts(),
+            include_hosts: Vec::new(),
             gitleaks_config_path: None,
             log_level: LogLevel::Info,
             unsafe_log: false,
@@ -317,6 +339,12 @@ impl Config {
         if let Some(claude_hosts) = &file_cfg.hosts.claude {
             self.known_claude_hosts = normalize_host_list(claude_hosts);
         }
+        if let Some(provider_hosts) = &file_cfg.hosts.providers {
+            self.known_provider_hosts = normalize_host_list(provider_hosts);
+        }
+        if let Some(include_hosts) = &file_cfg.hosts.include {
+            self.include_hosts = normalize_host_list(include_hosts);
+        }
         self.allowlist = Allowlist::from_parts(
             &file_cfg.allowlist.rule_ids,
             &file_cfg.allowlist.patterns,
@@ -338,6 +366,9 @@ impl Config {
         self.detector_timeout = duration_env("KEYCLAW_DETECTOR_TIMEOUT", self.detector_timeout);
         self.known_codex_hosts = env_csv_or("KEYCLAW_CODEX_HOSTS", &self.known_codex_hosts);
         self.known_claude_hosts = env_csv_or("KEYCLAW_CLAUDE_HOSTS", &self.known_claude_hosts);
+        self.known_provider_hosts =
+            env_csv_or("KEYCLAW_PROVIDER_HOSTS", &self.known_provider_hosts);
+        self.include_hosts = env_csv_or("KEYCLAW_INCLUDE_HOSTS", &self.include_hosts);
         self.gitleaks_config_path =
             path_env("KEYCLAW_GITLEAKS_CONFIG").or_else(|| self.gitleaks_config_path.clone());
         self.log_level = log_level_env("KEYCLAW_LOG_LEVEL", self.log_level);
@@ -352,6 +383,16 @@ impl Config {
         self.entropy_threshold = f64_env("KEYCLAW_ENTROPY_THRESHOLD", self.entropy_threshold);
         self.entropy_min_len = usize_env("KEYCLAW_ENTROPY_MIN_LEN", self.entropy_min_len);
         self.audit_log_path = audit_log_env("KEYCLAW_AUDIT_LOG", self.audit_log_path.clone());
+    }
+
+    pub(crate) fn add_include_hosts(&mut self, include_hosts: Vec<String>) {
+        self.include_hosts
+            .extend(normalize_host_list(&include_hosts));
+        self.include_hosts = dedup_hosts(std::mem::take(&mut self.include_hosts));
+    }
+
+    pub(crate) fn include_hosts(&self) -> &[String] {
+        &self.include_hosts
     }
 }
 
@@ -474,6 +515,17 @@ fn normalize_host_list(hosts: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn dedup_hosts(hosts: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for host in hosts {
+        if seen.insert(host.clone()) {
+            deduped.push(host);
+        }
+    }
+    deduped
+}
+
 fn parse_duration(input: &str) -> Option<Duration> {
     if input.is_empty() {
         return None;
@@ -543,6 +595,12 @@ fn default_claude_hosts() -> Vec<String> {
     split_csv("api.anthropic.com,claude.ai")
 }
 
+fn default_provider_hosts() -> Vec<String> {
+    split_csv(
+        "generativelanguage.googleapis.com,api.together.xyz,api.groq.com,api.mistral.ai,api.cohere.ai,api.deepseek.com",
+    )
+}
+
 fn parse_audit_log_setting(input: &str) -> Result<Option<PathBuf>, String> {
     let trimmed = input.trim();
     if trimmed.is_empty()
@@ -581,6 +639,16 @@ mod tests {
 
     static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
+    fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
+        // These tests serialize process-wide environment mutation with ENV_LOCK.
+        unsafe { env::set_var(key, value) }
+    }
+
+    fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
+        // These tests serialize process-wide environment mutation with ENV_LOCK.
+        unsafe { env::remove_var(key) }
+    }
+
     #[test]
     fn from_env_includes_documented_runtime_overrides() {
         let _guard = ENV_LOCK.lock().expect("env lock");
@@ -601,18 +669,18 @@ mod tests {
         ];
         let saved = capture_env(&keys);
 
-        env::set_var("HOME", temp.path());
-        env::set_var("KEYCLAW_PROXY_ADDR", "127.0.0.1:9999");
-        env::set_var("KEYCLAW_PROXY_URL", "http://127.0.0.1:9999");
-        env::set_var("KEYCLAW_CA_CERT", "/tmp/keyclaw-ca.crt");
-        env::set_var("KEYCLAW_VAULT_PATH", "/tmp/keyclaw-vault.enc");
-        env::set_var("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
-        env::set_var("KEYCLAW_GITLEAKS_CONFIG", "/tmp/keyclaw-gitleaks.toml");
-        env::set_var("KEYCLAW_LOG_LEVEL", "debug");
-        env::set_var("KEYCLAW_UNSAFE_LOG", "true");
-        env::set_var("KEYCLAW_DETECTOR_TIMEOUT", "250ms");
-        env::set_var("KEYCLAW_NOTICE_MODE", "minimal");
-        env::set_var("KEYCLAW_AUDIT_LOG", "/tmp/keyclaw-audit.log");
+        set_env_var("HOME", temp.path());
+        set_env_var("KEYCLAW_PROXY_ADDR", "127.0.0.1:9999");
+        set_env_var("KEYCLAW_PROXY_URL", "http://127.0.0.1:9999");
+        set_env_var("KEYCLAW_CA_CERT", "/tmp/keyclaw-ca.crt");
+        set_env_var("KEYCLAW_VAULT_PATH", "/tmp/keyclaw-vault.enc");
+        set_env_var("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
+        set_env_var("KEYCLAW_GITLEAKS_CONFIG", "/tmp/keyclaw-gitleaks.toml");
+        set_env_var("KEYCLAW_LOG_LEVEL", "debug");
+        set_env_var("KEYCLAW_UNSAFE_LOG", "true");
+        set_env_var("KEYCLAW_DETECTOR_TIMEOUT", "250ms");
+        set_env_var("KEYCLAW_NOTICE_MODE", "minimal");
+        set_env_var("KEYCLAW_AUDIT_LOG", "/tmp/keyclaw-audit.log");
 
         let cfg = Config::from_env();
 
@@ -654,15 +722,15 @@ mod tests {
         ];
         let saved = capture_env(&keys);
 
-        env::set_var("HOME", temp.path());
-        env::remove_var("KEYCLAW_VAULT_PATH");
-        env::remove_var("KEYCLAW_VAULT_PASSPHRASE");
-        env::remove_var("KEYCLAW_GITLEAKS_CONFIG");
-        env::remove_var("KEYCLAW_LOG_LEVEL");
-        env::remove_var("KEYCLAW_UNSAFE_LOG");
-        env::remove_var("KEYCLAW_DETECTOR_TIMEOUT");
-        env::remove_var("KEYCLAW_NOTICE_MODE");
-        env::remove_var("KEYCLAW_AUDIT_LOG");
+        set_env_var("HOME", temp.path());
+        remove_env_var("KEYCLAW_VAULT_PATH");
+        remove_env_var("KEYCLAW_VAULT_PASSPHRASE");
+        remove_env_var("KEYCLAW_GITLEAKS_CONFIG");
+        remove_env_var("KEYCLAW_LOG_LEVEL");
+        remove_env_var("KEYCLAW_UNSAFE_LOG");
+        remove_env_var("KEYCLAW_DETECTOR_TIMEOUT");
+        remove_env_var("KEYCLAW_NOTICE_MODE");
+        remove_env_var("KEYCLAW_AUDIT_LOG");
 
         let cfg = Config::from_env();
 
@@ -695,15 +763,40 @@ mod tests {
             "KEYCLAW_ENTROPY_MIN_LEN",
         ];
         let saved = capture_env(&keys);
-        env::set_var("HOME", temp.path());
-        env::set_var("KEYCLAW_ENTROPY_ENABLED", "false");
-        env::set_var("KEYCLAW_ENTROPY_THRESHOLD", "4.0");
-        env::set_var("KEYCLAW_ENTROPY_MIN_LEN", "30");
+        set_env_var("HOME", temp.path());
+        set_env_var("KEYCLAW_ENTROPY_ENABLED", "false");
+        set_env_var("KEYCLAW_ENTROPY_THRESHOLD", "4.0");
+        set_env_var("KEYCLAW_ENTROPY_MIN_LEN", "30");
         let cfg = Config::from_env();
         assert!(!cfg.entropy_enabled);
         assert!((cfg.entropy_threshold - 4.0).abs() < 0.001);
         assert_eq!(cfg.entropy_min_len, 30);
         restore_env(saved);
+    }
+
+    #[test]
+    fn allowed_hosts_all_includes_supported_provider_domains() {
+        let mut cfg = Config::defaults();
+        cfg.include_hosts = vec!["*my-custom-api.com*".into()];
+
+        let allowed = Config::allowed_hosts("all", &cfg);
+
+        for expected in [
+            "api.openai.com",
+            "api.anthropic.com",
+            "generativelanguage.googleapis.com",
+            "api.together.xyz",
+            "api.groq.com",
+            "api.mistral.ai",
+            "api.cohere.ai",
+            "api.deepseek.com",
+            "*my-custom-api.com*",
+        ] {
+            assert!(
+                allowed.iter().any(|host| host == expected),
+                "expected {expected} in allowed hosts: {allowed:?}"
+            );
+        }
     }
 
     #[test]
@@ -717,10 +810,10 @@ mod tests {
             "KEYCLAW_ENTROPY_MIN_LEN",
         ];
         let saved = capture_env(&keys);
-        env::set_var("HOME", temp.path());
-        env::remove_var("KEYCLAW_ENTROPY_ENABLED");
-        env::remove_var("KEYCLAW_ENTROPY_THRESHOLD");
-        env::remove_var("KEYCLAW_ENTROPY_MIN_LEN");
+        set_env_var("HOME", temp.path());
+        remove_env_var("KEYCLAW_ENTROPY_ENABLED");
+        remove_env_var("KEYCLAW_ENTROPY_THRESHOLD");
+        remove_env_var("KEYCLAW_ENTROPY_MIN_LEN");
         let cfg = Config::from_env();
         assert!(cfg.entropy_enabled);
         assert!((cfg.entropy_threshold - 3.5).abs() < 0.001);
@@ -772,9 +865,9 @@ claude = ["api.anthropic.com", "console.anthropic.com"]
             "KEYCLAW_CLAUDE_HOSTS",
         ];
         let saved = capture_env(&keys);
-        env::set_var("HOME", temp.path());
+        set_env_var("HOME", temp.path());
         for key in &keys[1..] {
-            env::remove_var(key);
+            remove_env_var(key);
         }
 
         let cfg = Config::from_env();
@@ -826,10 +919,10 @@ mode = "minimal"
             "KEYCLAW_NOTICE_MODE",
         ];
         let saved = capture_env(&keys);
-        env::set_var("HOME", temp.path());
-        env::set_var("KEYCLAW_PROXY_ADDR", "127.0.0.1:7777");
-        env::set_var("KEYCLAW_LOG_LEVEL", "warn");
-        env::set_var("KEYCLAW_NOTICE_MODE", "off");
+        set_env_var("HOME", temp.path());
+        set_env_var("KEYCLAW_PROXY_ADDR", "127.0.0.1:7777");
+        set_env_var("KEYCLAW_LOG_LEVEL", "warn");
+        set_env_var("KEYCLAW_NOTICE_MODE", "off");
 
         let cfg = Config::from_env();
 
@@ -860,9 +953,9 @@ level = "LOUD"
 
         let keys = ["HOME", "KEYCLAW_PROXY_ADDR", "KEYCLAW_LOG_LEVEL"];
         let saved = capture_env(&keys);
-        env::set_var("HOME", temp.path());
-        env::remove_var("KEYCLAW_PROXY_ADDR");
-        env::remove_var("KEYCLAW_LOG_LEVEL");
+        set_env_var("HOME", temp.path());
+        remove_env_var("KEYCLAW_PROXY_ADDR");
+        remove_env_var("KEYCLAW_LOG_LEVEL");
 
         let cfg = Config::from_env();
 
@@ -892,7 +985,7 @@ secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
 
         let keys = ["HOME"];
         let saved = capture_env(&keys);
-        env::set_var("HOME", temp.path());
+        set_env_var("HOME", temp.path());
 
         let cfg = Config::from_env();
         let counts = cfg.allowlist.counts();
@@ -915,7 +1008,7 @@ secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
 
         let keys = ["HOME"];
         let saved = capture_env(&keys);
-        env::set_var("HOME", temp.path());
+        set_env_var("HOME", temp.path());
 
         let cfg = Config::from_env();
 
@@ -933,8 +1026,8 @@ secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
     fn restore_env(saved: Vec<(String, Option<OsString>)>) {
         for (key, value) in saved {
             match value {
-                Some(value) => env::set_var(key, value),
-                None => env::remove_var(key),
+                Some(value) => set_env_var(key, value),
+                None => remove_env_var(key),
             }
         }
     }

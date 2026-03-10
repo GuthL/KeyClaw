@@ -18,6 +18,8 @@ pub mod entropy;
 pub mod errors;
 /// Bundled gitleaks rule loading, compilation, and matching.
 pub mod gitleaks_rules;
+/// Second-pass secret scanning backed by Kingfisher.
+pub mod kingfisher;
 /// CLI entrypoints and launched-tool integration.
 pub mod launcher;
 /// Operator-facing runtime logging utilities.
@@ -32,6 +34,8 @@ pub mod placeholder;
 pub mod proxy;
 /// JSON-walking utilities and redaction-notice injection.
 pub mod redaction;
+/// Audit-log backed CLI stats summaries.
+pub mod stats;
 /// AES-GCM encrypted local secret storage.
 pub mod vault;
 

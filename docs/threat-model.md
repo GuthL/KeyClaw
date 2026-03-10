@@ -36,7 +36,7 @@ The trust boundary is the local machine running KeyClaw and the AI client.
 
 - Protection against local malware or a compromised developer workstation
 - Traffic that never traverses the KeyClaw proxy
-- Unsupported providers or hosts that are outside the configured interception lists
+- Hosts outside the built-in provider lists and any operator-supplied `include` patterns
 - Side channels such as exact secret-length leakage
 - Perfect secret detection across every possible format
 

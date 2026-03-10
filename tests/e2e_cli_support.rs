@@ -29,7 +29,7 @@ fn upstream_guard_drop_releases_listener() {
 fn run_mitm_ignores_ambient_no_proxy() {
     let (upstream_url, rx, _guard) = support::start_upstream();
     let original = env::var_os("NO_PROXY");
-    env::set_var("NO_PROXY", "*");
+    set_env_var("NO_PROXY", "*");
 
     let (stderr, exit_code) = support::run_mitm(
         "codex",
@@ -39,8 +39,8 @@ fn run_mitm_ignores_ambient_no_proxy() {
     );
 
     match original {
-        Some(value) => env::set_var("NO_PROXY", value),
-        None => env::remove_var("NO_PROXY"),
+        Some(value) => set_env_var("NO_PROXY", value),
+        None => remove_env_var("NO_PROXY"),
     }
 
     assert_eq!(exit_code, 0, "stderr={stderr}");
@@ -58,4 +58,14 @@ fn url_socket_addr(url: &str) -> SocketAddr {
     let host = parsed.host_str().expect("upstream host");
     let port = parsed.port().expect("upstream port");
     SocketAddr::new(host.parse().expect("parse upstream ip"), port)
+}
+
+fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
+    // This test mutates a process-wide variable briefly around one child launch.
+    unsafe { env::set_var(key, value) }
+}
+
+fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
+    // This test mutates a process-wide variable briefly around one child launch.
+    unsafe { env::remove_var(key) }
 }

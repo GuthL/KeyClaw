@@ -10,7 +10,7 @@ use std::time::Duration;
 use tempfile::NamedTempFile;
 
 use crate::config::Config;
-use crate::errors::{KeyclawError, CODE_MITM_NOT_EFFECTIVE};
+use crate::errors::{CODE_MITM_NOT_EFFECTIVE, KeyclawError};
 use crate::pipeline::Processor;
 use crate::proxy::Server;
 

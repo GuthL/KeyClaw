@@ -6,17 +6,23 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-10
+
 ### Added
 
 - Public docs hub covering architecture, configuration, secret-pattern coverage, and threat model
 - GitHub issue templates and pull request template
-- SVG wordmark and terminal demo asset for the repo landing page
+- SVG wordmark for the repo landing page
+- Built-in interception support for Google, Together, Groq, Mistral, Cohere, and DeepSeek API domains
+- Custom host interception via repeated `--include` glob patterns and `KEYCLAW_INCLUDE_HOSTS`
+- Optional Kingfisher-backed second-pass detection and audit-log stats summaries
 
 ### Changed
 
 - README rewritten around public-facing positioning, faster quickstart, and clearer live-redaction examples
 - CI/release workflow presentation cleaned up for public visibility and release badges
 - Public Rust API surfaces now carry more useful `cargo doc` output
+- Cargo manifest updated for Rust 2024 edition and release-friendly package metadata
 
 ## [0.1.0] - 2026-03-10
 

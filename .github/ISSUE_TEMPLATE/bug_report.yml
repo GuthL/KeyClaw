@@ -57,7 +57,7 @@ body:
     id: version
     attributes:
       label: KeyClaw version
-      placeholder: 0.1.0 or git SHA
+      placeholder: 0.2.0 or git SHA
   - type: checkboxes
     id: checks
     attributes:

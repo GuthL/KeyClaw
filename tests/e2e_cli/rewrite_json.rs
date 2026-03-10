@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use crate::common::{
     allowlist_test_payload, run_rewrite_json_with_input, write_allowlist_test_rules,
 };
-use crate::support::{rewrite_json_command, TEST_SECRET_CLAUDE, TEST_SECRET_CODEX};
+use crate::support::{TEST_SECRET_CLAUDE, TEST_SECRET_CODEX, rewrite_json_command};
 
 #[test]
 fn rewrite_json_respects_custom_gitleaks_config() {

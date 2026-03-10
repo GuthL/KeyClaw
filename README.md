@@ -10,9 +10,9 @@
 
 <p align="center">
   <a href="https://github.com/GuthL/KeyClaw/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/GuthL/KeyClaw/actions/workflows/ci.yml/badge.svg?branch=master"></a>
-  <a href="https://github.com/GuthL/KeyClaw/blob/master/Cargo.toml"><img alt="Crate version" src="https://img.shields.io/badge/crate-v0.1.0-f08d49?logo=rust"></a>
+  <a href="https://github.com/GuthL/KeyClaw/blob/master/Cargo.toml"><img alt="Crate version" src="https://img.shields.io/badge/crate-v0.2.0-f08d49?logo=rust"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-0f172a"></a>
-  <a href="https://www.rust-lang.org/"><img alt="Rust version" src="https://img.shields.io/badge/rust-1.75%2B-93450a?logo=rust"></a>
+  <a href="https://www.rust-lang.org/"><img alt="Rust version" src="https://img.shields.io/badge/rust-1.85%2B-93450a?logo=rust"></a>
 </p>
 
 <p align="center">
@@ -38,11 +38,11 @@ KeyClaw sits between your AI tool and the upstream API, detects secrets in outbo
 ## Architecture
 
 ```
-+-------------+   request   +-----------------+  sanitized   +------------------+
-|  Claude Code | ---------->|    KeyClaw      |  request     | OpenAI/Anthropic |
-|  Codex       |            |   local proxy   |------------>|       API        |
-|  Client      |<---------- |                 |<----------- |                  |
-+-------------+   response  +---------+-------+  response   +------------------+
++-------------+   request   +-----------------+  sanitized   +----------------------+
+|  Claude Code | ---------->|    KeyClaw      |  request     | Supported provider   |
+|  Codex       |            |   local proxy   |------------>| APIs / custom hosts  |
+|  Client      |<---------- |                 |<----------- | via --include        |
++-------------+   response  +---------+-------+  response   +----------------------+
                   (resolved)          |
                              +--------v--------+
                              | Encrypted vault  |
@@ -62,18 +62,20 @@ KeyClaw sits between your AI tool and the upstream API, detects secrets in outbo
   <img alt="ChatGPT" src="https://img.shields.io/badge/ChatGPT-proxy%20mode-111827">
   <img alt="OpenAI API" src="https://img.shields.io/badge/OpenAI%20API-supported-111827">
   <img alt="Anthropic API" src="https://img.shields.io/badge/Anthropic%20API-supported-111827">
+  <img alt="Google API" src="https://img.shields.io/badge/Google%20API-supported-111827">
+  <img alt="Provider APIs" src="https://img.shields.io/badge/Together%20%7C%20Groq%20%7C%20Mistral%20%7C%20Cohere%20%7C%20DeepSeek-supported-111827">
 </p>
 
-KeyClaw is built first for local developer tooling that talks to OpenAI- or Anthropic-style HTTPS APIs. The verified paths today are:
+KeyClaw ships first-class wrappers for Claude Code and Codex. In generic proxy mode, the default interception list also covers Google, Together, Groq, Mistral, Cohere, and DeepSeek API domains.
 
 | Tool | Path | Notes |
 |------|------|-------|
 | Claude Code | `keyclaw claude ...` wrapper or `source ~/.keyclaw/env.sh` | First-class CLI path |
 | Codex | `keyclaw codex ...` wrapper or `source ~/.keyclaw/env.sh` | First-class CLI path |
 | ChatGPT / OpenAI web traffic | Local proxy + trusted CA | In scope at the host layer for `chatgpt.com` / `chat.openai.com` when traffic truly traverses the proxy |
-| Direct API clients | `HTTP_PROXY` / `HTTPS_PROXY` + KeyClaw CA | Verified for supported hosts that actually traverse the proxy |
+| Direct API clients | `HTTP_PROXY` / `HTTPS_PROXY` + KeyClaw CA | Default hosts include OpenAI, Anthropic, Google, Together, Groq, Mistral, Cohere, and DeepSeek |
 
-Other tools such as Cursor, aider, and Continue may work in generic proxy mode if they route traffic through `HTTP_PROXY` / `HTTPS_PROXY` and trust the KeyClaw CA, but they are not first-class integrations and are not currently covered by the test suite.
+Cursor, aider, Continue, and similar proxy-aware tools are in scope when they actually route traffic through KeyClaw and trust the local CA, but they remain generic proxy integrations rather than first-class wrappers.
 
 ## Quickstart Under 60 Seconds
 
@@ -113,6 +115,27 @@ For tools outside the built-in `claude` / `codex` wrappers:
 2. Trust `~/.keyclaw/ca.crt` in your OS keychain or certificate store.
 3. Route the client through `http://127.0.0.1:8877`, either via shell env vars or app/OS proxy settings.
 4. Verify with `keyclaw doctor` and a real request that traffic is actually being intercepted.
+
+Built-in generic-proxy hosts are:
+
+- `api.openai.com`, `chat.openai.com`, `chatgpt.com`
+- `api.anthropic.com`, `claude.ai`
+- `generativelanguage.googleapis.com`
+- `api.together.xyz`, `api.groq.com`, `api.mistral.ai`, `api.cohere.ai`, `api.deepseek.com`
+
+To intercept an extra host or custom gateway, add repeated `--include` globs:
+
+```bash
+keyclaw proxy --include "*my-custom-api.com*"
+source ~/.keyclaw/env.sh
+```
+
+Or persist the same idea with an environment variable:
+
+```bash
+export KEYCLAW_INCLUDE_HOSTS="*my-custom-api.com*"
+keyclaw proxy
+```
 
 ### One terminal:
 
@@ -276,6 +299,15 @@ path = "~/.keyclaw/audit.log"
 [hosts]
 codex = ["api.openai.com", "chat.openai.com", "chatgpt.com"]
 claude = ["api.anthropic.com", "claude.ai"]
+providers = [
+  "generativelanguage.googleapis.com",
+  "api.together.xyz",
+  "api.groq.com",
+  "api.mistral.ai",
+  "api.cohere.ai",
+  "api.deepseek.com",
+]
+include = ["*my-custom-api.com*"]
 
 [allowlist]
 rule_ids = ["generic-api-key"]
@@ -315,6 +347,8 @@ path = "off"
 | `KEYCLAW_VAULT_PASSPHRASE` | unset | Explicit vault passphrase override |
 | `KEYCLAW_CODEX_HOSTS` | `api.openai.com,chat.openai.com,chatgpt.com` | Codex/OpenAI hosts to intercept |
 | `KEYCLAW_CLAUDE_HOSTS` | `api.anthropic.com,claude.ai` | Claude/Anthropic hosts to intercept |
+| `KEYCLAW_PROVIDER_HOSTS` | `generativelanguage.googleapis.com,api.together.xyz,api.groq.com,api.mistral.ai,api.cohere.ai,api.deepseek.com` | Additional provider API hosts intercepted by default |
+| `KEYCLAW_INCLUDE_HOSTS` | unset | Extra exact hosts or glob patterns to intercept |
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` | Maximum request body size |
 | `KEYCLAW_DETECTOR_TIMEOUT` | `4s` | Timeout for request-body inspection and streaming body reads |
 | `KEYCLAW_GITLEAKS_CONFIG` | bundled rules | Path to custom `gitleaks.toml` |
@@ -345,6 +379,7 @@ Persistent for the current shell session:
 ```bash
 export KEYCLAW_LOG_LEVEL=debug
 export KEYCLAW_NOTICE_MODE=minimal
+export KEYCLAW_INCLUDE_HOSTS="*my-custom-api.com*"
 keyclaw codex exec --model gpt-5
 ```
 
@@ -355,15 +390,18 @@ Persistent across new shells:
 export KEYCLAW_LOG_LEVEL=debug
 export KEYCLAW_NOTICE_MODE=minimal
 export KEYCLAW_GITLEAKS_CONFIG="$HOME/.config/keyclaw/gitleaks.toml"
+export KEYCLAW_INCLUDE_HOSTS="*my-custom-api.com*"
 ```
 
-If you use `keyclaw proxy` as a detached daemon, or enable `keyclaw proxy autostart`, daemon-side settings are read when that proxy process starts. After changing `~/.keyclaw/config.toml` or variables such as `KEYCLAW_PROXY_ADDR`, `KEYCLAW_LOG_LEVEL`, `KEYCLAW_GITLEAKS_CONFIG`, `KEYCLAW_NOTICE_MODE`, or `KEYCLAW_REQUIRE_MITM_EFFECTIVE`, restart the proxy so the running daemon picks them up.
+If you use `keyclaw proxy` as a detached daemon, or enable `keyclaw proxy autostart`, daemon-side settings are read when that proxy process starts. After changing `~/.keyclaw/config.toml` or variables such as `KEYCLAW_PROXY_ADDR`, `KEYCLAW_LOG_LEVEL`, `KEYCLAW_GITLEAKS_CONFIG`, `KEYCLAW_NOTICE_MODE`, `KEYCLAW_REQUIRE_MITM_EFFECTIVE`, `KEYCLAW_PROVIDER_HOSTS`, or `KEYCLAW_INCLUDE_HOSTS`, restart the proxy so the running daemon picks them up.
 
 By default, KeyClaw creates a machine-local vault key next to the encrypted vault and reuses it on later runs. Set `KEYCLAW_VAULT_PASSPHRASE` only when you need to override that key material explicitly. Existing vaults written with the removed built-in default are migrated to a generated local key on the next successful write. If an existing vault cannot be decrypted or its key material is missing, KeyClaw fails closed and tells you how to recover.
 
 `KEYCLAW_NOTICE_MODE=verbose` keeps the current full acknowledgment guidance, `minimal` injects a shorter notice, and `off` suppresses notice injection entirely while still redacting and reinjecting secrets normally.
 
 Use dry-run when you want to tune detection without changing live traffic: set `[detection] dry_run = true`, export `KEYCLAW_DRY_RUN=true`, or pass `--dry-run` to `keyclaw rewrite-json`, `keyclaw mitm ...`, `keyclaw codex ...`, `keyclaw claude ...`, or `keyclaw proxy start`.
+
+Use repeated `--include` flags on `keyclaw proxy`, `keyclaw proxy start`, `keyclaw mitm`, `keyclaw codex`, or `keyclaw claude` when you need to intercept a custom API hostname or gateway without replacing the built-in provider list.
 
 The only intentional exception to scrubbed runtime logging is `KEYCLAW_UNSAFE_LOG=true`. When enabled, KeyClaw may write raw request fragments to stderr or `~/.keyclaw/mitm.log` to help debug interception problems. Leave it unset for normal use.
 

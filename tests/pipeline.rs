@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use base64::Engine;
-use keyclaw::errors::{code_of, CODE_STRICT_RESOLVE_FAILED};
+use keyclaw::errors::{CODE_STRICT_RESOLVE_FAILED, code_of};
 use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::pipeline::Processor;
-use keyclaw::placeholder::{contains_complete_placeholder, make, EXAMPLE_PLACEHOLDER};
+use keyclaw::placeholder::{EXAMPLE_PLACEHOLDER, contains_complete_placeholder, make};
 use keyclaw::redaction::NoticeMode;
 use keyclaw::vault::Store;
 
@@ -17,15 +17,31 @@ fn make_processor_with_notice_mode(strict: bool, notice_mode: NoticeMode) -> Pro
 }
 
 fn make_processor_with_options(strict: bool, notice_mode: NoticeMode, dry_run: bool) -> Processor {
+    make_processor_with_rules_and_second_pass(
+        strict,
+        notice_mode,
+        dry_run,
+        Arc::new(RuleSet::bundled().expect("bundled rules")),
+        None,
+    )
+}
+
+fn make_processor_with_rules_and_second_pass(
+    strict: bool,
+    notice_mode: NoticeMode,
+    dry_run: bool,
+    ruleset: Arc<RuleSet>,
+    second_pass_scanner: Option<Arc<keyclaw::kingfisher::SecondPassScanner>>,
+) -> Processor {
     let dir = tempfile::tempdir().expect("tempdir");
     let vault = Arc::new(Store::new(
         dir.path().join("vault.enc"),
         "test-passphrase".to_string(),
     ));
-    let ruleset = Arc::new(RuleSet::bundled().expect("bundled rules"));
     Processor {
         vault: Some(vault),
         ruleset,
+        second_pass_scanner,
         max_body_size: 1 << 20,
         strict_mode: strict,
         notice_mode,
@@ -285,6 +301,94 @@ fn rewrite_detects_database_connection_string() {
         !rewritten
             .contains("postgresql://app:Sup3rSecret!@db.example.com:5432/app?sslmode=require"),
         "database url should be redacted: {rewritten}"
+    );
+}
+
+#[test]
+fn rewrite_uses_kingfisher_binary_second_pass_when_configured() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let script = temp.path().join("fake-kingfisher");
+    std::fs::write(
+        &script,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+input=""
+output=""
+while (($#)); do
+  case "$1" in
+    scan)
+      shift
+      input="$1"
+      ;;
+    --output|-o)
+      shift
+      output="$1"
+      ;;
+  esac
+  shift || true
+done
+cat >"$output" <<JSON
+{
+  "findings": [
+    {
+      "rule": {"name": "Fake Kingfisher", "id": "kingfisher.fake.1"},
+      "finding": {
+        "snippet": "prefix KF_CUSTOM_SECRET suffix",
+        "fingerprint": "fake-fingerprint",
+        "confidence": "high",
+        "entropy": "4.20",
+        "validation": {"status": "unknown", "response": ""},
+        "language": "Unknown",
+        "line": 1,
+        "column_start": 7,
+        "column_end": 23,
+        "path": "$input"
+      }
+    }
+  ]
+}
+JSON
+exit 200
+"#,
+    )
+    .expect("write fake kingfisher");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("chmod");
+    }
+
+    let mut rules = RuleSet::from_toml("rules = []").expect("empty ruleset");
+    rules.entropy_config.enabled = false;
+    let processor = make_processor_with_rules_and_second_pass(
+        false,
+        NoticeMode::Verbose,
+        false,
+        Arc::new(rules),
+        Some(Arc::new(
+            keyclaw::kingfisher::SecondPassScanner::from_binary(script.clone())
+                .expect("binary second pass scanner"),
+        )),
+    );
+    let body = br#"{"messages":[{"role":"user","content":"prefix KF_CUSTOM_SECRET suffix"}]}"#;
+
+    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
+
+    let rewritten = String::from_utf8_lossy(&result.body);
+    assert!(
+        contains_complete_placeholder(&rewritten),
+        "expected placeholder in rewritten body: {rewritten}"
+    );
+    assert!(
+        result
+            .replacements
+            .iter()
+            .any(|replacement| replacement.rule_id == "kingfisher.fake.1"
+                && replacement.secret == "KF_CUSTOM_SECRET"),
+        "expected fake kingfisher replacement metadata: {:?}",
+        result.replacements
     );
 }
 

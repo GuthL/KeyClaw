@@ -1,8 +1,8 @@
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -632,12 +632,12 @@ fn ca_fixture_ignores_broken_home_state() {
     std::fs::write(keyclaw_dir.join("ca.crt"), "not-a-cert").expect("write broken cert");
     std::fs::write(keyclaw_dir.join("ca.key"), "not-a-key").expect("write broken key");
 
-    std::env::set_var("HOME", temp.path());
+    set_env_var("HOME", temp.path());
     let result = std::panic::catch_unwind(build_test_ca);
 
     match original_home {
-        Some(home) => std::env::set_var("HOME", home),
-        None => std::env::remove_var("HOME"),
+        Some(home) => set_env_var("HOME", home),
+        None => remove_env_var("HOME"),
     }
 
     assert!(
@@ -674,6 +674,16 @@ fn proxy_server_drop_releases_listener_without_traffic() {
     drop(running);
 
     assert_listener_released(addr, "proxy listener without traffic");
+}
+
+fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
+    // These tests hold HOME_LOCK before mutating HOME.
+    unsafe { std::env::set_var(key, value) }
+}
+
+fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
+    // These tests hold HOME_LOCK before mutating HOME.
+    unsafe { std::env::remove_var(key) }
 }
 
 #[test]
@@ -783,6 +793,7 @@ fn new_processor_with_ca() -> (Processor, String, String) {
     let processor = Processor {
         vault: Some(vault),
         ruleset,
+        second_pass_scanner: None,
         max_body_size: 1 << 20,
         strict_mode: true,
         notice_mode: keyclaw::redaction::NoticeMode::Verbose,
@@ -981,15 +992,17 @@ fn spawn_upstream(
     mut handle_request: impl FnMut(tiny_http::Request) + Send + 'static,
 ) -> UpstreamGuard {
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let join = thread::spawn(move || loop {
-        if shutdown_rx.try_recv().is_ok() {
-            break;
-        }
+    let join = thread::spawn(move || {
+        loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
 
-        match server.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(req)) => handle_request(req),
-            Ok(None) => continue,
-            Err(_) => break,
+            match server.recv_timeout(Duration::from_millis(100)) {
+                Ok(Some(req)) => handle_request(req),
+                Ok(None) => continue,
+                Err(_) => break,
+            }
         }
     });
 

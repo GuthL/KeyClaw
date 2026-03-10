@@ -101,10 +101,7 @@ pub(crate) fn run_proxy_detached(cfg: &Config) -> Result<i32, KeyclawError> {
         .arg("proxy")
         .arg("--foreground")
         .envs(std::env::vars())
-        .env(
-            "KEYCLAW_DRY_RUN",
-            if cfg.dry_run { "true" } else { "false" },
-        )
+        .envs(detached_proxy_env(cfg))
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err))
@@ -123,6 +120,20 @@ pub(crate) fn run_proxy_detached(cfg: &Config) -> Result<i32, KeyclawError> {
 
     let _ = cfg;
     Ok(0)
+}
+
+pub(super) fn detached_proxy_env(cfg: &Config) -> Vec<(String, String)> {
+    let mut env = vec![(
+        "KEYCLAW_DRY_RUN".to_string(),
+        if cfg.dry_run { "true" } else { "false" }.to_string(),
+    )];
+    if !cfg.include_hosts().is_empty() {
+        env.push((
+            "KEYCLAW_INCLUDE_HOSTS".to_string(),
+            cfg.include_hosts().join(","),
+        ));
+    }
+    env
 }
 
 pub(crate) fn run_proxy_stop() -> i32 {
@@ -371,7 +382,7 @@ fn pid_matches_child(pid_path: &Path, child_pid: u32) -> Result<bool, KeyclawErr
             return Err(KeyclawError::uncoded(format!(
                 "read proxy pid file {}: {err}",
                 pid_path.display()
-            )))
+            )));
         }
     };
 

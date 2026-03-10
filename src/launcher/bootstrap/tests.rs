@@ -16,6 +16,8 @@ fn test_config(vault_path: PathBuf) -> Config {
         detector_timeout: Duration::from_secs(4),
         known_codex_hosts: Vec::new(),
         known_claude_hosts: Vec::new(),
+        known_provider_hosts: Vec::new(),
+        include_hosts: Vec::new(),
         gitleaks_config_path: None,
         log_level: LogLevel::Info,
         unsafe_log: false,
@@ -97,5 +99,24 @@ fn read_proxy_addr_from_env_returns_none_for_missing_file() {
     assert_eq!(
         super::proxy_daemon::read_proxy_addr_from_env(&env_path),
         None
+    );
+}
+
+#[test]
+fn detached_proxy_env_forwards_include_hosts() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut cfg = test_config(temp.path().join("vault.enc"));
+    cfg.add_include_hosts(vec![
+        "*my-custom-api.com*".into(),
+        "api.together.xyz".into(),
+    ]);
+
+    let env = super::proxy_daemon::detached_proxy_env(&cfg);
+
+    assert_eq!(
+        env.iter()
+            .find(|(key, _)| key == "KEYCLAW_INCLUDE_HOSTS")
+            .map(|(_, value): &(String, String)| value.as_str()),
+        Some("*my-custom-api.com*,api.together.xyz")
     );
 }

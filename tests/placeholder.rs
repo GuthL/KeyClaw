@@ -1,7 +1,8 @@
 use keyclaw::gitleaks_rules::{MatchConfidence, MatchSource, RuleSet};
 use keyclaw::placeholder::{
-    contains_complete_placeholder, find_partial_placeholder_start, is_placeholder, make, make_id,
-    replace_secrets, resolve_placeholders, CONTRACT_MARKER_KEY, EXAMPLE_PLACEHOLDER,
+    CONTRACT_MARKER_KEY, EXAMPLE_PLACEHOLDER, contains_complete_placeholder,
+    find_partial_placeholder_start, is_placeholder, make, make_id, replace_secrets,
+    resolve_placeholders,
 };
 
 fn bundled_rules() -> RuleSet {

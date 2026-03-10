@@ -174,7 +174,7 @@ fn append_shell_snippet(path: &Path) -> Result<(), KeyclawError> {
             return Err(KeyclawError::uncoded(format!(
                 "read shell rc {}: {err}",
                 path.display()
-            )))
+            )));
         }
     };
 

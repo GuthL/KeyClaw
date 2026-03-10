@@ -1,23 +1,23 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use http_body_util::BodyExt;
 use hudsucker::{
-    hyper::{
-        header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
-        Method, Request, Response, StatusCode,
-    },
     Body, HttpContext, HttpHandler, RequestOrResponse,
+    hyper::{
+        Method, Request, Response, StatusCode,
+        header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, TRANSFER_ENCODING},
+    },
 };
 
-use crate::errors::{code_of, CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_REQUEST_TIMEOUT};
+use crate::errors::{CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_REQUEST_TIMEOUT, code_of};
 
+use super::KeyclawHttpHandler;
 use super::common::{
     allowed, body_from_vec, header_value, is_json, is_json_payload, json_error_response, log_debug,
     log_replacements, log_warn, request_host, response_is_sse,
 };
 use super::streaming::SseStreamResolver;
-use super::KeyclawHttpHandler;
 
 impl HttpHandler for KeyclawHttpHandler {
     async fn handle_request(
@@ -284,7 +284,7 @@ fn set_fixed_body_headers(headers: &mut HeaderMap, len: usize) {
 
 #[cfg(test)]
 mod tests {
-    use hudsucker::hyper::header::{HeaderMap, HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
+    use hudsucker::hyper::header::{CONTENT_LENGTH, HeaderMap, HeaderValue, TRANSFER_ENCODING};
 
     use super::set_fixed_body_headers;
 
