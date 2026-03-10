@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 560" role="img" aria-labelledby="title desc">
+  <title id="title">KeyClaw demo terminal</title>
+  <desc id="desc">Terminal-style screenshot showing KeyClaw intercepting traffic and redacting secrets live.</desc>
+  <rect width="980" height="560" rx="24" fill="#0b1020"/>
+  <rect x="24" y="24" width="932" height="72" rx="16" fill="#111827"/>
+  <circle cx="66" cy="60" r="10" fill="#ef4444"/>
+  <circle cx="100" cy="60" r="10" fill="#f59e0b"/>
+  <circle cx="134" cy="60" r="10" fill="#10b981"/>
+  <text x="490" y="67" text-anchor="middle" fill="#cbd5e1" font-size="24" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">keyclaw-demo</text>
+  <g fill="#e5e7eb" font-size="24" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="48" y="144">$ cargo install --git https://github.com/GuthL/KeyClaw keyclaw</text>
+    <text x="48" y="186">$ keyclaw proxy</text>
+    <text x="48" y="228">keyclaw info: proxy ready on 127.0.0.1:8877</text>
+    <text x="48" y="270">keyclaw info: intercepted api.anthropic.com</text>
+    <text x="48" y="312">keyclaw info: replaced 2 secrets before upload</text>
+    <text x="48" y="354">keyclaw info: placeholder {{KEYCLAW_SECRET_AKIAI_77dc0005c514277d}}</text>
+    <text x="48" y="396">keyclaw info: placeholder {{KEYCLAW_SECRET_wJalr_8b4f0f2d14a8b2c1}}</text>
+    <text x="48" y="456">$ claude "deploy the staging stack"</text>
+    <text x="48" y="498">claude&gt; I can help deploy using the redacted placeholders safely.</text>
+  </g>
+  <rect x="36" y="158" width="908" height="170" rx="16" fill="none" stroke="#1d4ed8" stroke-opacity="0.45" stroke-width="2"/>
+  <rect x="36" y="334" width="908" height="92" rx="16" fill="none" stroke="#f97316" stroke-opacity="0.5" stroke-width="2"/>
+</svg>

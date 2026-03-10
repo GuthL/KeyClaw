@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a reproducible problem with KeyClaw behavior, docs, or release artifacts.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please redact secrets before pasting logs, payloads, or screenshots.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and why it is a problem.
+      placeholder: KeyClaw allowed an AWS key through a proxied request that should have been redacted.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How do we reproduce it?
+      description: Provide the smallest reliable repro you can.
+      placeholder: |
+        1. Run `keyclaw proxy`
+        2. Source `~/.keyclaw/env.sh`
+        3. Send this request...
+    validations:
+      required: true
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Which client path is involved?
+      options:
+        - Claude Code
+        - Cursor
+        - aider
+        - Continue
+        - Direct API client
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+      placeholder: The request should have been blocked with `invalid_json` / redacted before upload / etc.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Include relevant output from `keyclaw doctor`, `cargo --version`, and your platform. Redact secrets first.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: KeyClaw version
+      placeholder: 0.1.0 or git SHA
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I confirmed the traffic is actually routed through KeyClaw.
+          required: true
+        - label: I removed or redacted secrets from the issue body.
+          required: true

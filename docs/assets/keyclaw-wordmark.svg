@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 240" role="img" aria-labelledby="title desc">
+  <title id="title">KeyClaw wordmark</title>
+  <desc id="desc">KeyClaw wordmark with stylized claw marks and a warm gradient background.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff8ef"/>
+      <stop offset="100%" stop-color="#ffe5cc"/>
+    </linearGradient>
+    <linearGradient id="claw" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="240" rx="28" fill="url(#bg)"/>
+  <g transform="translate(78 46)">
+    <path d="M0 60 L28 0 L42 0 L20 70 Z" fill="url(#claw)"/>
+    <path d="M36 78 L66 8 L80 8 L56 88 Z" fill="url(#claw)"/>
+    <path d="M72 92 L102 24 L116 24 L92 102 Z" fill="url(#claw)"/>
+  </g>
+  <text x="210" y="118" fill="#111827" font-size="76" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-weight="800" letter-spacing="1.5">
+    KeyClaw
+  </text>
+  <text x="214" y="166" fill="#7c2d12" font-size="24" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    Secret-safe AI traffic, enforced locally.
+  </text>
+</svg>

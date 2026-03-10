@@ -1,3 +1,5 @@
+//! JSON-walking utilities and redaction-notice injection.
+
 use serde_json::Value;
 
 use crate::errors::{KeyclawError, CODE_STRICT_RESOLVE_FAILED};
@@ -5,12 +7,16 @@ use crate::placeholder::{self};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeMode {
+    /// Inject the full explanatory notice.
     Verbose,
+    /// Inject a shorter operational notice.
     Minimal,
+    /// Do not inject a notice after redaction.
     Off,
 }
 
 impl NoticeMode {
+    /// Parse a notice mode from operator configuration text.
     pub fn parse(input: &str) -> Option<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
             "verbose" => Some(Self::Verbose),
@@ -21,6 +27,7 @@ impl NoticeMode {
     }
 }
 
+/// Walk all JSON string values in a payload and apply `transform`.
 pub fn walk_json_strings<F>(input: &[u8], mut transform: F) -> Result<Vec<u8>, KeyclawError>
 where
     F: FnMut(&str) -> Result<String, KeyclawError>,
@@ -31,16 +38,19 @@ where
     serde_json::to_vec(&rewritten).map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
 }
 
+/// Preserve the request body while the contract marker is carried in headers.
 pub fn inject_contract_marker(input: &[u8]) -> Result<Vec<u8>, KeyclawError> {
     // Contract marker is now injected as an HTTP header (X-Keyclaw-Contract)
     // rather than in the JSON body, to avoid API schema rejections.
     Ok(input.to_vec())
 }
 
+/// Inject a verbose redaction notice into a request payload.
 pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, KeyclawError> {
     inject_redaction_notice_with_mode(input, count, NoticeMode::Verbose)
 }
 
+/// Inject a redaction notice using the selected notice mode.
 pub fn inject_redaction_notice_with_mode(
     input: &[u8],
     count: usize,
@@ -262,6 +272,7 @@ fn should_rewrite_message(msg: &Value) -> bool {
     }
 }
 
+/// Resolve placeholders inside JSON string fields.
 pub fn resolve_json_placeholders<F>(
     input: &[u8],
     strict: bool,

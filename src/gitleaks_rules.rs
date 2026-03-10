@@ -1,3 +1,5 @@
+//! Bundled gitleaks rule loading, compilation, and matching.
+
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -12,8 +14,11 @@ const ENTROPY_RULE_ID: &str = "entropy";
 
 /// A single compiled gitleaks rule ready for matching.
 pub struct Rule {
+    /// Stable rule identifier from `gitleaks.toml`.
     pub id: String,
+    /// Compiled regex used to find candidate matches.
     pub regex: Regex,
+    /// Optional keywords that help prefilter candidate inputs.
     pub keywords: Vec<String>,
     /// Which capture group holds the secret (0 = full match).
     pub secret_group: usize,
@@ -27,9 +32,13 @@ pub struct Rule {
 
 /// All compiled gitleaks rules.
 pub struct RuleSet {
+    /// Compiled rule list.
     pub rules: Vec<Rule>,
+    /// Number of raw TOML rules that were skipped during compilation.
     pub skipped_rules: usize,
+    /// Entropy configuration used for entropy-based fallback detection.
     pub entropy_config: EntropyConfig,
+    /// Operator-configured allowlist applied after rule matching.
     pub allowlist: Allowlist,
     global_allowlists: Vec<CompiledAllowlist>,
     global_stopwords: HashSet<String>,
@@ -37,11 +46,14 @@ pub struct RuleSet {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchSource {
+    /// Match came from a provider-specific or generic regex rule.
     Regex,
+    /// Match came from entropy-based detection.
     Entropy,
 }
 
 impl MatchSource {
+    /// Return a stable string form used in logs and metadata.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Regex => "regex",
@@ -52,8 +64,11 @@ impl MatchSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchConfidence {
+    /// Weak heuristic confidence.
     Low,
+    /// Reasonable but not fully provider-specific confidence.
     Medium,
+    /// Strong provider-specific confidence.
     High,
 }
 
@@ -66,6 +81,7 @@ impl MatchConfidence {
         }
     }
 
+    /// Return a stable string form used in logs and metadata.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -209,6 +225,8 @@ impl RuleSet {
         self.find_secrets_with_options(input, true)
     }
 
+    /// Find all secret matches in `input`, optionally including entropy-based
+    /// fallback detection.
     pub fn find_secrets_with_options<'a>(
         &'a self,
         input: &'a str,
@@ -327,13 +345,21 @@ impl RuleSet {
 
 #[derive(Debug)]
 pub struct SecretMatch<'a> {
+    /// Rule ID that produced the match.
     pub rule_id: &'a str,
+    /// Byte offset where the matched secret starts.
     pub start: usize,
+    /// Byte offset where the matched secret ends.
     pub end: usize,
+    /// Matched secret text.
     pub secret: &'a str,
+    /// Whether the match came from regex or entropy detection.
     pub source: MatchSource,
+    /// Bucketed confidence for operator-facing reporting.
     pub confidence: MatchConfidence,
+    /// Raw confidence score used for match prioritization.
     pub confidence_score: u8,
+    /// Shannon entropy score, when available.
     pub entropy: Option<f64>,
 }
 

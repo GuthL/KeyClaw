@@ -1,3 +1,6 @@
+//! Runtime configuration loaded from defaults, an optional TOML file, and
+//! environment variable overrides.
+
 use std::env;
 use std::fs;
 use std::io;
@@ -13,26 +16,47 @@ use crate::redaction::NoticeMode;
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Local bind address for the MITM proxy daemon.
     pub proxy_listen_addr: String,
+    /// Proxy URL exported to child processes and env scripts.
     pub proxy_url: String,
+    /// CA certificate path passed to clients that need explicit trust wiring.
     pub ca_cert_path: String,
+    /// Encrypted vault location on disk.
     pub vault_path: PathBuf,
+    /// Optional explicit passphrase override for the vault.
     pub vault_passphrase: Option<String>,
+    /// Whether request processing should fail closed on rewrite errors.
     pub fail_closed: bool,
+    /// Maximum request body size accepted for inspection.
     pub max_body_bytes: i64,
+    /// Timeout for reading and inspecting request bodies.
     pub detector_timeout: Duration,
+    /// Hostnames considered in-scope for Codex/OpenAI traffic.
     pub known_codex_hosts: Vec<String>,
+    /// Hostnames considered in-scope for Claude/Anthropic traffic.
     pub known_claude_hosts: Vec<String>,
+    /// Optional custom gitleaks rule file.
     pub gitleaks_config_path: Option<PathBuf>,
+    /// Operator-visible runtime log level.
     pub log_level: LogLevel,
+    /// Whether raw logs may include unsanitized secret material.
     pub unsafe_log: bool,
+    /// Whether launched-tool flows should fail if traffic bypasses the proxy.
     pub require_mitm_effective: bool,
+    /// Redaction notice mode injected into rewritten payloads.
     pub notice_mode: NoticeMode,
+    /// Whether rewrite flows should report matches without modifying traffic.
     pub dry_run: bool,
+    /// Whether entropy detection is enabled.
     pub entropy_enabled: bool,
+    /// Minimum entropy threshold for entropy-driven matches.
     pub entropy_threshold: f64,
+    /// Minimum token length for entropy-driven matches.
     pub entropy_min_len: usize,
+    /// Optional audit log location. `None` disables persistent audit logging.
     pub audit_log_path: Option<PathBuf>,
+    /// Operator-defined allowlist entries.
     pub allowlist: Allowlist,
     pub(crate) config_file_status: ConfigFileStatus,
 }
@@ -120,6 +144,8 @@ struct FileAllowlistConfig {
 }
 
 impl Config {
+    /// Load configuration from defaults, `~/.keyclaw/config.toml`, and
+    /// environment variable overrides.
     pub fn from_env() -> Self {
         let mut cfg = Self::defaults();
         cfg.apply_config_file();
@@ -127,6 +153,10 @@ impl Config {
         cfg
     }
 
+    /// Return the currently allowed hosts for the named tool family.
+    ///
+    /// `codex` returns the OpenAI-family list, `claude` returns the
+    /// Anthropic-family list, and any other value returns both.
     pub fn allowed_hosts(tool: &str, cfg: &Config) -> Vec<String> {
         match tool.trim().to_ascii_lowercase().as_str() {
             "codex" => cfg.known_codex_hosts.clone(),
@@ -143,6 +173,8 @@ impl Config {
         &self.config_file_status
     }
 
+    /// Return a user-facing error if the optional config file exists but is
+    /// invalid.
     pub fn config_file_error(&self) -> Option<crate::errors::KeyclawError> {
         match &self.config_file_status {
             ConfigFileStatus::Invalid { message, .. } => {
@@ -323,10 +355,12 @@ impl Config {
     }
 }
 
+/// Convenience wrapper for [`Config::allowed_hosts`].
 pub fn allowed_hosts(tool: &str, cfg: &Config) -> Vec<String> {
     Config::allowed_hosts(tool, cfg)
 }
 
+/// Return the default `~/.keyclaw/config.toml` path for the current user.
 pub fn default_config_path() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".keyclaw").join("config.toml")

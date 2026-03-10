@@ -1,3 +1,6 @@
+//! Request rewrite and placeholder-resolution pipeline shared by the proxy and
+//! CLI helpers.
+
 use std::sync::Arc;
 
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
@@ -23,21 +26,31 @@ static BASE64_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[derive(Clone)]
 pub struct Processor {
+    /// Vault used to store and resolve placeholder mappings.
     pub vault: Option<Arc<Store>>,
+    /// Compiled bundled or custom gitleaks rules.
     pub ruleset: Arc<RuleSet>,
+    /// Maximum request body size accepted for rewriting.
     pub max_body_size: i64,
+    /// Whether placeholder-resolution failures should be treated as errors.
     pub strict_mode: bool,
+    /// Notice mode injected after a successful rewrite.
     pub notice_mode: redaction::NoticeMode,
+    /// Whether rewrites should report matches without mutating traffic.
     pub dry_run: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct RewriteResult {
+    /// Rewritten request body.
     pub body: Vec<u8>,
+    /// Metadata about each replaced secret.
     pub replacements: Vec<Replacement>,
 }
 
 impl Processor {
+    /// Warm up any expensive state, such as vault initialization, before
+    /// serving live traffic.
     pub fn warm_up(&self) -> Result<(), KeyclawError> {
         if let Some(vault) = &self.vault {
             vault.warm_up()?;
@@ -45,12 +58,14 @@ impl Processor {
         Ok(())
     }
 
+    /// Rewrite user-authored content in a standard chat-style payload.
     pub fn rewrite_and_evaluate(&self, body: &[u8]) -> Result<RewriteResult, KeyclawError> {
         self.rewrite_json_messages(body, |body, rewrite| {
             redaction::walk_message_content(body, |text| rewrite(text))
         })
     }
 
+    /// Rewrite only message-array content and skip top-level hidden prompt fields.
     pub fn rewrite_and_evaluate_input_only(
         &self,
         body: &[u8],
@@ -60,6 +75,7 @@ impl Processor {
         })
     }
 
+    /// Rewrite a Codex WebSocket payload while preserving the expected schema.
     pub fn rewrite_and_evaluate_codex_ws(
         &self,
         body: &[u8],
@@ -149,6 +165,7 @@ impl Processor {
         })
     }
 
+    /// Resolve placeholders inside a JSON payload using the configured vault.
     pub fn resolve_json(&self, body: &[u8]) -> Result<Vec<u8>, KeyclawError> {
         let Some(vault) = &self.vault else {
             return Ok(body.to_vec());
@@ -164,6 +181,7 @@ impl Processor {
         }
     }
 
+    /// Resolve placeholders inside a plain-text payload.
     pub fn resolve_text(&self, body: &[u8]) -> Result<Vec<u8>, KeyclawError> {
         let Some(vault) = &self.vault else {
             return Ok(body.to_vec());
@@ -187,6 +205,7 @@ impl Processor {
         }
     }
 
+    /// Render a short operator-facing summary of the rewrite result.
     pub fn replacement_summary(&self, replacements: &[Replacement]) -> String {
         if replacements.is_empty() {
             "no replacements".to_string()

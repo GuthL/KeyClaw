@@ -1,3 +1,5 @@
+//! Proxy server entrypoint and handler wiring.
+
 mod common;
 mod http;
 mod streaming;
@@ -19,19 +21,30 @@ use self::common::{build_ca_authority, log_warn, normalize_hosts};
 
 pub use self::common::{set_log_file, set_unsafe_log};
 
+/// Configured proxy server ready to start.
 pub struct Server {
+    /// Local listen address.
     pub listen_addr: String,
+    /// Lowercased hostnames eligible for interception.
     pub allowed_hosts: Vec<String>,
+    /// Shared rewrite processor used by request and response handlers.
     pub processor: Arc<Processor>,
+    /// Maximum request body size accepted for interception.
     pub max_body_bytes: i64,
+    /// Timeout for request body collection before inspection.
     pub body_timeout: Duration,
+    /// Optional persistent audit log path.
     pub audit_log_path: Option<PathBuf>,
+    /// PEM-encoded local CA certificate.
     pub ca_cert_pem: String,
+    /// PEM-encoded local CA private key.
     pub ca_key_pem: String,
     intercepted: Arc<AtomicI64>,
 }
 
+/// Handle to a running proxy instance.
 pub struct RunningServer {
+    /// Effective listen address after bind or fallback selection.
     pub addr: String,
     intercepted: Arc<AtomicI64>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
@@ -60,12 +73,15 @@ impl Drop for RunningServer {
 }
 
 impl RunningServer {
+    /// Return the number of intercepted requests handled by this process.
     pub fn intercept_count(&self) -> i64 {
         self.intercepted.load(Ordering::SeqCst)
     }
 }
 
 impl Server {
+    /// Create a new proxy server with the provided listen address, allowed
+    /// hosts, processor, and runtime CA material.
     pub fn new(
         listen_addr: String,
         allowed_hosts: Vec<String>,
@@ -86,6 +102,8 @@ impl Server {
         }
     }
 
+    /// Start the proxy and return a handle that can be dropped or shut down
+    /// later.
     pub fn start(&self) -> Result<RunningServer, KeyclawError> {
         self.processor.warm_up()?;
 

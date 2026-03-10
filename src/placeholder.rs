@@ -1,10 +1,15 @@
+//! Placeholder generation, parsing, and resolution helpers.
+
 use sha2::{Digest, Sha256};
 
 use crate::errors::KeyclawError;
 use crate::gitleaks_rules::{MatchConfidence, MatchSource, RuleSet};
 
+/// HTTP header key used to signal the placeholder contract version.
 pub const CONTRACT_MARKER_KEY: &str = "x-keyclaw-contract";
+/// Current placeholder contract version value.
 pub const CONTRACT_MARKER_VALUE: &str = "placeholder:v1";
+/// Example placeholder shown in operator and model-facing notices.
 pub const EXAMPLE_PLACEHOLDER: &str = "{{KEYCLAW_SECRET_xxxx}}";
 
 const PLACEHOLDER_MARKER: &str = "{{KEYCLAW_SECRET_";
@@ -16,17 +21,27 @@ pub(crate) const MAX_PLACEHOLDER_LEN: usize =
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Replacement {
+    /// Rule ID that matched the secret.
     pub rule_id: String,
+    /// Deterministic placeholder ID.
     pub id: String,
+    /// Fully rendered placeholder token.
     pub placeholder: String,
+    /// Original secret value.
     pub secret: String,
+    /// Whether the match came from regex or entropy detection.
     pub source: MatchSource,
+    /// Bucketed confidence for the match.
     pub confidence: MatchConfidence,
+    /// Raw confidence score used for prioritization.
     pub confidence_score: u8,
+    /// Entropy score when available.
     pub entropy: Option<f64>,
+    /// Base64 decode depth at which the match was discovered.
     pub decoded_depth: u8,
 }
 
+/// Derive a deterministic placeholder ID from a secret value.
 pub fn make_id(secret: &str) -> String {
     let prefix: String = secret
         .chars()
@@ -42,10 +57,12 @@ pub fn make_id(secret: &str) -> String {
     format!("{}_{}", prefix, hex::encode(&digest[..8]))
 }
 
+/// Render a placeholder token from a placeholder ID.
 pub fn make(id: &str) -> String {
     format!("{PLACEHOLDER_MARKER}{id}}}}}")
 }
 
+/// Return `true` if the full input string is exactly one complete placeholder.
 pub fn is_placeholder(s: &str) -> bool {
     matches!(
         parse_placeholder(s),
@@ -53,6 +70,7 @@ pub fn is_placeholder(s: &str) -> bool {
     )
 }
 
+/// Return `true` if the text contains at least one complete placeholder.
 pub fn contains_complete_placeholder(text: &str) -> bool {
     let mut cursor = 0usize;
 
@@ -67,6 +85,7 @@ pub fn contains_complete_placeholder(text: &str) -> bool {
     false
 }
 
+/// Replace matched secrets in `input` and include entropy-based matches.
 pub fn replace_secrets<F>(
     input: &str,
     ruleset: &RuleSet,
@@ -79,6 +98,8 @@ where
     replace_secrets_with_options(input, ruleset, decoded_depth, true, on_secret)
 }
 
+/// Replace matched secrets in `input`, optionally including entropy-based
+/// matches.
 pub fn replace_secrets_with_options<F>(
     input: &str,
     ruleset: &RuleSet,
@@ -144,6 +165,7 @@ pub(crate) fn contains_placeholder_prefix(text: &str) -> bool {
     text.contains(PLACEHOLDER_MARKER)
 }
 
+/// Resolve all placeholders in `input` by consulting the supplied resolver.
 pub fn resolve_placeholders<F>(
     input: &str,
     strict: bool,
