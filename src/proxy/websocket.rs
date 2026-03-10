@@ -87,12 +87,14 @@ impl WebSocketHandler for KeyclawHttpHandler {
                 self.rewrite_ws_request_text(text.as_str(), uses_input_only_ws_rewrite(ctx))
             {
                 if let Some(host) = websocket_request_host(ctx) {
-                    if let Err(err) = crate::audit::append_redactions(
-                        self.audit_log_path.as_deref(),
-                        &host,
-                        &replacements,
-                    ) {
-                        log_warn(format!("audit log write failed: {err}"));
+                    if !self.processor.dry_run {
+                        if let Err(err) = crate::audit::append_redactions(
+                            self.audit_log_path.as_deref(),
+                            &host,
+                            &replacements,
+                        ) {
+                            log_warn(format!("audit log write failed: {err}"));
+                        }
                     }
                 }
                 log_debug(format!(
@@ -211,6 +213,7 @@ mod tests {
             max_body_size: 1 << 20,
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
+            dry_run: false,
         });
         let handler = KeyclawHttpHandler {
             allowed_hosts: vec!["api.openai.com".to_string()],
@@ -249,6 +252,7 @@ mod tests {
             max_body_size: 1 << 20,
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
+            dry_run: false,
         });
         let handler = KeyclawHttpHandler {
             allowed_hosts: vec!["api.openai.com".to_string()],

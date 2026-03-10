@@ -240,6 +240,7 @@ level = "info"
 mode = "minimal"
 
 [detection]
+dry_run = false
 entropy_enabled = true
 entropy_threshold = 3.5
 
@@ -287,6 +288,7 @@ printf '%s' 'your-known-safe-secret' | sha256sum
 | `KEYCLAW_AUDIT_LOG` | `~/.keyclaw/audit.log` | Append-only JSONL audit log path, or `off` to disable persistent audit logging |
 | `KEYCLAW_LOG_LEVEL` | `info` | Operator log verbosity for stderr runtime messages (`error`, `warn`, `info`, `debug`) |
 | `KEYCLAW_NOTICE_MODE` | `verbose` | Prompt notice injection mode after redaction (`verbose`, `minimal`, `off`) |
+| `KEYCLAW_DRY_RUN` | `false` | Scan and log what would be redacted without modifying requests or responses |
 | `KEYCLAW_UNSAFE_LOG` | `false` | Disable normal log scrubbing and log raw secret material for debugging only; unsafe and opt-in |
 | `KEYCLAW_FAIL_CLOSED` | `true` | Fail closed on errors |
 | `KEYCLAW_REQUIRE_MITM_EFFECTIVE` | `true` | Fail if proxy bypass is detected |
@@ -327,6 +329,8 @@ By default, KeyClaw creates a machine-local vault key next to the encrypted vaul
 
 `KEYCLAW_NOTICE_MODE=verbose` keeps the current full acknowledgment guidance, `minimal` injects a shorter notice, and `off` suppresses notice injection entirely while still redacting and reinjecting secrets normally.
 
+Use dry-run when you want to tune detection without changing live traffic: set `[detection] dry_run = true`, export `KEYCLAW_DRY_RUN=true`, or pass `--dry-run` to `keyclaw rewrite-json`, `keyclaw mitm ...`, `keyclaw codex ...`, `keyclaw claude ...`, or `keyclaw proxy start`.
+
 The only intentional exception to scrubbed runtime logging is `KEYCLAW_UNSAFE_LOG=true`. When enabled, KeyClaw may write raw request fragments to stderr or `~/.keyclaw/mitm.log` to help debug interception problems. Leave it unset for normal use.
 
 ## Audit Log
@@ -364,7 +368,8 @@ KeyClaw uses deterministic error codes for programmatic handling:
 
 - Oversized JSON request bodies are rejected with `413 body_too_large` and are not forwarded upstream.
 - Request bodies that do not finish streaming before `KEYCLAW_DETECTOR_TIMEOUT` are rejected with `408 request_timeout`.
-- Malformed JSON request bodies are passed through unchanged; KeyClaw only rewrites payloads it can parse safely.
+- With `KEYCLAW_FAIL_CLOSED=true` (the default), malformed JSON rewrite attempts are rejected with `400 invalid_json` instead of being forwarded upstream unchanged.
+- Set `KEYCLAW_FAIL_CLOSED=false` if you prefer pass-through behavior for rewrite failures while tuning.
 
 ## Security Model
 

@@ -46,6 +46,11 @@ pub fn append_redactions(
             "placeholder": replacement.placeholder,
             "request_host": request_host,
             "action": "redacted",
+            "match_source": replacement.source.as_str(),
+            "confidence": replacement.confidence.as_str(),
+            "confidence_score": replacement.confidence_score,
+            "decoded_depth": replacement.decoded_depth,
+            "entropy": replacement.entropy,
         });
         writeln!(file, "{line}").map_err(|err| {
             KeyclawError::uncoded(format!("write audit log {}: {err}", path.display()))
@@ -85,6 +90,7 @@ fn current_timestamp_utc() -> String {
 #[cfg(test)]
 mod tests {
     use super::append_redactions;
+    use crate::gitleaks_rules::{MatchConfidence, MatchSource};
     use crate::placeholder::Replacement;
 
     #[test]
@@ -96,6 +102,11 @@ mod tests {
             id: "api_k_deadbeef".to_string(),
             placeholder: "{{KEYCLAW_SECRET_api_k_deadbeef}}".to_string(),
             secret: "raw-secret-value".to_string(),
+            source: MatchSource::Regex,
+            confidence: MatchConfidence::Medium,
+            confidence_score: 66,
+            entropy: Some(4.2),
+            decoded_depth: 1,
         }];
 
         append_redactions(Some(&path), "stdin", &replacements).expect("write audit log");
@@ -103,6 +114,8 @@ mod tests {
         let log = std::fs::read_to_string(path).expect("read audit log");
         assert!(log.contains("\"rule_id\":\"generic-api-key\""), "log={log}");
         assert!(log.contains("\"request_host\":\"stdin\""), "log={log}");
+        assert!(log.contains("\"confidence\":\"medium\""), "log={log}");
+        assert!(log.contains("\"match_source\":\"regex\""), "log={log}");
         assert!(!log.contains("raw-secret-value"), "log={log}");
     }
 }

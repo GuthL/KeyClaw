@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::errors::KeyclawError;
-use crate::gitleaks_rules::RuleSet;
+use crate::gitleaks_rules::{MatchConfidence, MatchSource, RuleSet};
 
 pub const CONTRACT_MARKER_KEY: &str = "x-keyclaw-contract";
 pub const CONTRACT_MARKER_VALUE: &str = "placeholder:v1";
@@ -14,12 +14,17 @@ const MAX_PARTIAL_PLACEHOLDER_LEN: usize = PLACEHOLDER_MARKER.len() + PREFIX_LEN
 pub(crate) const MAX_PLACEHOLDER_LEN: usize =
     PLACEHOLDER_MARKER.len() + PREFIX_LEN + 1 + HASH_LEN + 2;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Replacement {
     pub rule_id: String,
     pub id: String,
     pub placeholder: String,
     pub secret: String,
+    pub source: MatchSource,
+    pub confidence: MatchConfidence,
+    pub confidence_score: u8,
+    pub entropy: Option<f64>,
+    pub decoded_depth: u8,
 }
 
 pub fn make_id(secret: &str) -> String {
@@ -65,12 +70,26 @@ pub fn contains_complete_placeholder(text: &str) -> bool {
 pub fn replace_secrets<F>(
     input: &str,
     ruleset: &RuleSet,
+    decoded_depth: u8,
+    on_secret: F,
+) -> Result<(String, Vec<Replacement>), KeyclawError>
+where
+    F: FnMut(&str) -> Result<String, KeyclawError>,
+{
+    replace_secrets_with_options(input, ruleset, decoded_depth, true, on_secret)
+}
+
+pub fn replace_secrets_with_options<F>(
+    input: &str,
+    ruleset: &RuleSet,
+    decoded_depth: u8,
+    include_entropy: bool,
     mut on_secret: F,
 ) -> Result<(String, Vec<Replacement>), KeyclawError>
 where
     F: FnMut(&str) -> Result<String, KeyclawError>,
 {
-    let matches = ruleset.find_secrets(input);
+    let matches = ruleset.find_secrets_with_options(input, include_entropy);
     if matches.is_empty() {
         return Ok((input.to_string(), Vec::new()));
     }
@@ -88,6 +107,11 @@ where
             id,
             placeholder: ph.clone(),
             secret: m.secret.to_string(),
+            source: m.source,
+            confidence: m.confidence,
+            confidence_score: m.confidence_score,
+            entropy: m.entropy,
+            decoded_depth,
         });
 
         out.push_str(&input[last..m.start]);

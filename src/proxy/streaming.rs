@@ -365,6 +365,7 @@ mod tests {
             max_body_size: 1 << 20,
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
+            dry_run: false,
         })
     }
 
@@ -375,6 +376,7 @@ mod tests {
             max_body_size: 1 << 20,
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
+            dry_run: false,
         })
     }
 }

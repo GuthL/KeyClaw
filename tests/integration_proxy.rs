@@ -345,9 +345,55 @@ fn oversized_body_is_rejected_without_upstream_forwarding() {
 }
 
 #[test]
-fn malformed_json_is_passed_through_unchanged() {
+fn malformed_json_is_blocked_in_fail_closed_mode() {
     let (upstream_url, rx, _upstream_guard) = start_echo_upstream();
     let (processor, ca_cert, ca_key) = new_processor_with_ca();
+    let malformed = format!(r#"{{"prompt":"api_key = {}""#, CODEX_SECRET);
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+
+    let client = Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+
+    let resp = client
+        .post(&upstream_url)
+        .header("content-type", "application/json")
+        .body(malformed.clone())
+        .send()
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "malformed request should not reach upstream in fail-closed mode"
+    );
+
+    let resp_body = resp.text().expect("response body");
+    assert!(resp_body.contains("invalid_json"), "response={resp_body}");
+}
+
+#[test]
+fn malformed_json_is_passed_through_when_fail_closed_disabled() {
+    let (upstream_url, rx, _upstream_guard) = start_echo_upstream();
+    let (mut processor, ca_cert, ca_key) = new_processor_with_ca();
+    processor.strict_mode = false;
     let malformed = format!(r#"{{"prompt":"api_key = {}""#, CODEX_SECRET);
 
     let host = url::Url::parse(&upstream_url)
@@ -678,6 +724,12 @@ fn proxy_server_drop_releases_listener_after_request() {
 
 #[test]
 fn proxy_server_lifecycle_is_fast_without_traffic() {
+    // This is a coarse regression guard, not a benchmark. Cold startup can
+    // include certificate generation and runtime initialization, which vary a
+    // lot on loaded dev boxes and CI runners.
+    const MAX_STARTUP: Duration = Duration::from_secs(8);
+    const MAX_SHUTDOWN: Duration = Duration::from_secs(2);
+
     let (processor, ca_cert, ca_key) = new_processor_with_ca();
     let mut proxy = Server::new(
         "127.0.0.1:0".to_string(),
@@ -698,11 +750,11 @@ fn proxy_server_lifecycle_is_fast_without_traffic() {
     let shutdown_elapsed = shutdown_start.elapsed();
 
     assert!(
-        startup_elapsed < Duration::from_secs(2),
+        startup_elapsed < MAX_STARTUP,
         "proxy startup took {startup_elapsed:?}, shutdown took {shutdown_elapsed:?}"
     );
     assert!(
-        shutdown_elapsed < Duration::from_secs(2),
+        shutdown_elapsed < MAX_SHUTDOWN,
         "proxy shutdown took {shutdown_elapsed:?}, startup took {startup_elapsed:?}"
     );
 }
@@ -734,6 +786,7 @@ fn new_processor_with_ca() -> (Processor, String, String) {
         max_body_size: 1 << 20,
         strict_mode: true,
         notice_mode: keyclaw::redaction::NoticeMode::Verbose,
+        dry_run: false,
     };
 
     (processor, ca_cert, ca_key)

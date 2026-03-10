@@ -28,6 +28,7 @@ pub struct Config {
     pub unsafe_log: bool,
     pub require_mitm_effective: bool,
     pub notice_mode: NoticeMode,
+    pub dry_run: bool,
     pub entropy_enabled: bool,
     pub entropy_threshold: f64,
     pub entropy_min_len: usize,
@@ -88,6 +89,7 @@ struct FileNoticeConfig {
 #[serde(default, deny_unknown_fields)]
 struct FileDetectionConfig {
     fail_closed: Option<bool>,
+    dry_run: Option<bool>,
     max_body_bytes: Option<i64>,
     detector_timeout: Option<String>,
     gitleaks_config: Option<PathBuf>,
@@ -167,6 +169,7 @@ impl Config {
             unsafe_log: false,
             require_mitm_effective: true,
             notice_mode: NoticeMode::Verbose,
+            dry_run: false,
             entropy_enabled: true,
             entropy_threshold: 3.5,
             entropy_min_len: 20,
@@ -242,6 +245,9 @@ impl Config {
         if let Some(fail_closed) = file_cfg.detection.fail_closed {
             self.fail_closed = fail_closed;
         }
+        if let Some(dry_run) = file_cfg.detection.dry_run {
+            self.dry_run = dry_run;
+        }
         if let Some(max_body_bytes) = file_cfg.detection.max_body_bytes {
             self.max_body_bytes = max_body_bytes;
         }
@@ -309,6 +315,7 @@ impl Config {
             self.require_mitm_effective,
         );
         self.notice_mode = notice_mode_env("KEYCLAW_NOTICE_MODE", self.notice_mode);
+        self.dry_run = bool_env("KEYCLAW_DRY_RUN", self.dry_run);
         self.entropy_enabled = bool_env("KEYCLAW_ENTROPY_ENABLED", self.entropy_enabled);
         self.entropy_threshold = f64_env("KEYCLAW_ENTROPY_THRESHOLD", self.entropy_threshold);
         self.entropy_min_len = usize_env("KEYCLAW_ENTROPY_MIN_LEN", self.entropy_min_len);

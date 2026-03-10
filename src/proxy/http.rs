@@ -135,17 +135,34 @@ impl HttpHandler for KeyclawHttpHandler {
             Ok(Ok(Ok(result))) => result,
             Ok(Ok(Err(err))) => {
                 let code = code_of(&err).unwrap_or("unknown");
-                log_warn(format!("rewrite error ({code}): {err} - passing through"));
+                log_warn(format!("rewrite error ({code}): {err}"));
+                if self.processor.strict_mode {
+                    return request_rewrite_error_response(&err).into();
+                }
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
             }
             Ok(Err(err)) => {
-                log_warn(format!(
-                    "request processing failed: {err} - passing through"
-                ));
+                log_warn(format!("request processing failed: {err}"));
+                if self.processor.strict_mode {
+                    return json_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "rewrite_failed",
+                        "request processing failed before forwarding upstream",
+                    )
+                    .into();
+                }
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
             }
             Err(_) => {
-                log_warn("rewrite timeout - passing request through".to_string());
+                log_warn("rewrite timeout".to_string());
+                if self.processor.strict_mode {
+                    return json_error_response(
+                        StatusCode::REQUEST_TIMEOUT,
+                        CODE_REQUEST_TIMEOUT,
+                        "request rewrite timed out",
+                    )
+                    .into();
+                }
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
             }
         };
@@ -157,18 +174,21 @@ impl HttpHandler for KeyclawHttpHandler {
                 self.processor.replacement_summary(&rewritten.replacements)
             ));
             log_replacements(&host, &original_payload, &rewritten.replacements);
-            if let Err(err) = crate::audit::append_redactions(
-                self.audit_log_path.as_deref(),
-                &host,
-                &rewritten.replacements,
-            ) {
-                log_warn(format!("audit log write failed: {err}"));
+            if !self.processor.dry_run {
+                if let Err(err) = crate::audit::append_redactions(
+                    self.audit_log_path.as_deref(),
+                    &host,
+                    &rewritten.replacements,
+                ) {
+                    log_warn(format!("audit log write failed: {err}"));
+                }
             }
         }
 
-        let mut rewritten_req = Request::from_parts(parts, body_from_vec(rewritten.body.clone()));
-        set_fixed_body_headers(rewritten_req.headers_mut(), rewritten.body.len());
-        if !rewritten.replacements.is_empty() {
+        let rewritten_len = rewritten.body.len();
+        let mut rewritten_req = Request::from_parts(parts, body_from_vec(rewritten.body));
+        set_fixed_body_headers(rewritten_req.headers_mut(), rewritten_len);
+        if !self.processor.dry_run && !rewritten.replacements.is_empty() {
             if let Ok(value) = crate::placeholder::CONTRACT_MARKER_VALUE.parse() {
                 rewritten_req
                     .headers_mut()
@@ -228,8 +248,9 @@ impl HttpHandler for KeyclawHttpHandler {
         }
 
         parts.headers.remove(TRANSFER_ENCODING);
-        let mut resp = Response::from_parts(parts, body_from_vec(body_bytes.clone()));
-        set_fixed_body_headers(resp.headers_mut(), body_bytes.len());
+        let body_len = body_bytes.len();
+        let mut resp = Response::from_parts(parts, body_from_vec(body_bytes));
+        set_fixed_body_headers(resp.headers_mut(), body_len);
         resp
     }
 
@@ -238,6 +259,20 @@ impl HttpHandler for KeyclawHttpHandler {
             .map(|host| allowed(&self.allowed_hosts, &host))
             .unwrap_or(false)
     }
+}
+
+fn request_rewrite_error_response(err: &crate::errors::KeyclawError) -> Response<Body> {
+    let code = code_of(err).unwrap_or("rewrite_failed");
+    let message = err.display_without_code();
+
+    let status = match code {
+        CODE_BODY_TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
+        CODE_REQUEST_TIMEOUT => StatusCode::REQUEST_TIMEOUT,
+        CODE_INVALID_JSON => StatusCode::BAD_REQUEST,
+        _ => StatusCode::BAD_GATEWAY,
+    };
+
+    json_error_response(status, code, &message)
 }
 
 fn set_fixed_body_headers(headers: &mut HeaderMap, len: usize) {

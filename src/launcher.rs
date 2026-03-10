@@ -29,7 +29,7 @@ pub fn run_cli(args: Vec<String>) -> i32 {
         }
     };
 
-    let cfg = Config::from_env();
+    let mut cfg = Config::from_env();
     crate::logging::configure(cfg.log_level);
     if !matches!(command, CliCommand::Doctor) {
         if let Some(err) = cfg.config_file_error() {
@@ -41,7 +41,12 @@ pub fn run_cli(args: Vec<String>) -> i32 {
     match command {
         CliCommand::Doctor => run_doctor(&cfg),
         CliCommand::Init { force } => run_init(&cfg, force),
-        CliCommand::Mitm { tool, child_args } => {
+        CliCommand::Mitm {
+            tool,
+            child_args,
+            dry_run,
+        } => {
+            cfg.dry_run |= dry_run;
             configure_unsafe_logging(&cfg);
             match build_processor(&cfg) {
                 Ok(processor) => run_mitm(&cfg, processor, &tool, child_args),
@@ -52,7 +57,11 @@ pub fn run_cli(args: Vec<String>) -> i32 {
             }
         }
         CliCommand::Proxy { action } => match action {
-            ProxyAction::Start { foreground } => {
+            ProxyAction::Start {
+                foreground,
+                dry_run,
+            } => {
+                cfg.dry_run |= dry_run;
                 configure_unsafe_logging(&cfg);
                 if foreground {
                     let ca = match crate::certgen::ensure_ca() {
@@ -87,7 +96,8 @@ pub fn run_cli(args: Vec<String>) -> i32 {
                 ProxyAutostartAction::Status => run_proxy_autostart_status(),
             },
         },
-        CliCommand::RewriteJson => {
+        CliCommand::RewriteJson { dry_run } => {
+            cfg.dry_run |= dry_run;
             configure_unsafe_logging(&cfg);
             match build_processor(&cfg) {
                 Ok(processor) => run_rewrite_json(&cfg, processor),
@@ -102,7 +112,7 @@ pub fn run_cli(args: Vec<String>) -> i32 {
 
 #[derive(Debug, PartialEq, Eq)]
 enum ProxyAction {
-    Start { foreground: bool },
+    Start { foreground: bool, dry_run: bool },
     Stop,
     Status,
     Autostart { action: ProxyAutostartAction },
@@ -124,11 +134,14 @@ enum CliCommand {
     Mitm {
         tool: String,
         child_args: Vec<String>,
+        dry_run: bool,
     },
     Proxy {
         action: ProxyAction,
     },
-    RewriteJson,
+    RewriteJson {
+        dry_run: bool,
+    },
 }
 
 fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
@@ -144,6 +157,7 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
             let action = match subcommand.subcommand() {
                 Some(("start", start_matches)) => ProxyAction::Start {
                     foreground: start_matches.get_flag("foreground"),
+                    dry_run: start_matches.get_flag("dry_run"),
                 },
                 Some(("stop", _)) => ProxyAction::Stop,
                 Some(("status", _)) => ProxyAction::Status,
@@ -175,25 +189,31 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, clap::Error> {
                 }
                 None => ProxyAction::Start {
                     foreground: subcommand.get_flag("foreground"),
+                    dry_run: subcommand.get_flag("dry_run"),
                 },
             };
             Ok(CliCommand::Proxy { action })
         }
-        Some(("rewrite-json", _)) => Ok(CliCommand::RewriteJson),
+        Some(("rewrite-json", subcommand)) => Ok(CliCommand::RewriteJson {
+            dry_run: subcommand.get_flag("dry_run"),
+        }),
         Some(("mitm", subcommand)) => Ok(CliCommand::Mitm {
             tool: required_string_arg(subcommand, "tool", "mitm")?,
             child_args: subcommand
                 .get_many::<String>("child_args")
                 .map(|values| values.cloned().collect())
                 .unwrap_or_default(),
+            dry_run: subcommand.get_flag("dry_run"),
         }),
         Some(("codex", subcommand)) => Ok(CliCommand::Mitm {
             tool: "codex".to_string(),
             child_args: alias_child_args(subcommand),
+            dry_run: subcommand.get_flag("dry_run"),
         }),
         Some(("claude", subcommand)) => Ok(CliCommand::Mitm {
             tool: "claude".to_string(),
             child_args: alias_child_args(subcommand),
+            dry_run: subcommand.get_flag("dry_run"),
         }),
         Some((name, _)) => Err(clap::Error::raw(
             ErrorKind::InvalidSubcommand,
@@ -242,6 +262,12 @@ fn cli() -> clap::Command {
                         .help("Keep the proxy attached to this terminal instead of detaching")
                         .action(clap::ArgAction::SetTrue),
                 )
+                .arg(
+                    Arg::new("dry_run")
+                        .long("dry-run")
+                        .help("Detect and log redactions without modifying traffic")
+                        .action(clap::ArgAction::SetTrue),
+                )
                 .subcommand(
                     clap::Command::new("start")
                         .about("Start the global proxy daemon")
@@ -251,6 +277,12 @@ fn cli() -> clap::Command {
                                 .help(
                                     "Keep the proxy attached to this terminal instead of detaching",
                                 )
+                                .action(clap::ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("dry_run")
+                                .long("dry-run")
+                                .help("Detect and log redactions without modifying traffic")
                                 .action(clap::ArgAction::SetTrue),
                         ),
                 )
@@ -281,6 +313,12 @@ fn cli() -> clap::Command {
                         .required(true),
                 )
                 .arg(
+                    Arg::new("dry_run")
+                        .long("dry-run")
+                        .help("Detect and log redactions without modifying traffic")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
                     Arg::new("child_args")
                         .value_name("CHILD_ARGS")
                         .help("Arguments forwarded to the child CLI")
@@ -303,7 +341,13 @@ fn cli() -> clap::Command {
         )
         .subcommand(
             clap::Command::new("rewrite-json")
-                .about("Read JSON from stdin, redact secrets, and write JSON to stdout"),
+                .about("Read JSON from stdin, redact secrets, and write JSON to stdout")
+                .arg(
+                    Arg::new("dry_run")
+                        .long("dry-run")
+                        .help("Detect redactions without modifying the JSON payload")
+                        .action(clap::ArgAction::SetTrue),
+                ),
         )
         .subcommand(clap::Command::new("doctor").about("Run operator health checks"))
 }
@@ -312,6 +356,12 @@ fn tool_alias_command(tool: &'static str) -> clap::Command {
     clap::Command::new(tool)
         .about(format!("Run {tool} behind the local MITM proxy"))
         .disable_help_flag(true)
+        .arg(
+            Arg::new("dry_run")
+                .long("dry-run")
+                .help("Detect and log redactions without modifying traffic")
+                .action(clap::ArgAction::SetTrue),
+        )
         .arg(
             Arg::new("child_args")
                 .value_name("CHILD_ARGS")
@@ -348,12 +398,14 @@ fn run_rewrite_json(cfg: &Config, processor: Arc<Processor>) -> i32 {
 
     match processor.rewrite_and_evaluate(&input) {
         Ok(result) => {
-            if let Err(err) = crate::audit::append_redactions(
-                cfg.audit_log_path.as_deref(),
-                "stdin",
-                &result.replacements,
-            ) {
-                crate::logging::warn(&format!("audit log write failed: {err}"));
+            if !cfg.dry_run {
+                if let Err(err) = crate::audit::append_redactions(
+                    cfg.audit_log_path.as_deref(),
+                    "stdin",
+                    &result.replacements,
+                ) {
+                    crate::logging::warn(&format!("audit log write failed: {err}"));
+                }
             }
             if io::stdout().write_all(&result.body).is_err() {
                 crate::logging::error("failed to write stdout");
@@ -401,18 +453,24 @@ mod tests {
         assert_eq!(
             super::parse_cli(vec!["proxy".into()]).unwrap(),
             super::CliCommand::Proxy {
-                action: super::ProxyAction::Start { foreground: false }
+                action: super::ProxyAction::Start {
+                    foreground: false,
+                    dry_run: false,
+                }
             }
         );
         assert_eq!(
             super::parse_cli(vec!["proxy".into(), "--foreground".into()]).unwrap(),
             super::CliCommand::Proxy {
-                action: super::ProxyAction::Start { foreground: true }
+                action: super::ProxyAction::Start {
+                    foreground: true,
+                    dry_run: false,
+                }
             }
         );
         assert_eq!(
             super::parse_cli(vec!["rewrite-json".into()]).unwrap(),
-            super::CliCommand::RewriteJson
+            super::CliCommand::RewriteJson { dry_run: false }
         );
     }
 
@@ -421,13 +479,44 @@ mod tests {
         assert_eq!(
             super::parse_cli(vec!["proxy".into(), "start".into()]).unwrap(),
             super::CliCommand::Proxy {
-                action: super::ProxyAction::Start { foreground: false }
+                action: super::ProxyAction::Start {
+                    foreground: false,
+                    dry_run: false,
+                }
             }
         );
         assert_eq!(
             super::parse_cli(vec!["proxy".into(), "start".into(), "--foreground".into()]).unwrap(),
             super::CliCommand::Proxy {
-                action: super::ProxyAction::Start { foreground: true }
+                action: super::ProxyAction::Start {
+                    foreground: true,
+                    dry_run: false,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_dry_run_flags() {
+        assert_eq!(
+            super::parse_cli(vec!["rewrite-json".into(), "--dry-run".into()]).unwrap(),
+            super::CliCommand::RewriteJson { dry_run: true }
+        );
+        assert_eq!(
+            super::parse_cli(vec!["mitm".into(), "--dry-run".into(), "codex".into()]).unwrap(),
+            super::CliCommand::Mitm {
+                tool: "codex".into(),
+                child_args: Vec::new(),
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            super::parse_cli(vec!["proxy".into(), "--dry-run".into()]).unwrap(),
+            super::CliCommand::Proxy {
+                action: super::ProxyAction::Start {
+                    foreground: false,
+                    dry_run: true,
+                }
             }
         );
     }
@@ -494,6 +583,7 @@ mod tests {
             super::CliCommand::Mitm {
                 tool: "codex".into(),
                 child_args: vec!["exec".into(), "--model".into(), "gpt-5".into()],
+                dry_run: false,
             }
         );
     }
@@ -510,6 +600,7 @@ mod tests {
             super::CliCommand::Mitm {
                 tool: "claude".into(),
                 child_args: vec!["--resume".into(), "session-123".into()],
+                dry_run: false,
             }
         );
     }
