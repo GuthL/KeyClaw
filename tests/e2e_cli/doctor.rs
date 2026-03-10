@@ -152,8 +152,11 @@ fn doctor_reports_clean_healthcheck() {
     assert!(out.contains("PASS proxy-bind"), "output={out}");
     assert!(out.contains("PASS ca-cert"), "output={out}");
     assert!(out.contains("PASS ruleset"), "output={out}");
+    assert!(
+        out.contains("PASS kingfisher") || out.contains("WARN kingfisher"),
+        "output={out}"
+    );
     assert!(out.contains("doctor: summary:"), "output={out}");
-    assert!(!out.contains("WARN "), "output={out}");
     assert!(!out.contains("FAIL "), "output={out}");
 }
 

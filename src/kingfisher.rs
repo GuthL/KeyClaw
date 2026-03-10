@@ -35,10 +35,10 @@ impl SecondPassScanner {
 
     pub fn from_binary(binary: impl Into<PathBuf>) -> Result<Self, KeyclawError> {
         let binary = binary.into();
-        if binary.is_absolute() || binary.components().count() > 1 {
-            if fs::metadata(&binary).is_ok() {
-                return Ok(Self { binary });
-            }
+        if (binary.is_absolute() || binary.components().count() > 1)
+            && fs::metadata(&binary).is_ok()
+        {
+            return Ok(Self { binary });
         }
 
         if command_available(&binary) {

@@ -6,6 +6,23 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-10
+
+### Added
+
+- Automated Homebrew formula generation from GitHub release artifacts, with release workflow publishing to [`GuthL/homebrew-tap`](https://github.com/GuthL/homebrew-tap)
+
+### Changed
+
+- README install paths now document crates.io and Homebrew distribution, including optional Kingfisher second-pass setup
+- Release documentation now reflects the maintained crates.io, GitHub Releases, and Homebrew tap channels
+- Distribution channels are aligned on the 0.2.1 release line after the earlier 0.2.0 / 0.1.0 mismatch
+
+### Fixed
+
+- CI no longer fails on environment-specific `doctor` output when `kingfisher` is not installed
+- Clippy is clean again under `-D warnings`
+
 ## [0.2.0] - 2026-03-10
 
 ### Added

@@ -109,9 +109,17 @@ In short: **Adding new secret detection patterns to `gitleaks.toml` is the norma
 GitHub Actions is the release gate for this repository.
 
 - `CI` runs formatting, clippy, build, and test checks on pushes and pull requests
-- `Release` builds the supported Linux/macOS archives on version tags and publishes a draft GitHub Release
+- `Release` builds the supported Linux/macOS archives on version tags and publishes the GitHub release artifacts used by downstream packaging
 
-Maintainers should treat `scripts/package-release.sh`, `scripts/verify-release-contract.sh`, and `.github/workflows/release.yml` as the release source of truth.
+Maintainers are responsible for keeping all public distribution channels aligned on the same version:
+
+- crates.io package: `cargo publish --locked`
+- GitHub release artifacts: version tag `vX.Y.Z`
+- Homebrew tap: [`GuthL/homebrew-tap`](https://github.com/GuthL/homebrew-tap)
+
+The release workflow also updates the Homebrew tap automatically. Configure `HOMEBREW_TAP_GITHUB_TOKEN` in the KeyClaw repo secrets with a token that has write access to `GuthL/homebrew-tap`.
+
+Maintainers should treat `scripts/package-release.sh`, `scripts/verify-release-contract.sh`, `scripts/render-homebrew-formula.sh`, and `.github/workflows/release.yml` as the release source of truth.
 
 ## Security
 

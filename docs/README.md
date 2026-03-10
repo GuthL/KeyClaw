@@ -22,3 +22,10 @@ KeyClaw's README is optimized for first contact. This directory holds the deeper
 - [CONTRIBUTING](../CONTRIBUTING.md): contributor workflow and local validation
 - [SECURITY](../SECURITY.md): private vulnerability reporting
 - [AGENTS](../AGENTS.md) and [CLAUDE](../CLAUDE.md): AI-agent repo guides
+
+## Distribution
+
+- Cargo install path: `cargo install keyclaw`
+- Homebrew tap: `brew tap GuthL/tap && brew install keyclaw`
+- Homebrew formula source: [`GuthL/homebrew-tap`](https://github.com/GuthL/homebrew-tap)
+- GitHub release artifacts: version tags published from [`.github/workflows/release.yml`](../.github/workflows/release.yml)

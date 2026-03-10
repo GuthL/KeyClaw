@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/GuthL/KeyClaw/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/GuthL/KeyClaw/actions/workflows/ci.yml/badge.svg?branch=master"></a>
-  <a href="https://github.com/GuthL/KeyClaw/blob/master/Cargo.toml"><img alt="Crate version" src="https://img.shields.io/badge/crate-v0.2.0-f08d49?logo=rust"></a>
+  <a href="https://crates.io/crates/keyclaw"><img alt="Crate version" src="https://img.shields.io/crates/v/keyclaw?logo=rust"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-0f172a"></a>
   <a href="https://www.rust-lang.org/"><img alt="Rust version" src="https://img.shields.io/badge/rust-1.85%2B-93450a?logo=rust"></a>
 </p>
@@ -79,14 +79,58 @@ Cursor, aider, Continue, and similar proxy-aware tools are in scope when they ac
 
 ## Quickstart Under 60 Seconds
 
-KeyClaw is not yet published on crates.io, so the fastest `cargo install` path today is from Git:
+KeyClaw is published on crates.io and packaged for Homebrew via `GuthL/tap`.
+
+### Install With Cargo
+
+Use this when you want the built-in detection stack only: bundled gitleaks rules plus KeyClaw's entropy detector.
 
 ```bash
-cargo install --git https://github.com/GuthL/KeyClaw keyclaw
+cargo install keyclaw
 keyclaw init
 keyclaw proxy
 source ~/.keyclaw/env.sh
 ```
+
+### Install With Cargo And Optional Kingfisher
+
+Use this when you also want KeyClaw to run `kingfisher` as a second detection pass when the built-in rules miss.
+
+```bash
+cargo install keyclaw
+brew install kingfisher
+keyclaw init
+keyclaw proxy
+source ~/.keyclaw/env.sh
+keyclaw doctor
+```
+
+### Install With Homebrew
+
+```bash
+brew tap GuthL/tap
+brew install keyclaw
+keyclaw init
+keyclaw proxy
+source ~/.keyclaw/env.sh
+```
+
+### Install With Homebrew And Optional Kingfisher
+
+```bash
+brew tap GuthL/tap
+brew install keyclaw kingfisher
+keyclaw init
+keyclaw proxy
+source ~/.keyclaw/env.sh
+keyclaw doctor
+```
+
+If you do not use Homebrew, upstream Kingfisher also documents `uv tool install kingfisher-bin` as an installation path.
+
+KeyClaw automatically enables the kingfisher second pass when a `kingfisher` binary is available on `PATH`. If the binary is not installed, KeyClaw still works normally with its built-in detectors.
+
+If you want the latest unreleased KeyClaw commit instead of the published crate, use `cargo install --git https://github.com/GuthL/KeyClaw keyclaw`.
 
 That installs the CLI, generates the local CA and vault key, starts the detached proxy, and wires the current shell to trust and use it.
 
@@ -230,9 +274,14 @@ When the model echoes or manipulates those placeholders in a response, KeyClaw r
 
 If you want to inspect LLM traffic, `llm-interceptor` is a useful neighbor. If you want to stop raw credentials from reaching the upstream API in the first place, KeyClaw is the tighter fit.
 
-## Bundled Detection Rules
+## Detection Stack
 
-KeyClaw ships with **Bundled detection rules** in [`gitleaks.toml`](gitleaks.toml), compiled natively into Rust regexes at startup. No subprocess or external `gitleaks` binary is required.
+KeyClaw detects secrets in two layers:
+
+1. First pass: bundled detection rules from [`gitleaks.toml`](gitleaks.toml), compiled natively into Rust regexes at startup, plus the built-in entropy detector.
+2. Second pass: optional external `kingfisher scan` execution when the first pass found nothing and a `kingfisher` binary is available on `PATH`.
+
+No subprocess or external `gitleaks` binary is required.
 
 The bundled rules cover:
 
@@ -241,9 +290,11 @@ The bundled rules cover:
 - Private key material such as RSA, EC, OpenSSH, PGP, and age
 - High-entropy tokens via the built-in entropy detector
 
-Custom rules can be loaded from a file via `KEYCLAW_GITLEAKS_CONFIG`.
+Custom gitleaks-compatible rules can be loaded from a file via `KEYCLAW_GITLEAKS_CONFIG`.
 
 KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`. Secret detection uses the bundled gitleaks rules compiled natively into the binary; set `KEYCLAW_GITLEAKS_CONFIG` only when you want to override those rules with your own TOML file.
+
+KeyClaw also does not vendor or install Kingfisher for you. The second pass is enabled only when the upstream `kingfisher` binary is already installed and discoverable on `PATH`.
 
 The bundled detection source of truth is `gitleaks.toml`; `src/gitleaks_rules.rs` is the loader/compiler for those rules.
 
@@ -253,7 +304,7 @@ The bundled detection source of truth is `gitleaks.toml`; `src/gitleaks_rules.rs
 keyclaw doctor
 ```
 
-`keyclaw doctor` is the fastest way to catch broken CA files, proxy bypass, invalid `~/.keyclaw/config.toml`, broken allowlist entries, custom ruleset problems, and missing vault key material before you debug the client itself.
+`keyclaw doctor` is the fastest way to catch broken CA files, proxy bypass, invalid `~/.keyclaw/config.toml`, broken allowlist entries, custom ruleset problems, missing Kingfisher binaries for the optional second pass, and missing vault key material before you debug the client itself.
 
 Interpret the output like this:
 

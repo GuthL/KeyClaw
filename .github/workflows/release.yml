@@ -64,10 +64,12 @@ jobs:
           path: dist/keyclaw-v${{ steps.version.outputs.value }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
-  publish-draft:
-    name: publish draft release
+  publish-release:
+    name: publish release
     runs-on: ubuntu-22.04
     needs: package
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
       - name: Derive release version
@@ -95,8 +97,56 @@ jobs:
         run: scripts/verify-release-contract.sh "${{ steps.version.outputs.value }}" dist
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          generate_release_notes: true
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
           fail_on_unmatched_files: true
+
+  publish-homebrew:
+    name: publish homebrew formula
+    runs-on: ubuntu-22.04
+    needs: publish-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          cd dist
+          sha256sum keyclaw-v${{ needs.publish-release.outputs.version }}-*.tar.gz > SHA256SUMS
+      - name: Verify release artifact contract
+        shell: bash
+        run: scripts/verify-release-contract.sh "${{ needs.publish-release.outputs.version }}" dist
+      - name: Render Homebrew formula
+        shell: bash
+        run: |
+          scripts/render-homebrew-formula.sh \
+            "${{ needs.publish-release.outputs.version }}" \
+            dist \
+            Formula/keyclaw.rb
+          ruby -c Formula/keyclaw.rb
+      - uses: actions/checkout@v4
+        with:
+          repository: GuthL/homebrew-tap
+          ref: main
+          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          path: homebrew-tap
+      - name: Update tap formula
+        shell: bash
+        run: |
+          install -D -m 644 Formula/keyclaw.rb homebrew-tap/Formula/keyclaw.rb
+          cd homebrew-tap
+          if git diff --quiet -- Formula/keyclaw.rb; then
+            echo "formula already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/keyclaw.rb
+          git commit -m "keyclaw ${{ needs.publish-release.outputs.version }}"
+          git push origin HEAD:main
