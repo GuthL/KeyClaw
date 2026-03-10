@@ -24,6 +24,11 @@ pub struct WrappedToolRun {
     pub child_args: Vec<String>,
 }
 
+struct ToolCommandOptions<'a> {
+    log_level: Option<&'a str>,
+    env_overrides: &'a [(&'a str, &'a str)],
+}
+
 impl Drop for UpstreamGuard {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
@@ -43,7 +48,10 @@ pub fn run_mitm(tool: &str, addr: String, upstream_url: &str, payload: &str) -> 
         upstream_url,
         payload,
         &[],
-        None,
+        ToolCommandOptions {
+            log_level: None,
+            env_overrides: &[],
+        },
     );
     (run.stderr, run.exit_code)
 }
@@ -62,7 +70,10 @@ pub fn run_mitm_with_log_level(
         upstream_url,
         payload,
         &[],
-        log_level,
+        ToolCommandOptions {
+            log_level,
+            env_overrides: &[],
+        },
     );
     (run.stderr, run.exit_code)
 }
@@ -81,7 +92,10 @@ pub fn run_mitm_with_args(
         upstream_url,
         payload,
         child_args,
-        None,
+        ToolCommandOptions {
+            log_level: None,
+            env_overrides: &[],
+        },
     )
 }
 
@@ -92,7 +106,43 @@ pub fn run_tool_alias(
     payload: &str,
     child_args: &[&str],
 ) -> WrappedToolRun {
-    run_tool_command(&[tool], tool, addr, upstream_url, payload, child_args, None)
+    run_tool_command(
+        &[tool],
+        tool,
+        addr,
+        upstream_url,
+        payload,
+        child_args,
+        ToolCommandOptions {
+            log_level: None,
+            env_overrides: &[],
+        },
+    )
+}
+
+pub fn run_mitm_with_include(
+    tool: &str,
+    include: &str,
+    addr: String,
+    upstream_url: &str,
+    payload: &str,
+) -> (String, i32) {
+    let run = run_tool_command(
+        &["mitm", "--include", include, tool],
+        tool,
+        addr,
+        upstream_url,
+        payload,
+        &[],
+        ToolCommandOptions {
+            log_level: None,
+            env_overrides: &[
+                ("KEYCLAW_CODEX_HOSTS", "api.openai.com"),
+                ("KEYCLAW_CLAUDE_HOSTS", "api.anthropic.com"),
+            ],
+        },
+    );
+    (run.stderr, run.exit_code)
 }
 
 pub fn install_fake_tool(dir: &Path, tool: &str, script: &str) {
@@ -121,13 +171,13 @@ pub fn prepend_path(cmd: &mut Command, dir: &Path) {
 }
 
 fn run_tool_command(
-    entrypoint: &[&str],
+    command_args: &[&str],
     tool: &str,
     addr: String,
     upstream_url: &str,
     payload: &str,
     child_args: &[&str],
-    log_level: Option<&str>,
+    options: ToolCommandOptions<'_>,
 ) -> WrappedToolRun {
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");
@@ -164,7 +214,7 @@ with opener.open(req, timeout=5):
     cmd.env_clear();
     preserve_base_env(&mut cmd);
     prepend_path(&mut cmd, &tool_dir);
-    for arg in entrypoint {
+    for arg in command_args {
         cmd.arg(arg);
     }
     cmd.args(child_args)
@@ -179,7 +229,10 @@ with opener.open(req, timeout=5):
         .env("KEYCLAW_TEST_ARGS_OUT", &args_path)
         .env("UPSTREAM_URL", upstream_url)
         .env("PAYLOAD", payload);
-    if let Some(level) = log_level {
+    for (key, value) in options.env_overrides {
+        cmd.env(key, value);
+    }
+    if let Some(level) = options.log_level {
         cmd.env("KEYCLAW_LOG_LEVEL", level);
     }
     let output = cmd.output().expect("run mitm");
@@ -288,15 +341,17 @@ fn spawn_upstream(
     mut handle_request: impl FnMut(tiny_http::Request) + Send + 'static,
 ) -> UpstreamGuard {
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let join = thread::spawn(move || loop {
-        if shutdown_rx.try_recv().is_ok() {
-            break;
-        }
+    let join = thread::spawn(move || {
+        loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
 
-        match server.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(req)) => handle_request(req),
-            Ok(None) => continue,
-            Err(_) => break,
+            match server.recv_timeout(Duration::from_millis(100)) {
+                Ok(Some(req)) => handle_request(req),
+                Ok(None) => continue,
+                Err(_) => break,
+            }
         }
     });
 

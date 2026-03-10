@@ -1,8 +1,8 @@
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -345,9 +345,55 @@ fn oversized_body_is_rejected_without_upstream_forwarding() {
 }
 
 #[test]
-fn malformed_json_is_passed_through_unchanged() {
+fn malformed_json_is_blocked_in_fail_closed_mode() {
     let (upstream_url, rx, _upstream_guard) = start_echo_upstream();
     let (processor, ca_cert, ca_key) = new_processor_with_ca();
+    let malformed = format!(r#"{{"prompt":"api_key = {}""#, CODEX_SECRET);
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_secs(2);
+    let running = proxy.start().expect("start proxy");
+
+    let client = Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+
+    let resp = client
+        .post(&upstream_url)
+        .header("content-type", "application/json")
+        .body(malformed.clone())
+        .send()
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "malformed request should not reach upstream in fail-closed mode"
+    );
+
+    let resp_body = resp.text().expect("response body");
+    assert!(resp_body.contains("invalid_json"), "response={resp_body}");
+}
+
+#[test]
+fn malformed_json_is_passed_through_when_fail_closed_disabled() {
+    let (upstream_url, rx, _upstream_guard) = start_echo_upstream();
+    let (mut processor, ca_cert, ca_key) = new_processor_with_ca();
+    processor.strict_mode = false;
     let malformed = format!(r#"{{"prompt":"api_key = {}""#, CODEX_SECRET);
 
     let host = url::Url::parse(&upstream_url)
@@ -586,12 +632,12 @@ fn ca_fixture_ignores_broken_home_state() {
     std::fs::write(keyclaw_dir.join("ca.crt"), "not-a-cert").expect("write broken cert");
     std::fs::write(keyclaw_dir.join("ca.key"), "not-a-key").expect("write broken key");
 
-    std::env::set_var("HOME", temp.path());
+    set_env_var("HOME", temp.path());
     let result = std::panic::catch_unwind(build_test_ca);
 
     match original_home {
-        Some(home) => std::env::set_var("HOME", home),
-        None => std::env::remove_var("HOME"),
+        Some(home) => set_env_var("HOME", home),
+        None => remove_env_var("HOME"),
     }
 
     assert!(
@@ -628,6 +674,16 @@ fn proxy_server_drop_releases_listener_without_traffic() {
     drop(running);
 
     assert_listener_released(addr, "proxy listener without traffic");
+}
+
+fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
+    // These tests hold HOME_LOCK before mutating HOME.
+    unsafe { std::env::set_var(key, value) }
+}
+
+fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
+    // These tests hold HOME_LOCK before mutating HOME.
+    unsafe { std::env::remove_var(key) }
 }
 
 #[test]
@@ -678,6 +734,12 @@ fn proxy_server_drop_releases_listener_after_request() {
 
 #[test]
 fn proxy_server_lifecycle_is_fast_without_traffic() {
+    // This is a coarse regression guard, not a benchmark. Cold startup can
+    // include certificate generation and runtime initialization, which vary a
+    // lot on loaded dev boxes and CI runners.
+    const MAX_STARTUP: Duration = Duration::from_secs(8);
+    const MAX_SHUTDOWN: Duration = Duration::from_secs(2);
+
     let (processor, ca_cert, ca_key) = new_processor_with_ca();
     let mut proxy = Server::new(
         "127.0.0.1:0".to_string(),
@@ -698,11 +760,11 @@ fn proxy_server_lifecycle_is_fast_without_traffic() {
     let shutdown_elapsed = shutdown_start.elapsed();
 
     assert!(
-        startup_elapsed < Duration::from_secs(2),
+        startup_elapsed < MAX_STARTUP,
         "proxy startup took {startup_elapsed:?}, shutdown took {shutdown_elapsed:?}"
     );
     assert!(
-        shutdown_elapsed < Duration::from_secs(2),
+        shutdown_elapsed < MAX_SHUTDOWN,
         "proxy shutdown took {shutdown_elapsed:?}, startup took {startup_elapsed:?}"
     );
 }
@@ -731,9 +793,11 @@ fn new_processor_with_ca() -> (Processor, String, String) {
     let processor = Processor {
         vault: Some(vault),
         ruleset,
+        second_pass_scanner: None,
         max_body_size: 1 << 20,
         strict_mode: true,
         notice_mode: keyclaw::redaction::NoticeMode::Verbose,
+        dry_run: false,
     };
 
     (processor, ca_cert, ca_key)
@@ -928,15 +992,17 @@ fn spawn_upstream(
     mut handle_request: impl FnMut(tiny_http::Request) + Send + 'static,
 ) -> UpstreamGuard {
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let join = thread::spawn(move || loop {
-        if shutdown_rx.try_recv().is_ok() {
-            break;
-        }
+    let join = thread::spawn(move || {
+        loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
 
-        match server.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(req)) => handle_request(req),
-            Ok(None) => continue,
-            Err(_) => break,
+            match server.recv_timeout(Duration::from_millis(100)) {
+                Ok(Some(req)) => handle_request(req),
+                Ok(None) => continue,
+                Err(_) => break,
+            }
         }
     });
 

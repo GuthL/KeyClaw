@@ -1,12 +1,18 @@
 [package]
 name = "keyclaw"
-version = "0.1.0"
-edition = "2021"
-description = "Local MITM proxy for secret-safe AI CLI traffic"
+version = "0.2.1"
+edition = "2024"
+rust-version = "1.85"
+description = "Local MITM proxy that keeps secrets out of LLM traffic"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/GuthL/KeyClaw"
 homepage = "https://github.com/GuthL/KeyClaw"
+documentation = "https://docs.rs/keyclaw"
+keywords = ["llm", "proxy", "security", "mitm", "secrets"]
+categories = ["command-line-utilities", "network-programming"]
+
+resolver = "3"
 
 [dependencies]
 aes-gcm = "0.10"
@@ -39,3 +45,8 @@ x509-parser = "0.18"
 wait-timeout = "0.2"
 assert_cmd = "2.0"
 predicates = "3.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

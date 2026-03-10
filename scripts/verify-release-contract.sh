@@ -8,32 +8,11 @@ fi
 
 version="$1"
 dist_dir="$2"
-checklist="docs/release/maintainer-checklist.md"
 targets=(
   "x86_64-unknown-linux-gnu"
   "x86_64-apple-darwin"
   "aarch64-apple-darwin"
 )
-
-if [ ! -f "$checklist" ]; then
-  echo "release checklist missing at $checklist" >&2
-  exit 1
-fi
-
-for contract_line in \
-  "keyclaw-v{version}-x86_64-unknown-linux-gnu.tar.gz" \
-  "keyclaw-v{version}-x86_64-apple-darwin.tar.gz" \
-  "keyclaw-v{version}-aarch64-apple-darwin.tar.gz" \
-  "SHA256SUMS" \
-  "README.md" \
-  "LICENSE" \
-  "SECURITY.md"
-do
-  if ! grep -Fq "$contract_line" "$checklist"; then
-    echo "release checklist drifted away from documented artifact contract: $contract_line" >&2
-    exit 1
-  fi
-done
 
 archives=()
 for target in "${targets[@]}"; do

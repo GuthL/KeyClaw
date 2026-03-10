@@ -1,3 +1,6 @@
+//! Runtime generation and validation of the local KeyClaw certificate
+//! authority.
+
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,18 +17,22 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const BROKEN_CA_RECOVERY: &str = "remove the broken CA files and rerun `keyclaw proxy`";
 type CalendarDate = (i32, u8, u8);
 
+/// PEM-encoded CA certificate and private key used by the proxy.
 pub struct CaPair {
+    /// PEM-encoded CA certificate.
     pub cert_pem: String,
+    /// PEM-encoded CA private key.
     pub key_pem: String,
 }
 
-/// Returns the keyclaw config directory (~/.keyclaw/)
+/// Return the default `~/.keyclaw/` runtime directory.
 pub fn keyclaw_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".keyclaw")
 }
 
-/// Load existing CA cert+key from ~/.keyclaw/, or generate a new pair.
+/// Load an existing CA certificate pair from `~/.keyclaw/`, or generate a new
+/// pair if one does not exist yet.
 pub fn ensure_ca() -> Result<CaPair, KeyclawError> {
     let dir = keyclaw_dir();
     let cert_path = dir.join(CA_CERT_FILENAME);
@@ -496,12 +503,22 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let saved_home = env::var_os("HOME");
         let temp = tempfile::tempdir().expect("tempdir");
-        env::set_var("HOME", temp.path());
+        set_env_var("HOME", temp.path());
         test(temp.path());
         match saved_home {
-            Some(value) => env::set_var("HOME", value),
-            None => env::remove_var("HOME"),
+            Some(value) => set_env_var("HOME", value),
+            None => remove_env_var("HOME"),
         }
+    }
+
+    fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
+        // These tests serialize process-wide environment mutation with ENV_LOCK.
+        unsafe { env::set_var(key, value) }
+    }
+
+    fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
+        // These tests serialize process-wide environment mutation with ENV_LOCK.
+        unsafe { env::remove_var(key) }
     }
 
     fn tighten_key_permissions(path: &Path) {

@@ -1,3 +1,5 @@
+//! AES-GCM encrypted local storage for placeholder-to-secret mappings.
+
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs::{self, File};
@@ -7,11 +9,11 @@ use std::sync::{Mutex, MutexGuard};
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use rand::rngs::OsRng;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use rand::RngCore;
-use scrypt::{scrypt, Params as ScryptParams};
+use rand::rngs::OsRng;
+use scrypt::{Params as ScryptParams, scrypt};
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
 
@@ -19,6 +21,7 @@ use crate::errors::KeyclawError;
 use crate::placeholder;
 
 const FILE_VERSION: i32 = 1;
+/// Legacy built-in passphrase retained only to migrate old vaults.
 pub const LEGACY_DEFAULT_VAULT_PASSPHRASE: &str = "keyclaw-default-passphrase";
 
 #[derive(Debug)]
@@ -58,6 +61,7 @@ struct VaultCryptoState {
 }
 
 impl Store {
+    /// Create a vault store backed by the given path and passphrase.
     pub fn new(path: impl Into<PathBuf>, passphrase: String) -> Self {
         Self {
             path: path.into(),
@@ -66,16 +70,19 @@ impl Store {
         }
     }
 
+    /// Persist the full placeholder-to-secret map atomically.
     pub fn save(&self, entries: &HashMap<String, String>) -> Result<(), KeyclawError> {
         let mut state = self.lock_entries()?;
         save_entries(&self.path, &self.passphrase, &mut state, entries)
     }
 
+    /// Load the current placeholder-to-secret map from disk.
     pub fn load(&self) -> Result<HashMap<String, String>, KeyclawError> {
         let mut state = self.lock_entries()?;
         self.load_entries_unlocked(&mut state)
     }
 
+    /// Store a secret and return its deterministic placeholder ID.
     pub fn store_secret(&self, secret: &str) -> Result<String, KeyclawError> {
         let mut state = self.lock_entries()?;
         let mut entries = self.load_entries_unlocked(&mut state)?;
@@ -85,12 +92,14 @@ impl Store {
         Ok(id)
     }
 
+    /// Resolve a placeholder ID to the original secret, if present.
     pub fn resolve(&self, id: &str) -> Result<Option<String>, KeyclawError> {
         let mut state = self.lock_entries()?;
         let entries = self.load_entries_unlocked(&mut state)?;
         Ok(entries.get(id).cloned())
     }
 
+    /// Prime the derived crypto state so the first live request avoids the KDF.
     pub fn warm_up(&self) -> Result<(), KeyclawError> {
         let mut state = self.lock_entries()?;
         prime_vault_state(&self.path, &self.passphrase, &mut state)
@@ -145,10 +154,13 @@ impl VaultCryptoState {
     }
 }
 
+/// Return the default machine-local key path associated with a vault file.
 pub fn vault_key_path(vault_path: &Path) -> PathBuf {
     vault_path.with_extension("key")
 }
 
+/// Resolve the vault passphrase from explicit config, an existing machine-local
+/// key, or legacy-vault migration.
 pub fn resolve_vault_passphrase(
     vault_path: &Path,
     configured_passphrase: Option<&str>,
@@ -263,13 +275,13 @@ fn load_entries(
     let bytes = match fs::read(path) {
         Ok(v) => v,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(VaultLoadFailure::Missing)
+            return Err(VaultLoadFailure::Missing);
         }
         Err(e) => {
             return Err(VaultLoadFailure::Error(KeyclawError::uncoded_with_source(
                 format!("read vault file {}", path.display()),
                 e,
-            )))
+            )));
         }
     };
 

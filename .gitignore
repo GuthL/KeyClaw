@@ -3,6 +3,7 @@
 *.swp
 *.swo
 *.bak
+*.log
 
 # Environment files
 .env
@@ -13,9 +14,16 @@ target/
 
 # Local binaries
 keyclaw
+dist/
 
 # Generated CA certs (machine-specific)
 certs/
 
+# Local runtime state
+.keyclaw/
+
 # Internal docs
-docs/
+# docs/ is tracked; tests depend on docs/plans/
+
+# Git worktrees
+.worktrees/

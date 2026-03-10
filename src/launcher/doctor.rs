@@ -6,7 +6,7 @@ use tempfile::NamedTempFile;
 use url::Url;
 
 use crate::config::Config;
-use crate::errors::{KeyclawError, CODE_MITM_NOT_EFFECTIVE};
+use crate::errors::{CODE_MITM_NOT_EFFECTIVE, KeyclawError};
 use crate::gitleaks_rules::RuleSet;
 use crate::vault::VaultPassphraseStatus;
 
@@ -36,11 +36,7 @@ pub(super) fn run_doctor(cfg: &Config) -> i32 {
 
     println!("doctor: summary: {passed} passed, {warnings} warnings, {failures} blocking");
 
-    if failures == 0 {
-        0
-    } else {
-        1
-    }
+    if failures == 0 { 0 } else { 1 }
 }
 
 #[derive(Clone, Copy)]
@@ -69,15 +65,42 @@ struct DoctorCheck {
 
 fn doctor_checks(cfg: &Config) -> Vec<DoctorCheck> {
     vec![
+        check_config_file(cfg),
         check_proxy_bind(cfg),
         check_proxy_url(cfg),
         check_ca_cert(cfg),
         check_vault_path(cfg),
         check_ruleset(cfg),
+        check_kingfisher(),
+        check_allowlist(cfg),
         check_proxy_bypass(cfg),
         check_unsafe_log(cfg),
         check_vault_passphrase(cfg),
     ]
+}
+
+fn check_config_file(cfg: &Config) -> DoctorCheck {
+    match cfg.config_file_status() {
+        crate::config::ConfigFileStatus::Missing(path) => pass_check(
+            "config-file",
+            format!(
+                "no config file at {}; using env vars and built-in defaults",
+                path.display()
+            ),
+        ),
+        crate::config::ConfigFileStatus::Loaded(path) => pass_check(
+            "config-file",
+            format!("loaded config file from {}", path.display()),
+        ),
+        crate::config::ConfigFileStatus::Invalid { path, message } => fail_check(
+            "config-file",
+            message.clone(),
+            format!(
+                "fix the TOML in {} or remove the file to fall back to env vars and defaults",
+                path.display()
+            ),
+        ),
+    }
 }
 
 fn check_proxy_bind(cfg: &Config) -> DoctorCheck {
@@ -232,6 +255,41 @@ fn check_ruleset(cfg: &Config) -> DoctorCheck {
             ),
         },
         None => pass_check("ruleset", "using bundled gitleaks rules".to_string()),
+    }
+}
+
+fn check_kingfisher() -> DoctorCheck {
+    if crate::kingfisher::default_binary_available() {
+        pass_check(
+            "kingfisher",
+            "kingfisher binary is available for second-pass detection".to_string(),
+        )
+    } else {
+        warn_check(
+            "kingfisher",
+            "kingfisher binary not found; second-pass detection is disabled".to_string(),
+            "install `kingfisher` and ensure it is on PATH to enable the second pass".to_string(),
+        )
+    }
+}
+
+fn check_allowlist(cfg: &Config) -> DoctorCheck {
+    let counts = cfg.allowlist.counts();
+    let total = counts.total();
+
+    if total == 0 {
+        pass_check(
+            "allowlist",
+            "allowlist disabled; no bypass rules configured".to_string(),
+        )
+    } else {
+        pass_check(
+            "allowlist",
+            format!(
+                "{total} active allowlist entries ({} rule ids, {} patterns, {} secret hashes)",
+                counts.rule_ids, counts.patterns, counts.secret_sha256
+            ),
+        )
     }
 }
 

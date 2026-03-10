@@ -635,6 +635,25 @@ regexes = [
 ]
 
 [[rules]]
+id = "database-connection-string"
+description = "Detected a database or broker connection string with embedded credentials."
+regex = '''\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|amqp|jdbc:(?:postgresql|mysql|mariadb|mongodb)):\/\/[^/\s:@]+:[^@\s]+@[\w.-]+(?::\d{1,5})?(?:\/[\w./?%&=:+-]*)?\b'''
+keywords = [
+    "postgres://",
+    "postgresql://",
+    "mysql://",
+    "mariadb://",
+    "mongodb://",
+    "mongodb+srv://",
+    "redis://",
+    "amqp://",
+    "jdbc:postgresql://",
+    "jdbc:mysql://",
+    "jdbc:mariadb://",
+    "jdbc:mongodb://",
+]
+
+[[rules]]
 id = "generic-api-key"
 description = "Detected a Generic API Key, potentially exposing access to various services and sensitive operations."
 regex = '''(?i)[\w.-]{0,50}?(?:access|auth|(?-i:[Aa]pi|API)|credential|creds|key|passw(?:or)?d|secret|token)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([\w.=-]{10,150}|[a-z0-9][a-z0-9+/]{11,}={0,3})(?:[\x60'"\s;]|\\[nr]|$)'''
@@ -2110,6 +2129,7 @@ stopwords = [
     "zsh.",
     "zsh_",
 ]
+
 [[rules.allowlists]]
 regexTarget = "line"
 regexes = [

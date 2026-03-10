@@ -89,7 +89,7 @@ pub fn error_with_code(code: &str, message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{configure, enabled, render, render_with_code, LogLevel};
+    use super::{LogLevel, configure, enabled, render, render_with_code};
     use once_cell::sync::Lazy;
     use std::sync::Mutex;
 

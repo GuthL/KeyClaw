@@ -1,19 +1,19 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use http_body_util::Full;
 use hudsucker::{
+    Body,
     certificate_authority::RcgenAuthority,
     hyper::{
-        header::{HeaderValue, CONTENT_TYPE, HOST},
         Request, Response, StatusCode,
+        header::{CONTENT_TYPE, HOST, HeaderValue},
     },
     rcgen::{Issuer, KeyPair},
     rustls::crypto::aws_lc_rs,
-    Body,
 };
 
 use crate::errors::KeyclawError;
@@ -80,9 +80,13 @@ pub(super) fn header_value(req: &Request<Body>, name: &str) -> Option<String> {
 pub(super) fn normalize_hosts(hosts: &[String]) -> Vec<String> {
     hosts
         .iter()
-        .map(|host| normalize_host(host))
+        .map(|host| normalize_allowed_entry(host))
         .filter(|host| !host.is_empty())
         .collect()
+}
+
+pub(super) fn normalize_host_value(host: &str) -> String {
+    normalize_host(host)
 }
 
 pub(super) fn allowed(allowed_hosts: &[String], host: &str) -> bool {
@@ -90,9 +94,13 @@ pub(super) fn allowed(allowed_hosts: &[String], host: &str) -> bool {
         return true;
     }
     let host = normalize_host(host);
-    allowed_hosts
-        .iter()
-        .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
+    allowed_hosts.iter().any(|allowed| {
+        if contains_glob_pattern(allowed) {
+            glob_matches(allowed, &host)
+        } else {
+            host == *allowed || host.ends_with(&format!(".{allowed}"))
+        }
+    })
 }
 
 pub(super) fn is_json(content_type: &str) -> bool {
@@ -216,6 +224,52 @@ fn normalize_host(host: &str) -> String {
     trimmed.trim_matches('[').trim_matches(']').to_string()
 }
 
+fn contains_glob_pattern(host: &str) -> bool {
+    host.contains('*') || host.contains('?')
+}
+
+fn normalize_allowed_entry(host: &str) -> String {
+    let trimmed = host.trim().to_lowercase();
+    if contains_glob_pattern(&trimmed) {
+        trimmed
+    } else {
+        normalize_host(&trimmed)
+    }
+}
+
+fn glob_matches(pattern: &str, host: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let host = host.as_bytes();
+    let (mut pattern_idx, mut host_idx) = (0usize, 0usize);
+    let mut star_idx = None;
+    let mut match_idx = 0usize;
+
+    while host_idx < host.len() {
+        if pattern_idx < pattern.len()
+            && (pattern[pattern_idx] == b'?' || pattern[pattern_idx] == host[host_idx])
+        {
+            pattern_idx += 1;
+            host_idx += 1;
+        } else if pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+            star_idx = Some(pattern_idx);
+            match_idx = host_idx;
+            pattern_idx += 1;
+        } else if let Some(star) = star_idx {
+            pattern_idx = star + 1;
+            match_idx += 1;
+            host_idx = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+        pattern_idx += 1;
+    }
+
+    pattern_idx == pattern.len()
+}
+
 fn log_with_level(level: crate::logging::LogLevel, line: String) {
     if !crate::logging::enabled(level) {
         return;
@@ -232,8 +286,8 @@ fn log_with_level(level: crate::logging::LogLevel, line: String) {
 
 #[cfg(test)]
 mod tests {
-    use hudsucker::hyper::{header::CONTENT_TYPE, header::HOST, Request, StatusCode, Uri};
     use hudsucker::Body;
+    use hudsucker::hyper::{Request, StatusCode, Uri, header::CONTENT_TYPE, header::HOST};
 
     use super::{allowed, json_error_response, normalize_hosts, request_host};
 
@@ -260,6 +314,19 @@ mod tests {
             .expect("request");
 
         assert_eq!(request_host(&req).as_deref(), Some("api.openai.com"));
+    }
+
+    #[test]
+    fn allowed_matches_glob_patterns() {
+        assert!(allowed(
+            &[
+                String::from("*openai.com"),
+                String::from("api.anthropic.com")
+            ],
+            "api.openai.com"
+        ));
+        assert!(allowed(&[String::from("api.groq.?om")], "api.groq.com"));
+        assert!(!allowed(&[String::from("*mistral.ai")], "api.openai.com"));
     }
 
     #[test]

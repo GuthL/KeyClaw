@@ -119,7 +119,8 @@ fn agent_guide_points_common_edits_at_split_modules() {
         "AGENTS.md should point proxy changes at the split proxy modules: {agents}"
     );
     assert!(
-        !agents.contains("Edit `src/proxy.rs`. The `HttpHandler` impl on `KeyclawHttpHandler` has:"),
+        !agents
+            .contains("Edit `src/proxy.rs`. The `HttpHandler` impl on `KeyclawHttpHandler` has:"),
         "AGENTS.md should not describe proxy changes as if src/proxy.rs still held the handler implementation: {agents}"
     );
     assert!(
@@ -240,6 +241,31 @@ fn readme_configuration_section_covers_inline_and_persistent_env_overrides() {
     let readme = std::fs::read_to_string("README.md").expect("read README.md");
 
     assert!(
+        readme.contains("~/.keyclaw/config.toml")
+            && readme.contains("env vars > ~/.keyclaw/config.toml > built-in defaults"),
+        "README.md should describe the TOML config file path and precedence: {readme}"
+    );
+    assert!(
+        readme.contains("### Config File")
+            && readme.contains("[proxy]")
+            && readme.contains("[logging]")
+            && readme.contains("[notice]")
+            && readme.contains("[detection]")
+            && readme.contains("[audit]")
+            && readme.contains("[hosts]")
+            && readme.contains("[allowlist]"),
+        "README.md should include a concrete config.toml example with the supported sections: {readme}"
+    );
+    assert!(
+        readme.contains("rule_ids")
+            && readme.contains("patterns")
+            && readme.contains("secret_sha256")
+            && readme.contains("sha256sum")
+            && readme.contains("KEYCLAW_AUDIT_LOG")
+            && readme.contains("[audit] path = \"off\""),
+        "README.md should document the allowlist entry types, audit log controls, and how to compute exact secret hashes: {readme}"
+    );
+    assert!(
         readme.contains("### Setting Variables"),
         "README.md should include a dedicated config-setting section: {readme}"
     );
@@ -251,7 +277,8 @@ fn readme_configuration_section_covers_inline_and_persistent_env_overrides() {
     );
     assert!(
         readme.contains("daemon-side settings are read when that proxy process starts")
-            && readme.contains("restart the proxy so the running daemon picks them up"),
+            && readme.contains("restart the proxy so the running daemon picks them up")
+            && readme.contains("After changing `~/.keyclaw/config.toml`"),
         "README.md should explain that detached proxy config changes require a restart: {readme}"
     );
 }

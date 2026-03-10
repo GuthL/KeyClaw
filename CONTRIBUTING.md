@@ -1,6 +1,12 @@
 # Contributing to KeyClaw
 
-Thanks for your interest in contributing to KeyClaw! This guide will help you get started.
+KeyClaw is a local security tool for AI developer workflows. Contributions should preserve the trust boundary, fail-closed behavior, and operator clarity that make the project usable in real environments.
+
+## Before You Start
+
+1. Check existing [issues](https://github.com/GuthL/KeyClaw/issues) to avoid duplicate work.
+2. Open an issue before starting large behavioral or architectural changes.
+3. Read the [README](README.md), [docs/](docs/README.md), and [SECURITY.md](SECURITY.md) so your changes stay aligned with the published operating model.
 
 ## Development Setup
 
@@ -10,102 +16,115 @@ cd KeyClaw
 cargo build
 cargo test
 cargo run -- --help
-cargo run -- --version
 ```
 
 ### Prerequisites
 
-- **Rust 1.75+** (install via [rustup](https://rustup.rs))
+- Rust 1.75+ via [rustup](https://rustup.rs)
+- No external `gitleaks` binary is required
 
-No external `gitleaks` binary is required. KeyClaw ships with the bundled ruleset compiled into native Rust regexes; if you want custom detection behavior, point `KEYCLAW_GITLEAKS_CONFIG` at your own `gitleaks.toml`.
+KeyClaw compiles the bundled [`gitleaks.toml`](gitleaks.toml) rules into native Rust regexes. If you want to test a custom ruleset, point `KEYCLAW_GITLEAKS_CONFIG` at your own TOML file and verify it with `keyclaw doctor`.
 
-## Project Structure
+## Project Layout
 
-See [CLAUDE.md](CLAUDE.md) for a detailed module map and architecture overview. That file is designed for both humans and AI agents to quickly understand the codebase.
+- `src/`: runtime implementation
+- `tests/`: unit and integration coverage
+- `docs/`: user-facing documentation beyond the README
+- `.github/`: CI, release automation, and community templates
+- `scripts/`: release packaging and verification helpers
 
-## Making Changes
+For the codebase module map, see [AGENTS.md](AGENTS.md) or [CLAUDE.md](CLAUDE.md).
 
-### Before You Start
+## Local Validation
 
-1. Check existing [issues](https://github.com/GuthL/KeyClaw/issues) to avoid duplicate work
-2. For large changes, open an issue first to discuss the approach
-
-### Development Workflow
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b my-feature`
-3. Make your changes
-4. Run tests: `cargo test`
-5. Run clippy: `cargo clippy`
-6. Commit with a clear message
-7. Push and open a Pull Request
-
-### Code Style
-
-- Follow standard Rust conventions (`cargo fmt` to format)
-- Keep functions focused — prefer small functions over large ones
-- Add tests for new detection patterns and policy logic
-- Don't add unnecessary dependencies
-
-### Testing
+Run these before you open a pull request:
 
 ```bash
-cargo test              # Run all tests
-cargo test -- --nocapture  # See println output
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --locked
+cargo test --locked -- --test-threads=1
+cargo doc --no-deps
 ```
 
-### Docs Consistency
+The test suite includes cases that temporarily override `HOME`, so the documented full-suite command runs the tests serially to avoid cross-test environment races.
 
-When you change public behavior, keep the launch-facing docs aligned:
+If you are changing release packaging, also run:
 
-- README, `SECURITY.md`, and `CONTRIBUTING.md` should agree on the trust boundary, non-goals, setup assumptions, and troubleshooting guidance
-- Proxy setup docs should stay source-first: `keyclaw proxy` starts the daemon, `source ~/.keyclaw/env.sh` wires a shell to it, Linux `keyclaw proxy autostart enable` keeps the daemon alive across login/reboot, and shell env wiring stays separate from daemon autostart
-- Check `cargo run -- --help` and `cargo run -- --version` when CLI examples or command text change
-- Rerun the relevant CLI integration tests when changing command examples, stderr/stdout contracts, or operator guidance
-- Refresh `docs/plans/2026-03-07-production-readiness-project.md` with `scripts/sync-production-readiness-project.py` when production-readiness issues or acceptance criteria change
+```bash
+scripts/package-release.sh 0.1.0 x86_64-unknown-linux-gnu target/release/keyclaw dist
+scripts/verify-release-contract.sh 0.1.0 dist
+```
 
-### CI
+## Documentation Expectations
 
-GitHub Actions is the release gate for this repository. The workflow runs on pushes to `master` and on pull requests targeting `master`.
+When you change public behavior, keep the public docs in sync:
 
-- `lint` runs `cargo fmt --check` and `cargo clippy --all-targets --all-features -- -D warnings` on `ubuntu-latest` and `macos-latest`
-- `test` runs `cargo test --locked` on `ubuntu-latest` and `macos-latest`
-- `release-build` runs `cargo build --release --locked` on `ubuntu-latest` and `macos-latest`
+- `README.md` for first-run setup, quickstart, positioning, and operator-facing guidance
+- `docs/` for deeper reference material such as configuration, architecture, and threat model
+- `SECURITY.md` for scope, trust boundary, and reporting guidance
+- CLI help text when commands, flags, or workflows change
 
-If CI fails, reproduce the same commands locally before pushing a fix so the failure mode stays comparable to GitHub Actions.
+When you change setup guidance, keep these contracts intact unless the implementation changes intentionally:
 
-### Releases
+- `keyclaw proxy` starts the daemon
+- `source ~/.keyclaw/env.sh` wires the shell to the proxy
+- Linux autostart keeps the daemon alive across login or reboot, but does not reconfigure existing shells
+- `keyclaw doctor` is the primary operator verification path
 
-Maintainers should use [docs/release/maintainer-checklist.md](docs/release/maintainer-checklist.md) as the release source of truth for artifact naming, verification, publication, and rollback handling.
+## Testing Guidance
 
-Tagged releases (`v{version}`) also run `.github/workflows/release.yml`, which builds the supported targets, packages the documented `.tar.gz` archives, generates `SHA256SUMS`, and attaches those assets to a draft GitHub Release for maintainer verification.
+### General changes
 
-When adding new secret patterns, include test cases in `tests/placeholder.rs` that cover:
-- Basic detection and replacement
-- Edge cases (partial matches, embedded in URLs, etc.)
-- Round-trip: detect → placeholder → resolve → original
+- Add or update tests close to the changed behavior.
+- Prefer focused tests over broad incidental coverage.
+- Preserve fail-closed behavior unless the change is explicitly about relaxing that policy.
 
-The bundled detection source of truth is `gitleaks.toml`; `src/gitleaks_rules.rs` is the loader/compiler for those rules.
+### New secret patterns
 
-## Areas for Contribution
+When adding new secret detection patterns:
 
-### Good First Issues
+1. Edit [`gitleaks.toml`](gitleaks.toml).
+2. Add tests in `tests/placeholder.rs` and, when relevant, `tests/integration_proxy.rs`.
+3. If rule loading or compilation behavior must change, update `src/gitleaks_rules.rs`.
 
-- Adding new secret detection patterns to `gitleaks.toml`
-- Improving log messages and error descriptions
-- Adding configuration options to `src/config.rs`
+Suggested verification:
 
-### Bigger Projects
+```bash
+cargo test placeholder
+cargo test --test integration_proxy
+```
 
-- **Protocol support** — extending beyond HTTP/WebSocket (e.g., gRPC)
-- **CLI improvements** — interactive mode, status dashboard
-- **Platform support** — Windows/macOS-specific certificate trust integration
-- **Detection improvements** — machine learning based secret detection
-- **Response streaming** — handling split placeholders across SSE chunk boundaries
+In short: **Adding new secret detection patterns to `gitleaks.toml` is the normal path.**
+
+## Pull Requests
+
+- Keep PRs focused and explain the operator or maintainer impact clearly.
+- Include the validation commands you ran.
+- Update docs and screenshots or SVG assets when the repo-facing experience changes.
+- Do not include real secrets, private certificates, or local machine state in commits.
+
+## CI And Releases
+
+GitHub Actions is the release gate for this repository.
+
+- `CI` runs formatting, clippy, build, and test checks on pushes and pull requests
+- `Release` builds the supported Linux/macOS archives on version tags and publishes the GitHub release artifacts used by downstream packaging
+
+Maintainers are responsible for keeping all public distribution channels aligned on the same version:
+
+- crates.io package: `cargo publish --locked`
+- GitHub release artifacts: version tag `vX.Y.Z`
+- Homebrew tap: [`GuthL/homebrew-tap`](https://github.com/GuthL/homebrew-tap)
+
+The release workflow also updates the Homebrew tap automatically. Configure `HOMEBREW_TAP_GITHUB_TOKEN` in the KeyClaw repo secrets with a token that has write access to `GuthL/homebrew-tap`.
+
+Maintainers should use [docs/release/maintainer-checklist.md](docs/release/maintainer-checklist.md) as the release source of truth for versioning, verification, publication, and rollback.
+Treat `scripts/package-release.sh`, `scripts/verify-release-contract.sh`, `scripts/render-homebrew-formula.sh`, and `.github/workflows/release.yml` as the implementation backing that checklist.
 
 ## Security
 
-If you discover a security vulnerability, please see [SECURITY.md](SECURITY.md) for responsible disclosure guidelines. **Do not open a public issue for security vulnerabilities.**
+If you discover a security vulnerability, follow [SECURITY.md](SECURITY.md). Do not open a public issue for vulnerabilities.
 
 ## License
 
