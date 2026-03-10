@@ -37,16 +37,36 @@ KeyClaw sits between your AI tool and the upstream API, detects secrets in outbo
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    A[Claude Code / Codex / proxy-aware API client] --> B[KeyClaw local proxy]
-    B --> C[Detect secrets in request body]
-    C --> D[Replace with deterministic placeholders]
-    D --> E[(Encrypted local vault)]
-    D --> F[Forward sanitized request upstream]
-    F --> G[OpenAI / Anthropic / compatible API]
-    G --> H[Resolve placeholders in HTTP, SSE, or WebSocket responses]
-    H --> A
+```
+                         +-----------------------------------+
+                         |   Claude Code / Codex / Client    |
+                         +-----------------+-----------------+
+                                           |  outbound request
+                                           v
+                         +-----------------------------------+
+                         |       KeyClaw local proxy         |
+                         |                                   |
+                         |  1. Detect secrets in body        |
+                         |  2. Replace with placeholders     |
+                         |  3. Store mapping in vault --+    |
+                         |                              |    |
+                         +-----------------+------------+----+
+                                           |  sanitized      |
+                                           v  request        |
+                         +-----------------------------------+
+                         |   OpenAI / Anthropic / API        |
+                         +-----------------+-----------------+
+                                           |  response       |
+                                           v                 |
+                         +-----------------------------------+
+                         |  Resolve placeholders back   <----+
+                         |  (HTTP, SSE, WebSocket)           |
+                         +-----------------+-----------------+
+                                           |
+                                           v
+                         +-----------------------------------+
+                         |   Claude Code / Codex / Client    |
+                         +-----------------------------------+
 ```
 
 ## Used With
