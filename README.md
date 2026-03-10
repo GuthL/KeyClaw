@@ -5,7 +5,7 @@
 <h3 align="center">A local MITM proxy that strips secrets out of LLM traffic before they leave your machine.</h3>
 
 <p align="center">
-  Keep API keys, cloud credentials, and private tokens on-device while Claude Code, Cursor, aider, and direct OpenAI/Anthropic clients keep working.
+  Keep API keys, cloud credentials, and private tokens on-device while Claude Code, Codex, and compatible proxy-aware API clients keep working.
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@ KeyClaw sits between your AI tool and the upstream API, detects secrets in outbo
 
 ```mermaid
 flowchart LR
-    A[Claude Code / Cursor / aider / API client] --> B[KeyClaw local proxy]
+    A[Claude Code / Codex / proxy-aware API client] --> B[KeyClaw local proxy]
     B --> C[Detect secrets in request body]
     C --> D[Replace with deterministic placeholders]
     D --> E[(Encrypted local vault)]
@@ -53,26 +53,21 @@ flowchart LR
 
 <p>
   <img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-first--class-111827">
-  <img alt="Cursor" src="https://img.shields.io/badge/Cursor-proxy%20mode-111827">
-  <img alt="aider" src="https://img.shields.io/badge/aider-env%20proxy-111827">
-  <img alt="Continue" src="https://img.shields.io/badge/Continue-compatible-111827">
+  <img alt="ChatGPT" src="https://img.shields.io/badge/ChatGPT-proxy%20mode-111827">
   <img alt="OpenAI API" src="https://img.shields.io/badge/OpenAI%20API-supported-111827">
   <img alt="Anthropic API" src="https://img.shields.io/badge/Anthropic%20API-supported-111827">
 </p>
 
-KeyClaw is built first for local developer tooling that talks to OpenAI- or Anthropic-style HTTPS APIs. The smoothest paths today are:
+KeyClaw is built first for local developer tooling that talks to OpenAI- or Anthropic-style HTTPS APIs. The verified paths today are:
 
 | Tool | Path | Notes |
 |------|------|-------|
 | Claude Code | `keyclaw claude ...` wrapper or `source ~/.keyclaw/env.sh` | First-class CLI path |
-| Cursor | Local proxy + trusted CA | Best for OpenAI/Anthropic-backed Cursor setups |
-| aider | `source ~/.keyclaw/env.sh` then run `aider` normally | Works when aider traffic honors proxy env vars |
-| Continue | Local proxy + trusted CA | Same model-provider caveat as other IDE clients |
-| Direct API clients | `HTTP_PROXY` / `HTTPS_PROXY` + KeyClaw CA | Works for supported hosts that actually traverse the proxy |
+| Codex | `keyclaw codex ...` wrapper or `source ~/.keyclaw/env.sh` | First-class CLI path |
+| ChatGPT / OpenAI web traffic | Local proxy + trusted CA | In scope at the host layer for `chatgpt.com` / `chat.openai.com` when traffic truly traverses the proxy |
+| Direct API clients | `HTTP_PROXY` / `HTTPS_PROXY` + KeyClaw CA | Verified for supported hosts that actually traverse the proxy |
 
-## Demo
-
-![KeyClaw demo terminal showing live redaction](docs/assets/demo-terminal.svg)
+Other tools such as Cursor, aider, and Continue may work in generic proxy mode if they route traffic through `HTTP_PROXY` / `HTTPS_PROXY` and trust the KeyClaw CA, but they are not first-class integrations and are not currently covered by the test suite.
 
 ## Quickstart Under 60 Seconds
 
@@ -99,21 +94,19 @@ Or use the proxy globally:
 claude
 ```
 
-### aider
+### Generic proxy-aware clients
 
 ```bash
 source ~/.keyclaw/env.sh
-aider --model openai/gpt-4.1
+your-client-here
 ```
 
-### Cursor
+For tools outside the built-in `claude` / `codex` wrappers:
 
 1. Run `keyclaw init` once so `~/.keyclaw/ca.crt` exists.
 2. Trust `~/.keyclaw/ca.crt` in your OS keychain or certificate store.
-3. Point Cursor, or the OS proxy settings it inherits, at `http://127.0.0.1:8877`.
-4. Restart Cursor and use your normal OpenAI/Anthropic-backed workflow.
-
-If the app does not honor shell proxy variables directly, use Cursor's app-level or OS-level proxy settings instead.
+3. Route the client through `http://127.0.0.1:8877`, either via shell env vars or app/OS proxy settings.
+4. Verify with `keyclaw doctor` and a real request that traffic is actually being intercepted.
 
 ### One terminal:
 
