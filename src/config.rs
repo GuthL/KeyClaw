@@ -631,27 +631,23 @@ fn load_config_file(path: &Path) -> std::result::Result<Option<FileConfig>, Stri
 mod tests {
     use super::*;
 
-    use once_cell::sync::Lazy;
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
-        // These tests serialize process-wide environment mutation with ENV_LOCK.
+        // These tests serialize process-wide environment mutation with the shared test lock.
         unsafe { env::set_var(key, value) }
     }
 
     fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
-        // These tests serialize process-wide environment mutation with ENV_LOCK.
+        // These tests serialize process-wide environment mutation with the shared test lock.
         unsafe { env::remove_var(key) }
     }
 
     #[test]
     fn from_env_includes_documented_runtime_overrides() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let keys = [
             "HOME",
@@ -707,7 +703,7 @@ mod tests {
 
     #[test]
     fn from_env_uses_documented_defaults_for_runtime_overrides() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let keys = [
             "HOME",
@@ -754,7 +750,7 @@ mod tests {
 
     #[test]
     fn from_env_reads_entropy_settings() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let keys = [
             "HOME",
@@ -801,7 +797,7 @@ mod tests {
 
     #[test]
     fn from_env_uses_entropy_defaults() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let keys = [
             "HOME",
@@ -823,7 +819,7 @@ mod tests {
 
     #[test]
     fn from_env_reads_config_file_values() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let config_dir = temp.path().join(".keyclaw");
         fs::create_dir_all(&config_dir).expect("create config dir");
@@ -893,7 +889,7 @@ claude = ["api.anthropic.com", "console.anthropic.com"]
 
     #[test]
     fn from_env_env_overrides_config_file_values() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let config_dir = temp.path().join(".keyclaw");
         fs::create_dir_all(&config_dir).expect("create config dir");
@@ -935,7 +931,7 @@ mode = "minimal"
 
     #[test]
     fn from_env_does_not_apply_partial_values_from_invalid_config_file() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let config_dir = temp.path().join(".keyclaw");
         fs::create_dir_all(&config_dir).expect("create config dir");
@@ -968,7 +964,7 @@ level = "LOUD"
 
     #[test]
     fn from_env_reads_allowlist_entries() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let config_dir = temp.path().join(".keyclaw");
         fs::create_dir_all(&config_dir).expect("create config dir");
@@ -999,7 +995,7 @@ secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
 
     #[test]
     fn from_env_reads_audit_log_disable_from_config_file() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let config_dir = temp.path().join(".keyclaw");
         fs::create_dir_all(&config_dir).expect("create config dir");

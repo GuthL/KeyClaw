@@ -345,15 +345,11 @@ fn broken_ca_error(message: String) -> KeyclawError {
 mod tests {
     use super::{CA_CERT_FILENAME, CA_KEY_FILENAME};
 
-    use once_cell::sync::Lazy;
     use std::env;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn validity_window_keeps_late_year_dates_in_the_same_calendar_year() {
@@ -498,7 +494,7 @@ mod tests {
     }
 
     fn with_temp_home(test: impl FnOnce(&Path)) {
-        let _guard = ENV_LOCK
+        let _guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let saved_home = env::var_os("HOME");
@@ -512,12 +508,12 @@ mod tests {
     }
 
     fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
-        // These tests serialize process-wide environment mutation with ENV_LOCK.
+        // These tests serialize process-wide environment mutation with the shared test lock.
         unsafe { env::set_var(key, value) }
     }
 
     fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
-        // These tests serialize process-wide environment mutation with ENV_LOCK.
+        // These tests serialize process-wide environment mutation with the shared test lock.
         unsafe { env::remove_var(key) }
     }
 
