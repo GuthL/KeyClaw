@@ -39,5 +39,8 @@ pub mod stats;
 /// AES-GCM encrypted local secret storage.
 pub mod vault;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// Top-level runtime configuration for KeyClaw.
 pub use config::Config;

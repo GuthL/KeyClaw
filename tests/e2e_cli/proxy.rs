@@ -36,11 +36,11 @@ fn proxy_fails_fast_on_broken_generated_ca_pair() {
 #[cfg(unix)]
 #[test]
 fn proxy_detaches_by_default_and_prints_stop_instructions() {
-    struct ProxyGuard(Option<i32>);
+    struct ProxyGuard(Vec<i32>);
 
     impl Drop for ProxyGuard {
         fn drop(&mut self) {
-            if let Some(pid) = self.0.take() {
+            for pid in self.0.drain(..) {
                 unsafe {
                     libc::kill(pid, libc::SIGKILL);
                 }
@@ -93,7 +93,7 @@ fn proxy_detaches_by_default_and_prints_stop_instructions() {
         .trim()
         .parse()
         .expect("parse proxy pid");
-    let mut guard = ProxyGuard(Some(pid));
+    let mut guard = ProxyGuard(vec![pid]);
 
     unsafe {
         libc::kill(pid, libc::SIGTERM);
@@ -103,7 +103,223 @@ fn proxy_detaches_by_default_and_prints_stop_instructions() {
         can_bind(socket_addr),
         "proxy listener still bound: {socket_addr}"
     );
-    guard.0 = None;
+    guard.0.clear();
+}
+
+#[cfg(unix)]
+#[test]
+fn proxy_relaunch_on_same_addr_replaces_existing_daemon() {
+    fn process_alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    struct ProxyGuard(Vec<i32>);
+
+    impl Drop for ProxyGuard {
+        fn drop(&mut self) {
+            for pid in self.0.drain(..) {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let addr = free_addr();
+    let socket_addr: SocketAddr = addr.parse().expect("parse socket addr");
+    let pid_path = temp.path().join(".keyclaw").join("proxy.pid");
+    let env_path = temp.path().join(".keyclaw").join("env.sh");
+
+    let first = keyclaw_command(temp.path())
+        .arg("proxy")
+        .env("KEYCLAW_PROXY_ADDR", &addr)
+        .env("KEYCLAW_PROXY_URL", format!("http://{addr}"))
+        .output()
+        .expect("start first proxy");
+    assert_eq!(first.status.code(), Some(0));
+
+    wait_until(Duration::from_secs(3), || {
+        pid_path.exists() && env_path.exists() && !can_bind(socket_addr)
+    });
+
+    let first_pid: i32 = std::fs::read_to_string(&pid_path)
+        .expect("read first proxy pid")
+        .trim()
+        .parse()
+        .expect("parse first proxy pid");
+    let mut guard = ProxyGuard(vec![first_pid]);
+
+    let second = keyclaw_command(temp.path())
+        .arg("proxy")
+        .env("KEYCLAW_PROXY_ADDR", &addr)
+        .env("KEYCLAW_PROXY_URL", format!("http://{addr}"))
+        .output()
+        .expect("restart proxy on same address");
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    wait_until(Duration::from_secs(3), || {
+        let second_pid = std::fs::read_to_string(&pid_path)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok());
+        match second_pid {
+            Some(second_pid) => {
+                second_pid != first_pid && process_alive(second_pid) && !process_alive(first_pid)
+            }
+            None => false,
+        }
+    });
+
+    let second_pid: i32 = std::fs::read_to_string(&pid_path)
+        .expect("read second proxy pid")
+        .trim()
+        .parse()
+        .expect("parse second proxy pid");
+    assert_ne!(second_pid, first_pid, "restart should replace the daemon");
+    assert!(
+        !process_alive(first_pid),
+        "original proxy should be stopped on restart"
+    );
+    assert!(
+        process_alive(second_pid),
+        "replacement proxy should be alive after restart"
+    );
+    assert!(
+        !can_bind(socket_addr),
+        "replacement proxy should still own {socket_addr}"
+    );
+
+    guard.0.push(second_pid);
+    unsafe {
+        libc::kill(second_pid, libc::SIGTERM);
+    }
+    wait_until(Duration::from_secs(3), || can_bind(socket_addr));
+    assert!(
+        can_bind(socket_addr),
+        "replacement proxy listener still bound: {socket_addr}"
+    );
+    guard.0.clear();
+}
+
+#[cfg(unix)]
+#[test]
+fn proxy_relaunch_on_different_addr_keeps_existing_daemon() {
+    fn process_alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    struct ProxyGuard(Vec<i32>);
+
+    impl Drop for ProxyGuard {
+        fn drop(&mut self) {
+            for pid in self.0.drain(..) {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let first_addr = free_addr();
+    let second_addr = free_addr();
+    let first_socket_addr: SocketAddr = first_addr.parse().expect("parse first socket addr");
+    let second_socket_addr: SocketAddr = second_addr.parse().expect("parse second socket addr");
+    let pid_path = temp.path().join(".keyclaw").join("proxy.pid");
+    let env_path = temp.path().join(".keyclaw").join("env.sh");
+
+    let first = keyclaw_command(temp.path())
+        .arg("proxy")
+        .env("KEYCLAW_PROXY_ADDR", &first_addr)
+        .env("KEYCLAW_PROXY_URL", format!("http://{first_addr}"))
+        .output()
+        .expect("start first proxy");
+    assert_eq!(first.status.code(), Some(0));
+
+    wait_until(Duration::from_secs(3), || {
+        pid_path.exists() && env_path.exists() && !can_bind(first_socket_addr)
+    });
+
+    let first_pid: i32 = std::fs::read_to_string(&pid_path)
+        .expect("read first proxy pid")
+        .trim()
+        .parse()
+        .expect("parse first proxy pid");
+    let mut guard = ProxyGuard(vec![first_pid]);
+
+    let second = keyclaw_command(temp.path())
+        .arg("proxy")
+        .env("KEYCLAW_PROXY_ADDR", &second_addr)
+        .env("KEYCLAW_PROXY_URL", format!("http://{second_addr}"))
+        .output()
+        .expect("start second proxy");
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    wait_until(Duration::from_secs(3), || {
+        let second_pid = std::fs::read_to_string(&pid_path)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok());
+        match second_pid {
+            Some(second_pid) => {
+                second_pid != first_pid
+                    && process_alive(first_pid)
+                    && process_alive(second_pid)
+                    && !can_bind(second_socket_addr)
+            }
+            None => false,
+        }
+    });
+
+    let second_pid: i32 = std::fs::read_to_string(&pid_path)
+        .expect("read second proxy pid")
+        .trim()
+        .parse()
+        .expect("parse second proxy pid");
+    assert_ne!(second_pid, first_pid, "new proxy should become the tracked daemon");
+    assert!(
+        process_alive(first_pid),
+        "original proxy should stay alive when a different address is requested"
+    );
+    assert!(
+        process_alive(second_pid),
+        "new proxy should also be alive on the requested address"
+    );
+    assert!(
+        !can_bind(first_socket_addr),
+        "original proxy should still own {first_socket_addr}"
+    );
+    assert!(
+        !can_bind(second_socket_addr),
+        "new proxy should own {second_socket_addr}"
+    );
+
+    guard.0.push(second_pid);
+    unsafe {
+        libc::kill(first_pid, libc::SIGTERM);
+        libc::kill(second_pid, libc::SIGTERM);
+    }
+    wait_until(Duration::from_secs(3), || {
+        can_bind(first_socket_addr) && can_bind(second_socket_addr)
+    });
+    assert!(
+        can_bind(first_socket_addr),
+        "original proxy listener still bound: {first_socket_addr}"
+    );
+    assert!(
+        can_bind(second_socket_addr),
+        "new proxy listener still bound: {second_socket_addr}"
+    );
+    guard.0.clear();
 }
 
 #[cfg(target_os = "linux")]

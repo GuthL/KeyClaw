@@ -1,4 +1,5 @@
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -81,8 +82,27 @@ pub(crate) fn run_proxy_detached(cfg: &Config) -> Result<i32, KeyclawError> {
     let pid_path = keyclaw_dir.join("proxy.pid");
     let env_path = keyclaw_dir.join("env.sh");
     let log_path = keyclaw_dir.join("proxy.log");
-    let _ = fs::remove_file(&pid_path);
-    let _ = fs::remove_file(&env_path);
+
+    let existing_pid = read_and_validate_proxy_pid(&pid_path);
+    let mut reset_tracking_files = existing_pid.is_none();
+    if let Some(existing_pid) = existing_pid {
+        if should_replace_existing_proxy(cfg, &env_path) {
+            if let Some(existing_addr) = read_proxy_addr_from_env(&env_path) {
+                crate::logging::info(&format!(
+                    "stopping existing proxy on {existing_addr} before restart"
+                ));
+            } else {
+                crate::logging::info("stopping existing proxy before restart");
+            }
+            stop_proxy_process(&pid_path, existing_pid)?;
+            reset_tracking_files = true;
+        }
+    }
+
+    if reset_tracking_files {
+        let _ = fs::remove_file(&pid_path);
+        let _ = fs::remove_file(&env_path);
+    }
 
     let current_exe = std::env::current_exe()
         .map_err(|e| KeyclawError::uncoded(format!("resolve current executable: {e}")))?;
@@ -148,34 +168,19 @@ pub(crate) fn run_proxy_stop() -> i32 {
         }
     };
 
-    let kill_result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-    if kill_result != 0 {
-        crate::logging::info("no running proxy found");
-        let _ = fs::remove_file(&pid_path);
-        return 0;
-    }
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut exited = false;
-    while Instant::now() < deadline {
-        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
-        if !alive {
-            exited = true;
-            break;
+    match stop_proxy_process(&pid_path, pid) {
+        Ok(true) => {
+            crate::logging::info(&format!("proxy stopped (pid={pid})"));
+            0
         }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    let _ = fs::remove_file(&pid_path);
-
-    if exited {
-        crate::logging::info(&format!("proxy stopped (pid={pid})"));
-        0
-    } else {
-        crate::logging::error(&format!(
-            "proxy (pid={pid}) did not exit within 5 seconds after SIGTERM"
-        ));
-        1
+        Ok(false) => {
+            crate::logging::info("no running proxy found");
+            0
+        }
+        Err(err) => {
+            crate::logging::error(&err.to_string());
+            1
+        }
     }
 }
 
@@ -263,6 +268,26 @@ pub(super) fn read_proxy_addr_from_env(env_path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+fn should_replace_existing_proxy(cfg: &Config, env_path: &Path) -> bool {
+    match read_proxy_addr_from_env(env_path) {
+        Some(existing_addr) => listen_addrs_match(&existing_addr, &cfg.proxy_listen_addr),
+        None => true,
+    }
+}
+
+fn listen_addrs_match(lhs: &str, rhs: &str) -> bool {
+    let lhs = lhs.trim();
+    let rhs = rhs.trim();
+    if lhs == rhs {
+        return true;
+    }
+
+    match (lhs.parse::<SocketAddr>(), rhs.parse::<SocketAddr>()) {
+        (Ok(lhs), Ok(rhs)) => lhs == rhs,
+        _ => false,
+    }
 }
 
 pub(crate) fn render_proxy_env_script(
@@ -371,6 +396,28 @@ fn wait_for_detached_proxy_ready(
     Err(KeyclawError::uncoded(format!(
         "detached proxy did not become ready; inspect {}",
         log_path.display()
+    )))
+}
+
+fn stop_proxy_process(pid_path: &Path, pid: u32) -> Result<bool, KeyclawError> {
+    let kill_result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if kill_result != 0 {
+        let _ = fs::remove_file(pid_path);
+        return Ok(false);
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        if !alive {
+            let _ = fs::remove_file(pid_path);
+            return Ok(true);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    Err(KeyclawError::uncoded(format!(
+        "proxy (pid={pid}) did not exit within 5 seconds after SIGTERM"
     )))
 }
 

@@ -213,6 +213,8 @@ keyclaw proxy status   # check if the proxy is running
 keyclaw proxy stop     # graceful shutdown
 ```
 
+Starting `keyclaw proxy` again on the same listen address replaces the previously tracked detached daemon. If you start another proxy on a different address, the existing proxy stays up and the newest detached daemon becomes the instance that `keyclaw proxy status` and `keyclaw proxy stop` track.
+
 On Linux with `systemd --user`, you can also keep the daemon coming back after login or reboot:
 
 ```bash
