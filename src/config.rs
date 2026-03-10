@@ -279,12 +279,7 @@ fn f64_env_or_file(key: &str, file_key: &str, file: &Option<FileMap>, fallback: 
     fallback
 }
 
-fn usize_env_or_file(
-    key: &str,
-    file_key: &str,
-    file: &Option<FileMap>,
-    fallback: usize,
-) -> usize {
+fn usize_env_or_file(key: &str, file_key: &str, file: &Option<FileMap>, fallback: usize) -> usize {
     if let Ok(v) = env::var(key) {
         return v.trim().parse::<usize>().unwrap_or(fallback);
     }
@@ -441,16 +436,13 @@ fn default_vault_path() -> PathBuf {
 mod tests {
     use super::*;
 
-    use once_cell::sync::Lazy;
+    use crate::test_support::PROCESS_ENV_LOCK;
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn from_env_includes_documented_runtime_overrides() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let keys = [
             "KEYCLAW_PROXY_ADDR",
             "KEYCLAW_PROXY_URL",
@@ -497,7 +489,7 @@ mod tests {
 
     #[test]
     fn from_env_uses_documented_defaults_for_runtime_overrides() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let keys = [
             "HOME",
             "KEYCLAW_VAULT_PATH",
@@ -539,7 +531,7 @@ mod tests {
 
     #[test]
     fn from_env_reads_entropy_settings() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let keys = [
             "KEYCLAW_ENTROPY_ENABLED",
             "KEYCLAW_ENTROPY_THRESHOLD",
@@ -558,7 +550,7 @@ mod tests {
 
     #[test]
     fn from_env_uses_entropy_defaults() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let keys = [
             "KEYCLAW_ENTROPY_ENABLED",
             "KEYCLAW_ENTROPY_THRESHOLD",
@@ -616,7 +608,7 @@ mod tests {
 
     #[test]
     fn from_env_reads_config_file_values() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let all_keys = all_env_keys();
         let saved = capture_env(&all_keys);
 
@@ -664,7 +656,7 @@ unsafe_log = true
 
     #[test]
     fn env_vars_override_config_file() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let all_keys = all_env_keys();
         let saved = capture_env(&all_keys);
 
@@ -699,7 +691,7 @@ fail_closed = false
 
     #[test]
     fn missing_config_file_uses_defaults() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let all_keys = all_env_keys();
         let saved = capture_env(&all_keys);
 
@@ -724,7 +716,7 @@ fail_closed = false
 
     #[test]
     fn validate_config_file_returns_key_count() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let saved = capture_env(&["HOME"]);
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -746,7 +738,7 @@ fail_closed = false
 
     #[test]
     fn validate_config_file_returns_none_when_missing() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let saved = capture_env(&["HOME"]);
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -760,7 +752,7 @@ fail_closed = false
 
     #[test]
     fn validate_config_file_returns_err_on_bad_toml() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = PROCESS_ENV_LOCK.lock().expect("env lock");
         let saved = capture_env(&["HOME"]);
 
         let tmp = tempfile::tempdir().expect("tempdir");

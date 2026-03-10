@@ -10,6 +10,8 @@ pub mod pipeline;
 pub mod placeholder;
 pub mod proxy;
 pub mod redaction;
+#[doc(hidden)]
+pub mod test_support;
 pub mod vault;
 
 pub use config::Config;

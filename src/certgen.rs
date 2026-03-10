@@ -338,15 +338,12 @@ fn broken_ca_error(message: String) -> KeyclawError {
 mod tests {
     use super::{CA_CERT_FILENAME, CA_KEY_FILENAME};
 
-    use once_cell::sync::Lazy;
+    use crate::test_support::PROCESS_ENV_LOCK;
     use std::env;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn validity_window_keeps_late_year_dates_in_the_same_calendar_year() {
@@ -491,7 +488,7 @@ mod tests {
     }
 
     fn with_temp_home(test: impl FnOnce(&Path)) {
-        let _guard = ENV_LOCK
+        let _guard = PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let saved_home = env::var_os("HOME");
