@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use crate::common::{
     allowlist_test_payload, run_rewrite_json_with_input, write_allowlist_test_rules,
 };
-use crate::support::{TEST_SECRET_CLAUDE, TEST_SECRET_CODEX, rewrite_json_command};
+use crate::support::{TEST_SECRET_CLAUDE, TEST_SECRET_CODEX, rewrite_json_command, wait_until};
 
 #[test]
 fn rewrite_json_respects_custom_gitleaks_config() {
@@ -327,4 +327,45 @@ fn rewrite_json_dry_run_leaves_payload_unchanged() {
     assert_eq!(output.status.code(), Some(0));
     let out = String::from_utf8_lossy(&output.stdout);
     assert_eq!(out, payload, "output={out}");
+}
+
+#[test]
+fn rewrite_json_secret_detected_log_hook_writes_placeholder_only() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let hook_log = temp.path().join("hooks.log");
+    let config_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"
+[[hooks]]
+event = "secret_detected"
+rule_ids = ["generic-api-key"]
+action = "log"
+path = "{}"
+"#,
+            hook_log.display()
+        ),
+    )
+    .expect("write config");
+
+    let payload = format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX);
+    let output = run_rewrite_json_with_input(temp.path(), &payload);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    wait_until(std::time::Duration::from_secs(2), || hook_log.exists());
+    let log = std::fs::read_to_string(&hook_log).expect("read hook log");
+    assert!(log.contains("\"event\":\"secret_detected\""), "log={log}");
+    assert!(log.contains("\"rule_id\":\"generic-api-key\""), "log={log}");
+    assert!(
+        log.contains("\"placeholder\":\"{{KEYCLAW_SECRET_"),
+        "log={log}"
+    );
+    assert!(!log.contains(TEST_SECRET_CODEX), "log={log}");
 }

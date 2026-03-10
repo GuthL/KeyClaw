@@ -29,6 +29,7 @@ fn test_config(vault_path: PathBuf) -> Config {
         entropy_min_len: 20,
         audit_log_path: Some(crate::audit::default_audit_log_path()),
         allowlist: crate::allowlist::Allowlist::default(),
+        hooks: Vec::new(),
         config_file_status: crate::config::ConfigFileStatus::Missing(
             crate::config::default_config_path(),
         ),

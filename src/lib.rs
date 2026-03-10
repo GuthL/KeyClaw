@@ -18,6 +18,8 @@ pub mod entropy;
 pub mod errors;
 /// Bundled gitleaks rule loading, compilation, and matching.
 pub mod gitleaks_rules;
+/// Configured hook actions for request-side events.
+pub mod hooks;
 /// Second-pass secret scanning backed by Kingfisher.
 pub mod kingfisher;
 /// CLI entrypoints and launched-tool integration.

@@ -38,6 +38,11 @@ pub(crate) fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawErr
     } else {
         crate::logging::info("kingfisher second-pass detection disabled; binary not found");
     }
+    let hooks = if cfg.hooks.is_empty() {
+        None
+    } else {
+        Some(Arc::new(crate::hooks::HookRunner::new(cfg.hooks.clone())))
+    };
 
     Ok(Arc::new(Processor {
         vault: Some(vault),
@@ -47,6 +52,7 @@ pub(crate) fn build_processor(cfg: &Config) -> Result<Arc<Processor>, KeyclawErr
         strict_mode: cfg.fail_closed,
         notice_mode: cfg.notice_mode,
         dry_run: cfg.dry_run,
+        hooks,
     }))
 }
 

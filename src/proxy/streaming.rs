@@ -371,6 +371,7 @@ mod tests {
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
             dry_run: false,
+            hooks: None,
         })
     }
 
@@ -383,6 +384,7 @@ mod tests {
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
             dry_run: false,
+            hooks: None,
         })
     }
 }

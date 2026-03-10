@@ -41,6 +41,8 @@ pub struct Processor {
     pub notice_mode: redaction::NoticeMode,
     /// Whether rewrites should report matches without mutating traffic.
     pub dry_run: bool,
+    /// Optional hook runner for request-side events.
+    pub hooks: Option<Arc<crate::hooks::HookRunner>>,
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +224,28 @@ impl Processor {
         } else {
             format!("replaced {} secrets", replacements.len())
         }
+    }
+
+    pub fn run_secret_detected_hooks(
+        &self,
+        request_host: &str,
+        replacements: &[Replacement],
+    ) -> Result<(), KeyclawError> {
+        let Some(hooks) = &self.hooks else {
+            return Ok(());
+        };
+        hooks.on_secret_detected(request_host, replacements)
+    }
+
+    pub fn run_request_redacted_hooks(
+        &self,
+        request_host: &str,
+        replacements: &[Replacement],
+    ) -> Result<(), KeyclawError> {
+        let Some(hooks) = &self.hooks else {
+            return Ok(());
+        };
+        hooks.on_request_redacted(request_host, replacements)
     }
 
     fn rewrite_json_messages<F>(&self, body: &[u8], walk: F) -> Result<RewriteResult, KeyclawError>
@@ -642,6 +666,7 @@ mod tests {
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
             dry_run: false,
+            hooks: None,
         }
     }
 

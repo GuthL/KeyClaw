@@ -10,7 +10,9 @@ use hudsucker::{
     },
 };
 
-use crate::errors::{CODE_BODY_TOO_LARGE, CODE_INVALID_JSON, CODE_REQUEST_TIMEOUT, code_of};
+use crate::errors::{
+    CODE_BODY_TOO_LARGE, CODE_HOOK_BLOCKED, CODE_INVALID_JSON, CODE_REQUEST_TIMEOUT, code_of,
+};
 
 use super::KeyclawHttpHandler;
 use super::common::{
@@ -136,7 +138,7 @@ impl HttpHandler for KeyclawHttpHandler {
             Ok(Ok(Err(err))) => {
                 let code = code_of(&err).unwrap_or("unknown");
                 log_warn(format!("rewrite error ({code}): {err}"));
-                if self.processor.strict_mode {
+                if self.processor.strict_mode || code == CODE_HOOK_BLOCKED {
                     return request_rewrite_error_response(&err).into();
                 }
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
@@ -169,6 +171,20 @@ impl HttpHandler for KeyclawHttpHandler {
 
         let request_had_secrets = !rewritten.replacements.is_empty();
         if request_had_secrets {
+            if let Err(err) = self
+                .processor
+                .run_secret_detected_hooks(&host, &rewritten.replacements)
+            {
+                return request_rewrite_error_response(&err).into();
+            }
+            if !self.processor.dry_run {
+                if let Err(err) = self
+                    .processor
+                    .run_request_redacted_hooks(&host, &rewritten.replacements)
+                {
+                    return request_rewrite_error_response(&err).into();
+                }
+            }
             log_debug(format!(
                 "request rewritten for host {host}: {}",
                 self.processor.replacement_summary(&rewritten.replacements)
@@ -268,6 +284,7 @@ fn request_rewrite_error_response(err: &crate::errors::KeyclawError) -> Response
     let status = match code {
         CODE_BODY_TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
         CODE_REQUEST_TIMEOUT => StatusCode::REQUEST_TIMEOUT,
+        CODE_HOOK_BLOCKED => StatusCode::FORBIDDEN,
         CODE_INVALID_JSON => StatusCode::BAD_REQUEST,
         _ => StatusCode::BAD_GATEWAY,
     };

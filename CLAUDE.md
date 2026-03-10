@@ -47,6 +47,7 @@ API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_<prefix>_<16 hex ch
 | Module | Purpose | Key Types |
 |--------|---------|-----------|
 | `gitleaks_rules.rs` | Bundled gitleaks rule loading + compiled regex matching | `RuleSet` |
+| `hooks.rs` | Configured request-side hook parsing and execution | `HookRunner` |
 | `pipeline.rs` | Orchestrates rewrite + policy evaluation | `Processor`, `RewriteResult` |
 | `placeholder.rs` | Placeholder parsing, generation, and resolution | `make_id()`, `resolve_placeholders()` |
 | `redaction.rs` | JSON tree walker, notice injection | `walk_json_strings()`, `inject_redaction_notice()` |
@@ -87,6 +88,10 @@ Edit `src/launcher.rs` to extend the clap surface and subcommand dispatch, then 
 
 Edit `src/redaction.rs` → `inject_redaction_notice_with_mode()` and `src/config.rs` for `KEYCLAW_NOTICE_MODE`. The notice is injected differently for Anthropic (appended to `system` field) vs OpenAI (added as `developer` role message), and the shipped modes are `verbose`, `minimal`, and `off`.
 
+### Adding or changing hooks
+
+Edit `src/hooks.rs` for hook parsing/execution and `src/config.rs` for `[[hooks]]` config loading. Request-side hook dispatch is wired through `src/pipeline.rs`, with call sites in `src/proxy/http.rs`, `src/proxy/websocket.rs`, and `src/launcher.rs`.
+
 ## Important Patterns
 
 ### Placeholder format
@@ -125,6 +130,7 @@ All errors use `KeyclawError` with optional deterministic codes:
 - `invalid_json` — JSON parse/rewrite failed
 - `request_timeout` — request body read timed out before inspection completed
 - `strict_resolve_failed` — placeholder resolution failed in strict mode
+- `hook_blocked` — a configured hook rejected the request
 
 Check errors with `code_of(&err)` to get the code string.
 

@@ -4,7 +4,7 @@ use hudsucker::{
     tokio_tungstenite::tungstenite::{self, Message},
 };
 
-use crate::errors::{CODE_INVALID_JSON, KeyclawError, code_of};
+use crate::errors::{CODE_HOOK_BLOCKED, CODE_INVALID_JSON, KeyclawError, code_of};
 
 use super::KeyclawHttpHandler;
 use super::common::{log_debug, log_warn, normalize_host_value};
@@ -97,15 +97,32 @@ impl WebSocketHandler for KeyclawHttpHandler {
         if let Message::Text(text) = &msg {
             match self.rewrite_ws_request_text(text.as_str(), uses_input_only_ws_rewrite(ctx)) {
                 WsRequestRewrite::Rewritten(value, replacements) => {
-                    if let Some(host) = websocket_request_host(ctx) {
-                        if !self.processor.dry_run {
-                            if let Err(err) = crate::audit::append_redactions(
-                                self.audit_log_path.as_deref(),
-                                &host,
-                                &replacements,
-                            ) {
-                                log_warn(format!("audit log write failed: {err}"));
-                            }
+                    let host = websocket_request_host(ctx).unwrap_or_else(|| "unknown".to_string());
+                    if let Err(err) = self
+                        .processor
+                        .run_secret_detected_hooks(&host, &replacements)
+                    {
+                        let code = code_of(&err).unwrap_or("unknown");
+                        log_warn(format!("ws hook error ({code}): {err}"));
+                        return Some(Message::Close(None));
+                    }
+                    if !self.processor.dry_run {
+                        if let Err(err) = self
+                            .processor
+                            .run_request_redacted_hooks(&host, &replacements)
+                        {
+                            let code = code_of(&err).unwrap_or("unknown");
+                            log_warn(format!("ws hook error ({code}): {err}"));
+                            return Some(Message::Close(None));
+                        }
+                    }
+                    if !self.processor.dry_run {
+                        if let Err(err) = crate::audit::append_redactions(
+                            self.audit_log_path.as_deref(),
+                            &host,
+                            &replacements,
+                        ) {
+                            log_warn(format!("audit log write failed: {err}"));
                         }
                     }
                     log_debug(format!(
@@ -149,7 +166,7 @@ impl KeyclawHttpHandler {
     }
 
     fn ws_rewrite_failure(&self, err: KeyclawError) -> WsRequestRewrite {
-        if self.processor.strict_mode {
+        if self.processor.strict_mode || code_of(&err) == Some(CODE_HOOK_BLOCKED) {
             WsRequestRewrite::Blocked(err)
         } else {
             let code = code_of(&err).unwrap_or("unknown");
@@ -234,6 +251,7 @@ keywords = ["api_key"]
             strict_mode,
             notice_mode: crate::redaction::NoticeMode::Verbose,
             dry_run: false,
+            hooks: None,
         });
 
         KeyclawHttpHandler {
@@ -340,6 +358,7 @@ keywords = ["api_key"]
             strict_mode: true,
             notice_mode: crate::redaction::NoticeMode::Verbose,
             dry_run: false,
+            hooks: None,
         });
         let handler = KeyclawHttpHandler {
             allowed_hosts: vec!["api.openai.com".to_string()],

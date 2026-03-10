@@ -440,6 +440,18 @@ fn run_rewrite_json(cfg: &Config, processor: Arc<Processor>) -> i32 {
 
     match processor.rewrite_and_evaluate(&input) {
         Ok(result) => {
+            if let Err(err) = processor.run_secret_detected_hooks("stdin", &result.replacements) {
+                print_error(&err);
+                return 1;
+            }
+            if !cfg.dry_run {
+                if let Err(err) =
+                    processor.run_request_redacted_hooks("stdin", &result.replacements)
+                {
+                    print_error(&err);
+                    return 1;
+                }
+            }
             if !cfg.dry_run {
                 if let Err(err) = crate::audit::append_redactions(
                     cfg.audit_log_path.as_deref(),

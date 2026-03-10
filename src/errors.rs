@@ -14,6 +14,8 @@ pub const CODE_INVALID_JSON: &str = "invalid_json";
 pub const CODE_REQUEST_TIMEOUT: &str = "request_timeout";
 /// Error code returned when strict placeholder resolution cannot complete.
 pub const CODE_STRICT_RESOLVE_FAILED: &str = "strict_resolve_failed";
+/// Error code returned when a configured hook blocks request processing.
+pub const CODE_HOOK_BLOCKED: &str = "hook_blocked";
 
 #[derive(Debug, Clone)]
 pub struct KeyclawError {

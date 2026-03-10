@@ -12,6 +12,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::allowlist::Allowlist;
+use crate::hooks::{Hook, RawHookConfig};
 use crate::logging::LogLevel;
 use crate::redaction::NoticeMode;
 
@@ -63,6 +64,8 @@ pub struct Config {
     pub audit_log_path: Option<PathBuf>,
     /// Operator-defined allowlist entries.
     pub allowlist: Allowlist,
+    /// Configured request-side hook actions.
+    pub hooks: Vec<Hook>,
     pub(crate) config_file_status: ConfigFileStatus,
 }
 
@@ -84,6 +87,7 @@ struct FileConfig {
     audit: FileAuditConfig,
     hosts: FileHostsConfig,
     allowlist: FileAllowlistConfig,
+    hooks: Vec<RawHookConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -229,6 +233,7 @@ impl Config {
             entropy_min_len: 20,
             audit_log_path: Some(crate::audit::default_audit_log_path()),
             allowlist: Allowlist::default(),
+            hooks: Vec::new(),
             config_file_status: ConfigFileStatus::Missing(default_config_path()),
         }
     }
@@ -351,6 +356,8 @@ impl Config {
             &file_cfg.allowlist.secret_sha256,
         )
         .map_err(|err| format!("config file {} has invalid {err}", path.display()))?;
+        self.hooks = crate::hooks::parse_hooks(&file_cfg.hooks)
+            .map_err(|err| format!("config file {} has invalid {err}", path.display()))?;
 
         Ok(())
     }

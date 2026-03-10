@@ -366,9 +366,27 @@ include = ["*my-custom-api.com*"]
 rule_ids = ["generic-api-key"]
 patterns = ["^sk-test-"]
 secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+
+[[hooks]]
+event = "secret_detected"
+rule_ids = ["aws-access-key", "generic-api-key"]
+action = "exec"
+command = "notify-slack --channel security"
+
+[[hooks]]
+event = "request_redacted"
+rule_ids = ["*"]
+action = "log"
+path = "~/.keyclaw/hooks.log"
+
+[[hooks]]
+event = "secret_detected"
+rule_ids = ["generic-api-key"]
+action = "block"
+message = "production key detected"
 ```
 
-Supported file sections today are `proxy`, `vault`, `logging`, `notice`, `detection`, `audit`, `hosts`, and `allowlist`. Use the file for steady-state local settings, then reach for env vars when you want a one-off override.
+Supported file sections today are `proxy`, `vault`, `logging`, `notice`, `detection`, `audit`, `hosts`, `allowlist`, and `hooks`. Use the file for steady-state local settings, then reach for env vars when you want a one-off override.
 
 Allowlist entries let you intentionally skip redaction for known-safe matches:
 
@@ -388,6 +406,16 @@ Disable persistent audit logging with:
 [audit]
 path = "off"
 ```
+
+Hook entries let you trigger local side effects from request-side events without exposing the raw secret:
+
+- `event = "secret_detected"` fires when a secret match is found during request rewriting
+- `event = "request_redacted"` fires after a request has been rewritten, just before it is forwarded upstream
+- `action = "exec"` runs a local command with sanitized metadata in env vars and a JSON payload on `stdin`
+- `action = "log"` appends a JSON line to the configured file
+- `action = "block"` rejects matching `secret_detected` requests with `hook_blocked`
+
+Hook payloads include only `event`, `rule_id`, `placeholder`, and `request_host`. Raw secret values are never passed to hook commands or hook log files.
 
 ### Environment Variables
 
@@ -488,6 +516,7 @@ KeyClaw uses deterministic error codes for programmatic handling:
 | `invalid_json` | Failed to parse or rewrite request JSON |
 | `request_timeout` | Request body read timed out before inspection completed |
 | `strict_resolve_failed` | Placeholder resolution failed in strict mode |
+| `hook_blocked` | A configured hook rejected the request |
 
 ## Security Model
 
@@ -522,6 +551,7 @@ src/
 ├── config.rs          # Env + TOML configuration
 ├── entropy.rs         # High-entropy token detection
 ├── gitleaks_rules.rs  # Bundled gitleaks rule loading + native regex compilation
+├── hooks.rs           # Configured request-side hook execution
 ├── pipeline.rs        # Request rewrite pipeline
 ├── placeholder.rs     # Placeholder parsing, generation, and resolution
 ├── redaction.rs       # JSON walker + notice injection

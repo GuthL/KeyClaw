@@ -46,6 +46,7 @@ fn make_processor_with_rules_and_second_pass(
         strict_mode: strict,
         notice_mode,
         dry_run,
+        hooks: None,
     }
 }
 

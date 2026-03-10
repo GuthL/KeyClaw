@@ -900,6 +900,7 @@ fn new_processor_with_ca() -> (Processor, String, String) {
         strict_mode: true,
         notice_mode: keyclaw::redaction::NoticeMode::Verbose,
         dry_run: false,
+        hooks: None,
     };
 
     (processor, ca_cert, ca_key)
