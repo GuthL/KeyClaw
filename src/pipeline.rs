@@ -724,7 +724,7 @@ fn rewrite_sensitive_values(
         } else {
             session_store.store(matched.kind, matched.secret)?
         };
-        let placeholder = placeholder::make_typed(matched.kind, &id);
+        let placeholder = placeholder::make_typed(matched.kind, matched.secret, &id);
         out.push_str(&input[last..matched.start]);
         out.push_str(&placeholder);
         last = matched.end;

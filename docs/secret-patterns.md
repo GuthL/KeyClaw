@@ -22,9 +22,9 @@ The runtime has two detector families:
 KeyClaw rewrites each value into an opaque typed placeholder:
 
 ```text
-{{KEYCLAW_OPAQUE_<16 hex chars>}}
-{{KEYCLAW_EMAIL_<16 hex chars>}}
-{{KEYCLAW_PASSWORD_<16 hex chars>}}
+{{KEYCLAW_<format-signature>~o<16 hex chars>}}
+{{KEYCLAW_<format-signature>~e<16 hex chars>}}
+{{KEYCLAW_<format-signature>~p<16 hex chars>}}
 ```
 
 The IDs are session-scoped and do not expose prefixes from the original value.

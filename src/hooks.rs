@@ -434,7 +434,7 @@ mod tests {
             subtype: rule_id.to_string(),
             policy: ProtectionPolicy::ReversibleSession,
             id: "deadbeefcafebabe".to_string(),
-            placeholder: "{{KEYCLAW_OPAQUE_deadbeefcafebabe}}".to_string(),
+            placeholder: "{{KEYCLAW_Aa0aA0aA~odeadbeefcafebabe}}".to_string(),
             secret: "sk-live-real-secret".to_string(),
             source: MatchSource::Regex,
             confidence: MatchConfidence::High,

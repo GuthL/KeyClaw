@@ -308,7 +308,7 @@ mod tests {
         let id = store
             .store(SensitiveKind::OpaqueToken, secret)
             .expect("store secret");
-        let placeholder = placeholder::make(&id);
+        let placeholder = placeholder::make(secret, &id);
         let mut resolver = SseStreamResolver::new(test_processor(Arc::clone(&store)));
 
         let out1 = resolver.process_frame(input_json_delta_event(&placeholder[..1]).as_bytes());

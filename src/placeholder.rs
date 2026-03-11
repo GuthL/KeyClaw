@@ -10,10 +10,11 @@ pub const CONTRACT_MARKER_KEY: &str = "x-keyclaw-contract";
 /// Current placeholder contract version value.
 pub const CONTRACT_MARKER_VALUE: &str = "placeholder:v2";
 /// Example placeholder shown in operator and model-facing notices.
-pub const EXAMPLE_PLACEHOLDER: &str = "{{KEYCLAW_OPAQUE_xxxx}}";
+pub const EXAMPLE_PLACEHOLDER: &str = "{{KEYCLAW_Aa0a-0000~oxxxx}}";
 
 const PLACEHOLDER_START: &str = "{{KEYCLAW_";
-const MAX_PARTIAL_PLACEHOLDER_LEN: usize = PLACEHOLDER_START.len() + 16 + 1 + 64 + 2;
+const PLACEHOLDER_KIND_SEPARATOR: char = '~';
+const PLACEHOLDER_ID_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Replacement {
@@ -50,18 +51,19 @@ pub fn make_id(secret: &str) -> String {
 }
 
 /// Render a placeholder token for an opaque token.
-pub fn make(id: &str) -> String {
-    make_typed(SensitiveKind::OpaqueToken, id)
+pub fn make(secret: &str, id: &str) -> String {
+    make_typed(SensitiveKind::OpaqueToken, secret, id)
 }
 
 /// Render a placeholder token for the supplied kind and ID.
-pub fn make_typed(kind: SensitiveKind, id: &str) -> String {
-    format!(
-        "{PLACEHOLDER_START}{}_{}{}",
-        kind.placeholder_label(),
-        id,
-        "}}"
-    )
+pub fn make_typed(kind: SensitiveKind, secret: &str, id: &str) -> String {
+    let body = format!(
+        "{}{PLACEHOLDER_KIND_SEPARATOR}{}{}",
+        format_signature(secret),
+        kind.placeholder_tag(),
+        id
+    );
+    format!("{PLACEHOLDER_START}{body}{}", "}}")
 }
 
 /// Return `true` if the full input string is exactly one complete placeholder.
@@ -89,15 +91,11 @@ pub fn contains_complete_placeholder(text: &str) -> bool {
 
 /// Find the start of a partial (incomplete) placeholder near the end of text.
 pub fn find_partial_placeholder_start(text: &str) -> Option<usize> {
-    let scan_start = text.len().saturating_sub(MAX_PARTIAL_PLACEHOLDER_LEN);
-    let tail = &text[scan_start..];
-
-    tail.char_indices().find_map(|(rel, ch)| {
+    text.char_indices().rev().find_map(|(abs, ch)| {
         if ch != '{' {
             return None;
         }
 
-        let abs = scan_start + rel;
         matches!(parse_placeholder(&text[abs..]), PlaceholderParse::Partial).then_some(abs)
     })
 }
@@ -204,81 +202,98 @@ fn parse_placeholder(text: &str) -> PlaceholderParse<'_> {
         return PlaceholderParse::NoMatch;
     }
 
-    let rest = &text[PLACEHOLDER_START.len()..];
-    let Some(label_sep) = rest.find('_') else {
-        return if placeholder_label_prefix_matches(rest) {
-            PlaceholderParse::Partial
-        } else {
-            PlaceholderParse::NoMatch
-        };
+    let body_and_tail = &text[PLACEHOLDER_START.len()..];
+    let Some(close_rel) = body_and_tail.find("}}") else {
+        return parse_placeholder_body(body_and_tail, false);
     };
 
-    let label = &rest[..label_sep];
-    let Some(kind) = SensitiveKind::from_placeholder_label(label) else {
-        return if placeholder_label_prefix_matches(label) {
-            PlaceholderParse::Partial
-        } else {
-            PlaceholderParse::NoMatch
-        };
-    };
-
-    let id_and_tail = &rest[label_sep + 1..];
-    if id_and_tail.is_empty() {
-        return PlaceholderParse::Partial;
-    }
-
-    let Some(close_rel) = id_and_tail.find("}}") else {
-        let partial_id = id_and_tail.strip_suffix('}').unwrap_or(id_and_tail);
-        return if partial_id.bytes().all(is_placeholder_id_byte) {
-            PlaceholderParse::Partial
-        } else {
-            PlaceholderParse::NoMatch
-        };
-    };
-    let id = &id_and_tail[..close_rel];
-    if !is_valid_placeholder_id(kind, id) {
+    let body = &body_and_tail[..close_rel];
+    let PlaceholderParse::Complete(PlaceholderMatch { kind, id, .. }) =
+        parse_placeholder_body(body, true)
+    else {
         return PlaceholderParse::NoMatch;
-    }
+    };
 
-    let full_len = PLACEHOLDER_START.len() + label.len() + 1 + id.len() + 2;
+    let full_len = PLACEHOLDER_START.len() + body.len() + 2;
     PlaceholderParse::Complete(PlaceholderMatch { kind, id, full_len })
 }
 
-fn placeholder_label_prefix_matches(candidate: &str) -> bool {
-    [
-        SensitiveKind::OpaqueToken,
-        SensitiveKind::Password,
-        SensitiveKind::Email,
-        SensitiveKind::Phone,
-        SensitiveKind::NationalId,
-        SensitiveKind::Passport,
-        SensitiveKind::PaymentCard,
-        SensitiveKind::Cvv,
-    ]
-    .iter()
-    .any(|kind| kind.placeholder_label().starts_with(candidate))
-}
+fn parse_placeholder_body(body: &str, complete: bool) -> PlaceholderParse<'_> {
+    let Some((signature, suffix)) = body.split_once(PLACEHOLDER_KIND_SEPARATOR) else {
+        return if body.is_empty() || body.chars().all(is_signature_char) {
+            PlaceholderParse::Partial
+        } else {
+            PlaceholderParse::NoMatch
+        };
+    };
 
-fn is_placeholder_id_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'*' | b'_' | b'-' | b'.')
-}
-
-fn is_valid_placeholder_id(kind: SensitiveKind, id: &str) -> bool {
-    if id.is_empty() || !id.bytes().all(is_placeholder_id_byte) {
-        return false;
+    if signature.is_empty() || !signature.chars().all(is_signature_char) || suffix.contains('~') {
+        return PlaceholderParse::NoMatch;
     }
 
+    let mut chars = suffix.chars();
+    let Some(kind_tag) = chars.next() else {
+        return if complete {
+            PlaceholderParse::NoMatch
+        } else {
+            PlaceholderParse::Partial
+        };
+    };
+    let Some(kind) = SensitiveKind::from_placeholder_tag(kind_tag) else {
+        return PlaceholderParse::NoMatch;
+    };
+
+    let id = chars.as_str();
+    if id.is_empty() {
+        return if complete {
+            PlaceholderParse::NoMatch
+        } else {
+            PlaceholderParse::Partial
+        };
+    }
+
+    if !is_valid_placeholder_id(id) {
+        return PlaceholderParse::NoMatch;
+    }
+
+    if complete {
+        if id.len() != PLACEHOLDER_ID_LEN {
+            return PlaceholderParse::NoMatch;
+        }
+        PlaceholderParse::Complete(PlaceholderMatch {
+            kind,
+            id,
+            full_len: 0,
+        })
+    } else if id.len() <= PLACEHOLDER_ID_LEN {
+        PlaceholderParse::Partial
+    } else {
+        PlaceholderParse::NoMatch
+    }
+}
+
+fn is_valid_placeholder_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_signature_char(ch: char) -> bool {
     matches!(
-        kind,
-        SensitiveKind::OpaqueToken
-            | SensitiveKind::Password
-            | SensitiveKind::Email
-            | SensitiveKind::Phone
-            | SensitiveKind::NationalId
-            | SensitiveKind::Passport
-            | SensitiveKind::PaymentCard
-            | SensitiveKind::Cvv
-    ) && id.len() >= 8
-        && id.len() <= 64
-        && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        ch,
+        'A' | 'a' | '0' | 'x' | '_' | '@' | '.' | '-' | ':' | '/' | '+' | '=' | '(' | ')' | '#'
+    )
+}
+
+fn format_signature(secret: &str) -> String {
+    let mut out = String::with_capacity(secret.len());
+    for ch in secret.chars() {
+        out.push(match ch {
+            'a'..='z' => 'a',
+            'A'..='Z' => 'A',
+            '0'..='9' => '0',
+            '@' | '.' | '-' | '_' | ':' | '/' | '+' | '=' | '(' | ')' | '#' => ch,
+            ch if ch.is_ascii_whitespace() => '_',
+            _ => 'x',
+        });
+    }
+    out
 }

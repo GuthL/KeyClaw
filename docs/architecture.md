@@ -22,7 +22,7 @@ flowchart LR
 2. KeyClaw checks whether the destination host is in scope for interception.
 3. `src/pipeline.rs` walks JSON strings, stringified JSON, and supported base64-wrapped content.
 4. `src/sensitive.rs` runs structured typed detectors plus opaque-token entropy detection.
-5. Each match is rewritten to a typed placeholder such as `{{KEYCLAW_OPAQUE_<id>}}` or `{{KEYCLAW_EMAIL_<id>}}`.
+5. Each match is rewritten to a single format-preserving placeholder such as `{{KEYCLAW_AAAA0000~o<id>}}` or `{{KEYCLAW_aaaaa@aaaaaaa.aaa~e<id>}}`.
 6. The mapping is stored in a session-scoped store for later reinjection.
 7. The sanitized request is forwarded upstream.
 

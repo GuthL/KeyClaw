@@ -27,7 +27,7 @@
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-KeyClaw sits between your AI tool and the upstream API, detects sensitive values in outbound payloads, swaps them for typed placeholders like `{{KEYCLAW_OPAQUE_<id>}}`, stores the mapping in a session-scoped local resolver, and reinjects the real values into responses on the way back. The core runtime classes are `opaque_token` plus typed structured detectors, so the model never sees the raw value but your workflow still behaves as if it did.
+KeyClaw sits between your AI tool and the upstream API, detects sensitive values in outbound payloads, swaps them for format-preserving placeholders like `{{KEYCLAW_AAAA_0000~o<id>}}`, stores the mapping in a session-scoped local resolver, and reinjects the real values into responses on the way back. The core runtime classes are `opaque_token` plus typed structured detectors, so the model never sees the raw value but your workflow still behaves as if it did.
 
 ## Why It Matters
 
@@ -246,7 +246,7 @@ If the system proxy is enabled while no healthy KeyClaw listener is actually ser
     },
     {
       "role": "user",
-      "content": "Deploy the staging stack with AWS_ACCESS_KEY_ID={{KEYCLAW_OPAQUE_77dc0005c514277d}} and AWS_SECRET_ACCESS_KEY={{KEYCLAW_OPAQUE_8b4f0f2d14a8b2c1}}"
+      "content": "Deploy the staging stack with AWS_ACCESS_KEY_ID={{KEYCLAW_AAA_AAAA_AA~o77dc0005c514277d}} and AWS_SECRET_ACCESS_KEY={{KEYCLAW_AAA_AAAAAA_AA~o8b4f0f2d14a8b2c1}}"
     }
   ],
   "x-keyclaw-contract": "placeholder:v2"

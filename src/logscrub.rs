@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn scrub_redacts_generic_assignments_and_placeholders() {
         let secret = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
-        let placeholder = "{{KEYCLAW_OPAQUE_deadbeefcafebabe}}";
+        let placeholder = "{{KEYCLAW_Aa0aA0aA0aA0aA0aA0aA0aA0aA0aA0~odeadbeefcafebabe}}";
         let input = format!("rewrite failed: api_key = {secret}; placeholder={placeholder}");
 
         let out = scrub(&input);
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn scrub_leaves_marker_shaped_invalid_text_unredacted() {
-        let invalid = "{{KEYCLAW_OPAQUE_invalid-token}}";
+        let invalid = "{{KEYCLAW_Aa0a-0000~oinvalid-token}}";
 
         let out = scrub(invalid);
 

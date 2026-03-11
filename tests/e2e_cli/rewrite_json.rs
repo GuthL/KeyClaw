@@ -152,10 +152,7 @@ fn rewrite_json_writes_audit_log_without_secret_material() {
         log.contains("\"rule_id\":\"opaque.high_entropy\""),
         "log={log}"
     );
-    assert!(
-        log.contains("\"placeholder\":\"{{KEYCLAW_OPAQUE_"),
-        "log={log}"
-    );
+    assert!(log.contains("\"placeholder\":\"{{KEYCLAW_"), "log={log}");
     assert!(!log.contains(TEST_SECRET_CODEX), "log={log}");
 }
 
@@ -239,7 +236,7 @@ fn rewrite_json_uses_session_placeholders_without_machine_local_vault_key() {
 
     assert_eq!(output.status.code(), Some(0));
     let out = String::from_utf8_lossy(&output.stdout);
-    assert!(out.contains("{{KEYCLAW_OPAQUE_"), "output={out}");
+    assert!(out.contains("{{KEYCLAW_"), "output={out}");
     assert!(
         !temp.path().join("vault.key").exists(),
         "session-scoped runtime should not create a vault key"
@@ -267,13 +264,10 @@ fn rewrite_json_preserves_env_style_assignment_boundaries() {
 
     assert_eq!(output.status.code(), Some(0));
     let out = String::from_utf8_lossy(&output.stdout);
-    assert!(out.contains("K_API_KEY: {{KEYCLAW_OPAQUE_"), "output={out}");
-    assert!(
-        out.contains("K_API_KEY = {{KEYCLAW_OPAQUE_"),
-        "output={out}"
-    );
+    assert!(out.contains("K_API_KEY: {{KEYCLAW_"), "output={out}");
+    assert!(out.contains("K_API_KEY = {{KEYCLAW_"), "output={out}");
     assert!(out.contains("}} in .env"), "output={out}");
-    assert!(!out.contains("install {{KEYCLAW_OPAQUE_"), "output={out}");
+    assert!(!out.contains("install {{KEYCLAW_"), "output={out}");
 }
 
 #[test]
@@ -339,9 +333,6 @@ path = "{}"
         log.contains("\"rule_id\":\"opaque.high_entropy\""),
         "log={log}"
     );
-    assert!(
-        log.contains("\"placeholder\":\"{{KEYCLAW_OPAQUE_"),
-        "log={log}"
-    );
+    assert!(log.contains("\"placeholder\":\"{{KEYCLAW_"), "log={log}");
     assert!(!log.contains(TEST_SECRET_CODEX), "log={log}");
 }

@@ -348,7 +348,7 @@ mod tests {
         let id = store
             .store(SensitiveKind::OpaqueToken, request_secret)
             .expect("store secret");
-        let placeholder = placeholder::make(&id);
+        let placeholder = placeholder::make(request_secret, &id);
         let text = handler
             .resolve_ws_response_text(&format!(r#"{{"content":"{}"}}"#, placeholder))
             .expect("resolved message");

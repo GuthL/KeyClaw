@@ -106,7 +106,7 @@ mod tests {
             subtype: "opaque.high_entropy".to_string(),
             policy: ProtectionPolicy::ReversibleSession,
             id: "deadbeefcafebabe".to_string(),
-            placeholder: "{{KEYCLAW_OPAQUE_deadbeefcafebabe}}".to_string(),
+            placeholder: "{{KEYCLAW_Aa0aA0aA~odeadbeefcafebabe}}".to_string(),
             secret: "raw-secret-value".to_string(),
             source: MatchSource::Regex,
             confidence: MatchConfidence::Medium,
