@@ -11,6 +11,7 @@ use crate::support::{can_bind, free_addr, install_fake_tool, prepend_path, wait_
 
 #[cfg(unix)]
 #[test]
+#[ignore = "slow daemon/proxy e2e"]
 fn mitm_releases_proxy_port_immediately_on_sigint() {
     let addr = free_addr();
     let socket_addr: SocketAddr = addr.parse().expect("parse socket addr");
@@ -67,6 +68,7 @@ fn mitm_releases_proxy_port_immediately_on_sigint() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "slow daemon/proxy e2e"]
 fn mitm_returns_control_to_interactive_shell_after_child_exit() {
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");

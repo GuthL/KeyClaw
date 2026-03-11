@@ -7,7 +7,8 @@
 - [ ] `cargo fmt --check`
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] `cargo build --locked`
-- [ ] `cargo test --locked -- --test-threads=1`
+- [ ] `cargo test --locked`
+- [ ] `cargo test --locked --test e2e_cli -- --ignored --test-threads=1`
 - [ ] `cargo doc --no-deps`
 
 ## Docs

@@ -37,17 +37,27 @@ For the codebase module map, see [AGENTS.md](AGENTS.md) or [CLAUDE.md](CLAUDE.md
 
 ## Local Validation
 
-Run these before you open a pull request:
+### Routine local iteration
+
+Use this as the default local loop:
 
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --locked
-cargo test --locked -- --test-threads=1
+cargo test --locked
 cargo doc --no-deps
 ```
 
-The test suite includes cases that temporarily override `HOME`, so the documented full-suite command runs the tests serially to avoid cross-test environment races.
+### Full verification before a pull request
+
+Run the slow daemon/proxy tier explicitly before you open a pull request:
+
+```bash
+cargo test --locked --test e2e_cli -- --ignored --test-threads=1
+```
+
+The default `cargo test --locked` path skips the slow daemon/proxy lifecycle e2e scenarios so day-to-day iteration stays tighter. CI still runs that ignored tier explicitly.
 
 If you are changing release packaging, also run:
 

@@ -58,6 +58,37 @@ fn release_ci_workflow_covers_supported_matrix_and_gates() {
 }
 
 #[test]
+fn contributor_validation_splits_fast_and_slow_loops() {
+    let contributing = std::fs::read_to_string("CONTRIBUTING.md").expect("read CONTRIBUTING.md");
+    let pr_template = std::fs::read_to_string(".github/pull_request_template.md")
+        .expect("read .github/pull_request_template.md");
+    let ci =
+        std::fs::read_to_string(".github/workflows/ci.yml").expect("read .github/workflows/ci.yml");
+
+    let fast = "cargo test --locked";
+    let slow = "cargo test --locked --test e2e_cli -- --ignored --test-threads=1";
+
+    assert!(
+        contributing.contains("Routine local iteration") && contributing.contains(fast),
+        "CONTRIBUTING should document the fast local loop: {contributing}"
+    );
+    assert!(
+        contributing.contains("Full verification before a pull request")
+            && contributing.contains(slow),
+        "CONTRIBUTING should document the slow daemon/proxy verification tier: {contributing}"
+    );
+    assert!(
+        pr_template.contains(fast) && pr_template.contains(slow),
+        "PR template should ask contributors for both the fast and slow verification commands: {pr_template}"
+    );
+    assert!(
+        ci.contains("cargo test --locked")
+            && ci.contains("cargo test --locked --test e2e_cli -- --ignored --test-threads=1"),
+        "CI should keep the slow ignored daemon/proxy tier covered explicitly: {ci}"
+    );
+}
+
+#[test]
 fn release_docs_define_artifacts_and_maintainer_checklist() {
     let checklist = std::fs::read_to_string("docs/release/maintainer-checklist.md")
         .expect("read docs/release/maintainer-checklist.md");

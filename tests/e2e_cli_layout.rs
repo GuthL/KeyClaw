@@ -24,3 +24,20 @@ fn e2e_cli_file_stays_focused_on_scenarios() {
         );
     }
 }
+
+#[test]
+fn slow_daemon_and_proxy_scenarios_are_explicitly_ignored() {
+    let proxy = std::fs::read_to_string("tests/e2e_cli/proxy.rs").expect("read proxy.rs");
+    let lifecycle = std::fs::read_to_string("tests/e2e_cli/process_lifecycle.rs")
+        .expect("read process_lifecycle.rs");
+
+    let marker = "#[ignore = \"slow daemon/proxy e2e\"]";
+    assert!(
+        proxy.contains(marker),
+        "tests/e2e_cli/proxy.rs should mark slow daemon/proxy scenarios as ignored: {proxy}"
+    );
+    assert!(
+        lifecycle.contains(marker),
+        "tests/e2e_cli/process_lifecycle.rs should mark slow lifecycle scenarios as ignored: {lifecycle}"
+    );
+}

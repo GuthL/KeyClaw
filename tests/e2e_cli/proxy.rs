@@ -35,6 +35,7 @@ fn proxy_fails_fast_on_broken_generated_ca_pair() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "slow daemon/proxy e2e"]
 fn proxy_detaches_by_default_and_prints_stop_instructions() {
     struct ProxyGuard(Vec<i32>);
 
@@ -108,6 +109,7 @@ fn proxy_detaches_by_default_and_prints_stop_instructions() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "slow daemon/proxy e2e"]
 fn proxy_relaunch_on_same_addr_replaces_existing_daemon() {
     fn process_alive(pid: i32) -> bool {
         unsafe { libc::kill(pid, 0) == 0 }
@@ -208,6 +210,7 @@ fn proxy_relaunch_on_same_addr_replaces_existing_daemon() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "slow daemon/proxy e2e"]
 fn proxy_relaunch_on_different_addr_keeps_existing_daemon() {
     fn process_alive(pid: i32) -> bool {
         unsafe { libc::kill(pid, 0) == 0 }
@@ -326,6 +329,7 @@ fn proxy_relaunch_on_different_addr_keeps_existing_daemon() {
 }
 
 #[test]
+#[ignore = "slow daemon/proxy e2e"]
 fn proxy_detached_fails_fast_when_configured_port_is_busy() {
     let temp = tempfile::tempdir().expect("tempdir");
     let addr = free_addr();

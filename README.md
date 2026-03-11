@@ -72,6 +72,7 @@ KeyClaw ships first-class wrappers for Claude Code and Codex. In generic proxy m
 |------|------|-------|
 | Claude Code | `keyclaw claude ...` wrapper or `source ~/.keyclaw/env.sh` | First-class CLI path |
 | Codex | `keyclaw codex ...` wrapper or `source ~/.keyclaw/env.sh` | First-class CLI path |
+| macOS desktop apps | System proxy + trusted KeyClaw CA | Finder-launched apps do not inherit shell proxy env by default; see [docs/macos-gui-apps.md](docs/macos-gui-apps.md) |
 | ChatGPT / OpenAI web traffic | Local proxy + trusted CA | In scope at the host layer for `chatgpt.com` / `chat.openai.com` when traffic truly traverses the proxy |
 | Direct API clients | `HTTP_PROXY` / `HTTPS_PROXY` + KeyClaw CA | Default hosts include OpenAI, Anthropic, Google, Together, Groq, Mistral, Cohere, and DeepSeek |
 
@@ -160,6 +161,8 @@ For tools outside the built-in `claude` / `codex` wrappers:
 3. Route the client through `http://127.0.0.1:8877`, either via shell env vars or app/OS proxy settings.
 4. Verify with `keyclaw doctor` and a real request that traffic is actually being intercepted.
 
+GUI desktop apps launched outside your shell do not necessarily inherit `source ~/.keyclaw/env.sh`. On macOS, the reliable path for `Claude.app`, `Codex.app`, `ChatGPT.app`, and similar desktop apps is to trust `~/.keyclaw/ca.crt` in the login keychain and use the macOS system proxy instead of assuming shell env injection will reach them. See [docs/macos-gui-apps.md](docs/macos-gui-apps.md) for the current supported flow and rollback steps.
+
 Built-in generic-proxy hosts are:
 
 - `api.openai.com`, `chat.openai.com`, `chatgpt.com`
@@ -228,6 +231,20 @@ Autostart only keeps the daemon alive. Shells still need `source ~/.keyclaw/env.
 If you want the proxy attached to the current terminal instead, use `keyclaw proxy start --foreground`.
 
 > **Tip:** Add `[ -f ~/.keyclaw/env.sh ] && source ~/.keyclaw/env.sh` to your `~/.bashrc` or `~/.zshrc` to auto-route through KeyClaw in new shells while the proxy is already running. The detached proxy does not auto-start after reboot unless you enable `keyclaw proxy autostart enable`, so after a reboot you may need to start it again.
+
+### macOS desktop apps
+
+The CLI wrappers (`keyclaw claude ...`, `keyclaw codex ...`) are the preferred path on macOS because they inject proxy settings and CA trust into the child process directly.
+
+Finder-launched apps are different: they are started by macOS, not by your shell, so they usually bypass `~/.keyclaw/env.sh` unless you configure the OS proxy itself. The current supported desktop-app flow is:
+
+1. `keyclaw init`
+2. start a healthy proxy and confirm `keyclaw proxy status`
+3. trust `~/.keyclaw/ca.crt` in the macOS login keychain for SSL
+4. enable the macOS HTTP and HTTPS system proxy on the active network service
+5. fully quit and relaunch the desktop app
+
+If the system proxy is enabled while no healthy KeyClaw listener is actually serving the advertised address, desktop apps and browsers can fail with proxy-connection errors. Use [docs/macos-gui-apps.md](docs/macos-gui-apps.md) for the exact commands, verification steps, and rollback path.
 
 ## How It Works
 

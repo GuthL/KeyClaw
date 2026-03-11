@@ -67,6 +67,18 @@ include = ["*my-custom-api.com*"]
 rule_ids = ["generic-api-key"]
 patterns = ["^sk-test-"]
 secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+
+[[hooks]]
+event = "secret_detected"
+rule_ids = ["generic-api-key"]
+action = "exec"
+command = "notify-slack --channel security"
+
+[[hooks]]
+event = "request_redacted"
+rule_ids = ["*"]
+action = "log"
+path = "~/.keyclaw/hooks.log"
 ```
 
 Supported top-level sections today:
@@ -79,6 +91,7 @@ Supported top-level sections today:
 - `audit`
 - `hosts`
 - `allowlist`
+- `hooks`
 
 ## Environment Variables
 
@@ -129,6 +142,18 @@ By default, KeyClaw writes one JSON line per redacted secret to `~/.keyclaw/audi
 - Set `KEYCLAW_AUDIT_LOG=/path/to/file` or `[audit] path = "/path/to/file"` to relocate it.
 - Rotation is the operator's job; KeyClaw appends and does not rotate automatically.
 
+## Hooks
+
+Hooks let you trigger local actions from request-side rewrite events without exposing the raw secret value.
+
+- `event = "secret_detected"` fires when KeyClaw finds a secret during request rewriting
+- `event = "request_redacted"` fires after the request has been rewritten, just before forwarding upstream
+- `action = "exec"` runs a local command with sanitized metadata in env vars and a JSON payload on `stdin`
+- `action = "log"` appends a JSON line to the configured file
+- `action = "block"` rejects matching `secret_detected` requests with `hook_blocked`
+
+Hook payloads include only `event`, `rule_id`, `placeholder`, and `request_host`. Raw secrets are not passed to hook commands or hook log files.
+
 ## Daemon Restart Rules
 
 If you run KeyClaw as a detached daemon with `keyclaw proxy`, daemon-side settings are read when that process starts. After changing `~/.keyclaw/config.toml` or variables such as `KEYCLAW_PROXY_ADDR`, `KEYCLAW_LOG_LEVEL`, `KEYCLAW_GITLEAKS_CONFIG`, `KEYCLAW_NOTICE_MODE`, or `KEYCLAW_REQUIRE_MITM_EFFECTIVE`, restart the proxy so the running daemon picks them up.
@@ -136,6 +161,7 @@ If you run KeyClaw as a detached daemon with `keyclaw proxy`, daemon-side settin
 ## Notes
 
 - Repeated `--include` flags are available on `keyclaw proxy`, `keyclaw proxy start`, `keyclaw mitm`, `keyclaw codex`, and `keyclaw claude`. They are merged into the effective interception list for that process and accept `*` / `?` glob patterns.
+- GUI desktop apps launched by the OS usually do not inherit the shell proxy environment from `~/.keyclaw/env.sh`; on macOS, use the system proxy path documented in [macOS desktop-app guide](macos-gui-apps.md).
 - KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`.
 - By default, KeyClaw creates a machine-local `vault.key` next to the vault instead of relying on a built-in shared passphrase.
 - `KEYCLAW_UNSAFE_LOG=true` is strictly for debugging and may expose raw secret material in logs.

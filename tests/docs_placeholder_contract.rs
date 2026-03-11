@@ -202,6 +202,37 @@ fn readme_project_structure_shows_split_proxy_and_launcher_modules() {
 }
 
 #[test]
+fn docs_cover_hooks_and_macos_desktop_app_flow() {
+    let readme = std::fs::read_to_string("README.md").expect("read README.md");
+    let docs_readme = std::fs::read_to_string("docs/README.md").expect("read docs/README.md");
+    let config =
+        std::fs::read_to_string("docs/configuration.md").expect("read docs/configuration.md");
+    let macos =
+        std::fs::read_to_string("docs/macos-gui-apps.md").expect("read docs/macos-gui-apps.md");
+
+    assert!(
+        readme.contains("macOS desktop apps")
+            && readme.contains("Finder-launched apps")
+            && readme.contains("docs/macos-gui-apps.md"),
+        "README.md should explain the supported macOS desktop-app path: {readme}"
+    );
+    assert!(
+        docs_readme.contains("[macOS desktop-app guide](macos-gui-apps.md)"),
+        "docs/README.md should link the macOS desktop-app guide: {docs_readme}"
+    );
+    assert!(
+        config.contains("[[hooks]]") && config.contains("- `hooks`"),
+        "docs/configuration.md should document hooks as a top-level config section: {config}"
+    );
+    assert!(
+        macos.contains("security add-trusted-cert")
+            && macos.contains("networksetup -setsecurewebproxystate")
+            && macos.contains("Roll Back"),
+        "docs/macos-gui-apps.md should document CA trust, system proxy setup, and rollback: {macos}"
+    );
+}
+
+#[test]
 fn proxy_docs_prefer_sourcing_env_script_and_describe_reboot_behavior() {
     let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
     let claude = std::fs::read_to_string("CLAUDE.md").expect("read CLAUDE.md");
