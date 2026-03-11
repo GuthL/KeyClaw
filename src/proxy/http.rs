@@ -4,7 +4,7 @@ use std::sync::Arc;
 use http_body_util::BodyExt;
 use hudsucker::{
     hyper::{
-        header::{CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
+        header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
         Method, Request, Response, StatusCode,
     },
     Body, HttpContext, HttpHandler, RequestOrResponse,
@@ -160,9 +160,7 @@ impl HttpHandler for KeyclawHttpHandler {
         }
 
         let mut rewritten_req = Request::from_parts(parts, body_from_vec(rewritten.body.clone()));
-        if let Ok(value) = rewritten.body.len().to_string().parse() {
-            rewritten_req.headers_mut().insert(CONTENT_LENGTH, value);
-        }
+        set_fixed_body_headers(rewritten_req.headers_mut(), rewritten.body.len());
         if !rewritten.replacements.is_empty() {
             if let Ok(value) = crate::placeholder::CONTRACT_MARKER_VALUE.parse() {
                 rewritten_req
@@ -224,9 +222,7 @@ impl HttpHandler for KeyclawHttpHandler {
 
         parts.headers.remove(TRANSFER_ENCODING);
         let mut resp = Response::from_parts(parts, body_from_vec(body_bytes.clone()));
-        if let Ok(value) = body_bytes.len().to_string().parse() {
-            resp.headers_mut().insert(CONTENT_LENGTH, value);
-        }
+        set_fixed_body_headers(resp.headers_mut(), body_bytes.len());
         resp
     }
 
@@ -234,5 +230,35 @@ impl HttpHandler for KeyclawHttpHandler {
         request_host(req)
             .map(|host| allowed(&self.allowed_hosts, &host))
             .unwrap_or(false)
+    }
+}
+
+fn set_fixed_body_headers(headers: &mut HeaderMap, len: usize) {
+    headers.remove(TRANSFER_ENCODING);
+    if let Ok(value) = len.to_string().parse() {
+        headers.insert(CONTENT_LENGTH, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hudsucker::hyper::header::{HeaderMap, HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
+
+    use super::set_fixed_body_headers;
+
+    #[test]
+    fn set_fixed_body_headers_removes_transfer_encoding_and_sets_content_length() {
+        let mut headers = HeaderMap::new();
+        headers.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
+
+        set_fixed_body_headers(&mut headers, 42);
+
+        assert!(!headers.contains_key(TRANSFER_ENCODING));
+        assert_eq!(
+            headers
+                .get(CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok()),
+            Some("42")
+        );
     }
 }

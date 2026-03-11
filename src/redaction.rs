@@ -184,7 +184,7 @@ where
         .map_err(|e| KeyclawError::uncoded_with_source("decode json", e))?;
 
     if let Some(obj) = parsed.as_object_mut() {
-        walk_input_message_arrays(obj, &mut transform)?;
+        walk_message_arrays(obj, &mut transform)?;
     }
 
     serde_json::to_vec(&parsed).map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
@@ -202,7 +202,7 @@ where
     for key in &["messages", "input"] {
         if let Some(arr) = obj.get_mut(*key).and_then(|v| v.as_array_mut()) {
             for msg in arr.iter_mut() {
-                walk_msg_content_field(msg, transform)?;
+                rewrite_message_content_fields(msg, transform)?;
             }
         }
     }
@@ -210,29 +210,18 @@ where
     Ok(())
 }
 
-fn walk_input_message_arrays<F>(
-    obj: &mut serde_json::Map<String, Value>,
+/// Rewrite user-authored `content` fields in a single message object.
+pub(crate) fn rewrite_message_content_fields<F>(
+    msg: &mut Value,
     transform: &mut F,
 ) -> Result<(), KeyclawError>
 where
     F: FnMut(&str) -> Result<String, KeyclawError>,
 {
-    for key in &["messages", "input"] {
-        if let Some(arr) = obj.get_mut(*key).and_then(|v| v.as_array_mut()) {
-            for msg in arr.iter_mut() {
-                walk_input_msg_content_field(msg, transform)?;
-            }
-        }
+    if !should_rewrite_message(msg) {
+        return Ok(());
     }
 
-    Ok(())
-}
-
-/// Walk the `content` field of a single message object.
-fn walk_msg_content_field<F>(msg: &mut Value, transform: &mut F) -> Result<(), KeyclawError>
-where
-    F: FnMut(&str) -> Result<String, KeyclawError>,
-{
     let obj = match msg.as_object_mut() {
         Some(o) => o,
         None => return Ok(()),
@@ -262,20 +251,15 @@ where
     Ok(())
 }
 
-fn walk_input_msg_content_field<F>(msg: &mut Value, transform: &mut F) -> Result<(), KeyclawError>
-where
-    F: FnMut(&str) -> Result<String, KeyclawError>,
-{
-    let role = msg
+fn should_rewrite_message(msg: &Value) -> bool {
+    match msg
         .as_object()
         .and_then(|obj| obj.get("role"))
-        .and_then(Value::as_str);
-
-    if matches!(role, Some("developer" | "system")) {
-        return Ok(());
+        .and_then(Value::as_str)
+    {
+        Some("user") | None => true,
+        Some(_) => false,
     }
-
-    walk_msg_content_field(msg, transform)
 }
 
 pub fn resolve_json_placeholders<F>(

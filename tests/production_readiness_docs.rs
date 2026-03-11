@@ -14,6 +14,14 @@ fn production_readiness_plan_locks_v0x_release_decisions() {
         "production readiness plan should name the supported platform matrix: {plan}"
     );
     assert!(
+        plan.contains("Claude Code")
+            && plan.contains("Codex")
+            && plan.contains("OpenAI")
+            && plan.contains("Anthropic")
+            && plan.contains("routes through the KeyClaw proxy"),
+        "production readiness plan should record the supported client-flow scope: {plan}"
+    );
+    assert!(
         plan.contains("machine-local") && plan.contains("vault.key"),
         "production readiness plan should record the chosen vault-key strategy: {plan}"
     );
@@ -47,6 +55,7 @@ fn production_readiness_project_records_issue_one_decisions() {
 
     for criterion in [
         "- [x] The supported platform matrix is explicitly documented.",
+        "- [x] The supported client-flow scope is explicitly documented.",
         "- [x] The vault/key-management approach for v0.x is explicitly decided and recorded.",
         "- [x] The documentation format decision is recorded.",
         "- [x] The logging-scope decision is recorded.",
@@ -62,6 +71,12 @@ fn production_readiness_project_records_issue_one_decisions() {
     assert!(
         issue_one.contains("Decision summary:"),
         "issue #1 should preserve the locked-scope summary in the project mirror: {issue_one}"
+    );
+    assert!(
+        issue_one.contains("OpenAI")
+            && issue_one.contains("Anthropic")
+            && issue_one.contains("KeyClaw proxy"),
+        "issue #1 should preserve the supported client-flow scope in the project mirror: {issue_one}"
     );
 }
 

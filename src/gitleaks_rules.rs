@@ -3,7 +3,10 @@ use std::path::Path;
 use regex::Regex;
 use serde::Deserialize;
 
+use crate::entropy::EntropyConfig;
 use crate::errors::KeyclawError;
+
+const ENTROPY_RULE_ID: &str = "entropy";
 
 /// A single compiled gitleaks rule ready for matching.
 pub struct Rule {
@@ -12,12 +15,16 @@ pub struct Rule {
     pub keywords: Vec<String>,
     /// Which capture group holds the secret (0 = full match).
     pub secret_group: usize,
+    /// Minimum Shannon entropy for the matched secret. If set,
+    /// matches below this threshold are discarded as likely false positives.
+    pub min_entropy: Option<f64>,
 }
 
 /// All compiled gitleaks rules.
 pub struct RuleSet {
     pub rules: Vec<Rule>,
     pub skipped_rules: usize,
+    pub entropy_config: EntropyConfig,
 }
 
 // ── TOML deserialization shapes ──────────────────────────────
@@ -37,6 +44,8 @@ struct TomlRule {
     keywords: Vec<String>,
     #[serde(default, rename = "secretGroup")]
     secret_group: Option<usize>,
+    #[serde(default)]
+    entropy: Option<f64>,
 }
 
 // ── Loading ──────────────────────────────────────────────────
@@ -72,6 +81,7 @@ impl RuleSet {
                         regex: compiled,
                         keywords: r.keywords.iter().map(|k| k.to_lowercase()).collect(),
                         secret_group: r.secret_group.unwrap_or(0),
+                        min_entropy: r.entropy,
                     });
                 }
                 Err(_) => {
@@ -83,6 +93,7 @@ impl RuleSet {
         Ok(RuleSet {
             rules,
             skipped_rules: skipped,
+            entropy_config: EntropyConfig::default(),
         })
     }
 
@@ -121,6 +132,13 @@ impl RuleSet {
                     continue;
                 }
 
+                // Skip if matched secret's entropy is below the rule's threshold
+                if let Some(min_entropy) = rule.min_entropy {
+                    if crate::entropy::shannon_entropy(secret) < min_entropy {
+                        continue;
+                    }
+                }
+
                 // Skip if this range overlaps with an already-found match
                 if matches.iter().any(|m| m.start < end && start < m.end) {
                     continue;
@@ -136,6 +154,30 @@ impl RuleSet {
                     start,
                     end,
                     secret,
+                });
+            }
+        }
+
+        // Entropy-based detection pass
+        if self.entropy_config.enabled {
+            for em in crate::entropy::find_high_entropy_tokens(
+                input,
+                self.entropy_config.min_len,
+                self.entropy_config.threshold,
+            ) {
+                // Skip if overlaps with an existing regex match
+                if matches.iter().any(|m| m.start < em.end && em.start < m.end) {
+                    continue;
+                }
+                // Skip if inside an existing placeholder
+                if inside_placeholder(input, em.start, em.end) {
+                    continue;
+                }
+                matches.push(SecretMatch {
+                    rule_id: ENTROPY_RULE_ID,
+                    start: em.start,
+                    end: em.end,
+                    secret: em.token,
                 });
             }
         }
@@ -203,6 +245,98 @@ regex = '[a-f0-9]{16}'
         );
     }
 
+    #[test]
+    fn find_secrets_includes_entropy_matches() {
+        use crate::entropy::EntropyConfig;
+        let rules = RuleSet {
+            rules: Vec::new(),
+            skipped_rules: 0,
+            entropy_config: EntropyConfig::default(),
+        };
+        let input = "token=aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+        let matches = rules.find_secrets(input);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].rule_id, "entropy");
+        assert_eq!(matches[0].secret, "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v");
+    }
+
+    #[test]
+    fn find_secrets_entropy_disabled() {
+        use crate::entropy::EntropyConfig;
+        let rules = RuleSet {
+            rules: Vec::new(),
+            skipped_rules: 0,
+            entropy_config: EntropyConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        };
+        let input = "token=aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+        let matches = rules.find_secrets(input);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn find_secrets_respects_per_rule_entropy_threshold() {
+        // Rule requires entropy >= 3.0; a low-entropy match should be skipped
+        let rules = RuleSet::from_toml(
+            r#"
+[[rules]]
+id = "high-entropy-only"
+regex = '[a-zA-Z0-9]{20,}'
+entropy = 3.0
+"#,
+        )
+        .expect("ruleset");
+
+        // Low entropy: repeated pattern
+        let low = "abcabcabcabcabcabcabcabc";
+        assert!(
+            rules.find_secrets(low).is_empty(),
+            "low-entropy match should be filtered by per-rule threshold"
+        );
+
+        // High entropy: random-looking
+        let high = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
+        let matches = rules.find_secrets(high);
+        assert_eq!(matches.len(), 1, "high-entropy match should pass threshold");
+        assert_eq!(matches[0].rule_id, "high-entropy-only");
+    }
+
+    #[test]
+    fn find_secrets_no_entropy_threshold_accepts_all_matches() {
+        // Rule without entropy field — all matches accepted
+        let rules = RuleSet::from_toml(
+            r#"
+[[rules]]
+id = "no-threshold"
+regex = '[a-zA-Z]{20,}'
+"#,
+        )
+        .expect("ruleset");
+
+        let input = "abcabcabcabcabcabcabcabc";
+        let matches = rules.find_secrets(input);
+        assert_eq!(
+            matches.len(),
+            1,
+            "without entropy threshold, all matches pass"
+        );
+    }
+
+    #[test]
+    fn bundled_rules_parse_entropy_field() {
+        let rules = RuleSet::bundled().expect("bundled rules");
+        let with_entropy = rules
+            .rules
+            .iter()
+            .filter(|r| r.min_entropy.is_some())
+            .count();
+        assert!(
+            with_entropy >= 100,
+            "expected at least 100 rules with entropy thresholds, found {with_entropy}"
+        );
+    }
     #[test]
     fn bundled_rules_load_without_skips() {
         let rules = RuleSet::bundled().expect("bundled rules");
