@@ -20,6 +20,53 @@ use crate::vault::Store;
 
 const MAX_DECODE_DEPTH: u8 = 2;
 const MAX_DECODE_INPUT_BYTES: usize = 64 * 1024;
+const LARGE_HIDDEN_PROMPT_BYTES: usize = 8 * 1024;
+const LARGE_PROMPT_SECRET_HINTS: &[&str] = &[
+    "api key",
+    "api-key",
+    "api_key",
+    "x-api-key",
+    "access token",
+    "access-token",
+    "access_token",
+    "auth token",
+    "auth-token",
+    "auth_token",
+    "bearer ",
+    "authorization",
+    "client secret",
+    "client-secret",
+    "client_secret",
+    "private key",
+    "private-key",
+    "private_key",
+    "secret key",
+    "secret-key",
+    "secret_key",
+    "password",
+    "passwd",
+    "credential",
+    "-----begin",
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "akia",
+    "asia",
+    "xoxa-",
+    "xoxb-",
+    "xoxp-",
+    "xoxs-",
+    "aiza",
+    "npm_",
+    "sq0atp-",
+    "sq0csp-",
+    "rk_",
+    "pk_",
+    "hf_",
+    "glpat-",
+];
 
 static BASE64_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"([A-Za-z0-9+/]{24,}={0,2}|[A-Za-z0-9_-]{24,})").expect("valid base64 token regex")
@@ -65,6 +112,10 @@ impl Processor {
 
     /// Rewrite user-authored content in a standard chat-style payload.
     pub fn rewrite_and_evaluate(&self, body: &[u8]) -> Result<RewriteResult, KeyclawError> {
+        if should_use_input_only_rewrite(body) {
+            return self.rewrite_and_evaluate_input_only(body);
+        }
+
         self.rewrite_json_messages(body, |body, rewrite| {
             redaction::walk_message_content(body, |text| rewrite(text))
         })
@@ -647,6 +698,33 @@ impl Base64Variant {
             Self::UrlSafeNoPad => URL_SAFE_NO_PAD.encode(text),
         }
     }
+}
+
+fn should_use_input_only_rewrite(body: &[u8]) -> bool {
+    let Ok(parsed) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    let Some(obj) = parsed.as_object() else {
+        return false;
+    };
+
+    ["prompt", "instructions"].iter().any(|field| {
+        obj.get(*field)
+            .and_then(Value::as_str)
+            .map(is_large_hidden_prompt_field)
+            .unwrap_or(false)
+    })
+}
+
+fn is_large_hidden_prompt_field(text: &str) -> bool {
+    text.len() >= LARGE_HIDDEN_PROMPT_BYTES && !contains_prompt_secret_hint(text)
+}
+
+fn contains_prompt_secret_hint(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    LARGE_PROMPT_SECRET_HINTS
+        .iter()
+        .any(|hint| lower.contains(hint))
 }
 
 #[cfg(test)]

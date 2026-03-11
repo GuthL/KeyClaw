@@ -234,6 +234,26 @@ fn docs_cover_hooks_and_macos_desktop_app_flow() {
 }
 
 #[test]
+fn timeout_docs_cover_rewrite_budget_and_current_default() {
+    let readme = std::fs::read_to_string("README.md").expect("read README.md");
+    let config =
+        std::fs::read_to_string("docs/configuration.md").expect("read docs/configuration.md");
+
+    assert!(
+        readme.contains("`KEYCLAW_DETECTOR_TIMEOUT` | `20s`")
+            && readme.contains("request-body collection and rewrite")
+            && readme.contains("Large top-level `prompt` or `instructions` strings"),
+        "README.md should document the current timeout default and rewrite scope: {readme}"
+    );
+    assert!(
+        config.contains("`KEYCLAW_DETECTOR_TIMEOUT` | `20s`")
+            && config.contains("collection and rewrite")
+            && config.contains("Large top-level `prompt` or `instructions` strings"),
+        "docs/configuration.md should document the current timeout default and rewrite scope: {config}"
+    );
+}
+
+#[test]
 fn proxy_docs_prefer_sourcing_env_script_and_describe_reboot_behavior() {
     let agents = std::fs::read_to_string("AGENTS.md").expect("read AGENTS.md");
     let claude = std::fs::read_to_string("CLAUDE.md").expect("read CLAUDE.md");

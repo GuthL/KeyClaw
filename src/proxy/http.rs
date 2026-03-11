@@ -99,7 +99,10 @@ impl HttpHandler for KeyclawHttpHandler {
                 .into();
             }
             Err(_) => {
-                log_warn("body read timeout - returning timeout error".to_string());
+                log_warn(format!(
+                    "body read timeout after {} ms for host {host}; raise KEYCLAW_DETECTOR_TIMEOUT if large requests are expected",
+                    self.body_timeout.as_millis()
+                ));
                 return json_error_response(
                     StatusCode::REQUEST_TIMEOUT,
                     CODE_REQUEST_TIMEOUT,
@@ -156,7 +159,11 @@ impl HttpHandler for KeyclawHttpHandler {
                 return Request::from_parts(parts, body_from_vec(original_payload)).into();
             }
             Err(_) => {
-                log_warn("rewrite timeout".to_string());
+                log_warn(rewrite_timeout_message(
+                    &host,
+                    original_payload.len(),
+                    self.body_timeout,
+                ));
                 if self.processor.strict_mode {
                     return json_error_response(
                         StatusCode::REQUEST_TIMEOUT,
@@ -299,11 +306,20 @@ fn set_fixed_body_headers(headers: &mut HeaderMap, len: usize) {
     }
 }
 
+fn rewrite_timeout_message(host: &str, body_len: usize, timeout: std::time::Duration) -> String {
+    format!(
+        "rewrite timeout after {}s for host {host} on {body_len}-byte JSON body; increase KEYCLAW_DETECTOR_TIMEOUT if this payload shape is expected",
+        timeout.as_secs_f64()
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use hudsucker::hyper::header::{CONTENT_LENGTH, HeaderMap, HeaderValue, TRANSFER_ENCODING};
 
-    use super::set_fixed_body_headers;
+    use super::{rewrite_timeout_message, set_fixed_body_headers};
 
     #[test]
     fn set_fixed_body_headers_removes_transfer_encoding_and_sets_content_length() {
@@ -318,6 +334,20 @@ mod tests {
                 .get(CONTENT_LENGTH)
                 .and_then(|value| value.to_str().ok()),
             Some("42")
+        );
+    }
+
+    #[test]
+    fn rewrite_timeout_message_mentions_host_body_size_and_knob() {
+        let message =
+            rewrite_timeout_message("api.anthropic.com", 1_048_576, Duration::from_secs(20));
+
+        assert!(message.contains("api.anthropic.com"), "message={message}");
+        assert!(message.contains("1048576-byte"), "message={message}");
+        assert!(message.contains("20s"), "message={message}");
+        assert!(
+            message.contains("KEYCLAW_DETECTOR_TIMEOUT"),
+            "message={message}"
         );
     }
 }

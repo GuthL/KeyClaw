@@ -217,7 +217,7 @@ impl Config {
             vault_passphrase: None,
             fail_closed: true,
             max_body_bytes: 2 * 1024 * 1024,
-            detector_timeout: Duration::from_secs(4),
+            detector_timeout: Duration::from_secs(20),
             known_codex_hosts: default_codex_hosts(),
             known_claude_hosts: default_claude_hosts(),
             known_provider_hosts: default_provider_hosts(),
@@ -745,7 +745,7 @@ mod tests {
         assert_eq!(cfg.gitleaks_config_path, None);
         assert_eq!(cfg.log_level, LogLevel::Info);
         assert!(!cfg.unsafe_log);
-        assert_eq!(cfg.detector_timeout, Duration::from_secs(4));
+        assert_eq!(cfg.detector_timeout, Duration::from_secs(20));
         assert_eq!(cfg.notice_mode, NoticeMode::Verbose);
         assert_eq!(
             cfg.audit_log_path,

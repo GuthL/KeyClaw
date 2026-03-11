@@ -6,6 +6,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD_NO_PAD;
 use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::pipeline::Processor;
 use keyclaw::placeholder;
@@ -572,6 +574,49 @@ fn request_body_timeout_returns_request_timeout_error() {
 }
 
 #[test]
+fn claude_style_base64_heavy_payload_reaches_upstream_before_timeout() {
+    let (upstream_url, rx, _upstream_guard) = start_upstream();
+    let (processor, ca_cert, ca_key) = new_processor_with_ca();
+
+    let host = url::Url::parse(&upstream_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .expect("host");
+
+    let mut proxy = Server::new(
+        "127.0.0.1:0".to_string(),
+        vec![host],
+        Arc::new(processor),
+        ca_cert,
+        ca_key,
+    );
+    proxy.max_body_bytes = 1 << 20;
+    proxy.body_timeout = Duration::from_millis(150);
+    let running = proxy.start().expect("start proxy");
+
+    let payload = base64_heavy_claude_prompt_payload(512);
+    let client = Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", running.addr)).expect("proxy"))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+
+    let resp = client
+        .post(&upstream_url)
+        .header("content-type", "application/json")
+        .body(payload.clone())
+        .send()
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let capture = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream capture");
+    assert_eq!(capture.body, payload);
+}
+
+#[test]
 fn sse_input_json_delta_fragments_resolve_split_placeholders() {
     let placeholder = placeholder::make(&placeholder::make_id(CODEX_SECRET));
     let split = placeholder.len() / 2;
@@ -662,6 +707,21 @@ fn sse_input_json_delta_fragments_resolve_split_placeholders() {
         "placeholder fragments leaked to client SSE: {:?}",
         deltas
     );
+}
+
+fn base64_heavy_claude_prompt_payload(chunks: usize) -> String {
+    let mut prompt = String::new();
+    for idx in 0..chunks {
+        if !prompt.is_empty() {
+            prompt.push(' ');
+        }
+        let context = format!(
+            "{{\"chunk\":{idx},\"note\":\"Claude desktop context window metadata with mixedCase123 and retry budget info\"}}"
+        );
+        prompt.push_str(&STANDARD_NO_PAD.encode(context));
+    }
+
+    format!(r#"{{"prompt":"{prompt}"}}"#)
 }
 
 #[test]

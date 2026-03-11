@@ -448,7 +448,7 @@ Hook payloads include only `event`, `rule_id`, `placeholder`, and `request_host`
 | `KEYCLAW_PROVIDER_HOSTS` | `generativelanguage.googleapis.com,api.together.xyz,api.groq.com,api.mistral.ai,api.cohere.ai,api.deepseek.com` | Additional provider API hosts intercepted by default |
 | `KEYCLAW_INCLUDE_HOSTS` | unset | Extra exact hosts or glob patterns to intercept |
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` | Maximum request body size |
-| `KEYCLAW_DETECTOR_TIMEOUT` | `4s` | Timeout for request-body inspection and streaming body reads |
+| `KEYCLAW_DETECTOR_TIMEOUT` | `20s` | Timeout for request-body collection and rewrite processing; raise it for very large CLI payloads if `request_timeout` warnings persist |
 | `KEYCLAW_GITLEAKS_CONFIG` | bundled rules | Path to custom `gitleaks.toml` |
 | `KEYCLAW_AUDIT_LOG` | `~/.keyclaw/audit.log` | Append-only JSONL audit log path, or `off` to disable |
 | `KEYCLAW_LOG_LEVEL` | `info` | Runtime stderr verbosity: `error`, `warn`, `info`, `debug` |
@@ -460,6 +460,8 @@ Hook payloads include only `event`, `rule_id`, `placeholder`, and `request_host`
 | `KEYCLAW_ENTROPY_ENABLED` | `true` | Enable high-entropy secret detection |
 | `KEYCLAW_ENTROPY_THRESHOLD` | `3.5` | Minimum entropy score for entropy-based matches |
 | `KEYCLAW_ENTROPY_MIN_LEN` | `20` | Minimum token length for entropy-based matches |
+
+Large top-level `prompt` or `instructions` strings that look like machine-generated hidden context are downgraded to input-only rewriting once they get big enough and do not contain obvious credential hints. Normal `messages` / `input` content is still inspected, and large prompt bodies that clearly contain secrets are still rewritten.
 
 ### Setting Variables
 
@@ -531,7 +533,7 @@ KeyClaw uses deterministic error codes for programmatic handling:
 | `mitm_not_effective` | Proxy bypass detected |
 | `body_too_large` | Request body exceeds `KEYCLAW_MAX_BODY_BYTES` |
 | `invalid_json` | Failed to parse or rewrite request JSON |
-| `request_timeout` | Request body read timed out before inspection completed |
+| `request_timeout` | Request body read or rewrite timed out before inspection completed |
 | `strict_resolve_failed` | Placeholder resolution failed in strict mode |
 | `hook_blocked` | A configured hook rejected the request |
 

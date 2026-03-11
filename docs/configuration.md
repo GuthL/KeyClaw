@@ -41,7 +41,7 @@ mode = "minimal"
 fail_closed = true
 dry_run = false
 max_body_bytes = 2097152
-detector_timeout = "4s"
+detector_timeout = "20s"
 gitleaks_config = "~/.config/keyclaw/gitleaks.toml"
 entropy_enabled = true
 entropy_threshold = 3.5
@@ -107,7 +107,7 @@ Supported top-level sections today:
 | `KEYCLAW_PROVIDER_HOSTS` | `generativelanguage.googleapis.com,api.together.xyz,api.groq.com,api.mistral.ai,api.cohere.ai,api.deepseek.com` | Additional provider API hosts intercepted by default |
 | `KEYCLAW_INCLUDE_HOSTS` | unset | Extra exact hosts or glob patterns to intercept |
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` | Request-body size limit |
-| `KEYCLAW_DETECTOR_TIMEOUT` | `4s` | Request inspection timeout |
+| `KEYCLAW_DETECTOR_TIMEOUT` | `20s` | Request-body collection and rewrite timeout; raise it for very large CLI payloads if `request_timeout` warnings persist |
 | `KEYCLAW_GITLEAKS_CONFIG` | bundled rules | Path to override `gitleaks.toml` |
 | `KEYCLAW_AUDIT_LOG` | `~/.keyclaw/audit.log` | Audit log path or `off` |
 | `KEYCLAW_LOG_LEVEL` | `info` | `error`, `warn`, `info`, or `debug` |
@@ -119,6 +119,8 @@ Supported top-level sections today:
 | `KEYCLAW_ENTROPY_ENABLED` | `true` | Enable entropy-based secret detection |
 | `KEYCLAW_ENTROPY_THRESHOLD` | `3.5` | Entropy threshold for entropy matches |
 | `KEYCLAW_ENTROPY_MIN_LEN` | `20` | Minimum token length for entropy matches |
+
+Large top-level `prompt` or `instructions` strings that look like hidden client context are downgraded to input-only rewriting once they get large enough and do not contain obvious credential hints. Message-array content is still inspected, and large prompt bodies that clearly contain secrets are still rewritten.
 
 ## Allowlist
 

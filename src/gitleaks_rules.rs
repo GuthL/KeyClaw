@@ -243,6 +243,9 @@ impl RuleSet {
                     continue;
                 }
             }
+            if !rule_fast_prefilter(rule, input) {
+                continue;
+            }
 
             for caps in rule.regex.captures_iter(input) {
                 let full_match = caps.get(0).unwrap();
@@ -475,6 +478,17 @@ fn normalize_stopwords(stopwords: &[String]) -> HashSet<String> {
         .collect()
 }
 
+fn rule_fast_prefilter(rule: &Rule, input: &str) -> bool {
+    // JWT regex matching can become expensive on base64-encoded JSON blobs
+    // that begin with `ey...` but do not contain the `header.payload.signature`
+    // dot structure of a real token.
+    if rule.id.eq_ignore_ascii_case("jwt") {
+        return input.contains(".ey") && input.matches('.').take(2).count() == 2;
+    }
+
+    true
+}
+
 fn normalize_secret_key(secret: &str) -> String {
     secret.trim().to_ascii_lowercase()
 }
@@ -679,5 +693,24 @@ regex = '[a-zA-Z]{20,}'
             rules.skipped_rules >= 1,
             "payload scanning should skip unsupported path-scoped entries"
         );
+    }
+
+    #[test]
+    fn jwt_fast_prefilter_requires_dot_separators() {
+        let rules = RuleSet::bundled().expect("bundled rules");
+        let jwt_rule = rules
+            .rules
+            .iter()
+            .find(|rule| rule.id == "jwt")
+            .expect("jwt rule");
+
+        assert!(!super::rule_fast_prefilter(
+            jwt_rule,
+            "eyJjaHVuayI6MCwibm90ZSI6IkNsb2RlIGRlc2t0b3AgY29udGV4dCJ9"
+        ));
+        assert!(super::rule_fast_prefilter(
+            jwt_rule,
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.c2lnbmF0dXJl"
+        ));
     }
 }

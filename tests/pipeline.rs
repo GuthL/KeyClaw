@@ -50,6 +50,22 @@ fn make_processor_with_rules_and_second_pass(
     }
 }
 
+fn large_prompt_text() -> String {
+    let chunk = concat!(
+        "fn deploy_staging_stack() {\n",
+        "  let config = read_config(\"service.toml\");\n",
+        "  println!(\"compile release build and upload artifacts\");\n",
+        "  let metadata = {\"workspace\":\"repo\",\"task\":\"scan\",\"mode\":\"safe\"};\n",
+        "}\n"
+    );
+    chunk.repeat(80)
+}
+
+fn large_prompt_payload(field: &str) -> Vec<u8> {
+    let text = large_prompt_text();
+    format!(r#"{{"{field}":{text:?}}}"#).into_bytes()
+}
+
 #[test]
 fn resolve_text_strict_mode_errors_on_missing_placeholder() {
     let processor = make_processor(true);
@@ -302,6 +318,90 @@ fn rewrite_detects_database_connection_string() {
         !rewritten
             .contains("postgresql://app:Sup3rSecret!@db.example.com:5432/app?sslmode=require"),
         "database url should be redacted: {rewritten}"
+    );
+}
+
+#[test]
+fn rewrite_large_prompt_without_secret_hints_uses_input_only_scope() {
+    let processor = make_processor(false);
+    let prompt_body = large_prompt_payload("prompt");
+
+    let result = processor
+        .rewrite_and_evaluate(&prompt_body)
+        .expect("rewrite prompt");
+
+    assert!(result.replacements.is_empty(), "{:?}", result.replacements);
+    let original: serde_json::Value =
+        serde_json::from_slice(&prompt_body).expect("decode original payload");
+    let rewritten: serde_json::Value =
+        serde_json::from_slice(&result.body).expect("decode rewritten payload");
+    assert_eq!(rewritten["prompt"], original["prompt"]);
+    assert!(!String::from_utf8_lossy(&result.body).contains("[KEYCLAW]"));
+}
+
+#[test]
+fn rewrite_large_prompt_with_secret_hints_still_redacts() {
+    let processor = make_processor(false);
+    let filler = "build output repeated without credentials\n".repeat(240);
+    let body = serde_json::json!({
+        "prompt": format!("{filler}api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v")
+    })
+    .to_string();
+
+    let result = processor
+        .rewrite_and_evaluate(body.as_bytes())
+        .expect("rewrite prompt");
+
+    assert!(
+        result
+            .replacements
+            .iter()
+            .any(|replacement| replacement.secret == "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"),
+        "{:?}",
+        result.replacements
+    );
+    let rewritten = String::from_utf8_lossy(&result.body);
+    assert!(
+        contains_complete_placeholder(&rewritten),
+        "expected placeholder in rewritten body: {rewritten}"
+    );
+    assert!(
+        !rewritten.contains("aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"),
+        "secret should be redacted: {rewritten}"
+    );
+}
+
+#[test]
+fn rewrite_large_hidden_prompt_still_redacts_message_array_content() {
+    let processor = make_processor(false);
+    let body = serde_json::json!({
+        "prompt": large_prompt_text(),
+        "messages": [
+            {
+                "role": "user",
+                "content": "api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"
+            }
+        ]
+    })
+    .to_string();
+
+    let result = processor
+        .rewrite_and_evaluate(body.as_bytes())
+        .expect("rewrite payload");
+
+    assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
+    let rewritten: serde_json::Value =
+        serde_json::from_slice(&result.body).expect("decode rewritten payload");
+    assert_eq!(
+        rewritten["prompt"],
+        serde_json::Value::String(large_prompt_text())
+    );
+    let content = rewritten["messages"][0]["content"]
+        .as_str()
+        .expect("content string");
+    assert!(
+        contains_complete_placeholder(content),
+        "expected rewritten message content: {content}"
     );
 }
 
