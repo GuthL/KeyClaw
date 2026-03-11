@@ -227,8 +227,9 @@ fn docs_cover_hooks_and_macos_desktop_app_flow() {
     assert!(
         macos.contains("security add-trusted-cert")
             && macos.contains("networksetup -setsecurewebproxystate")
+            && macos.contains("keyclaw doctor")
             && macos.contains("Roll Back"),
-        "docs/macos-gui-apps.md should document CA trust, system proxy setup, and rollback: {macos}"
+        "docs/macos-gui-apps.md should document CA trust, doctor guidance, system proxy setup, and rollback: {macos}"
     );
 }
 

@@ -20,9 +20,10 @@ Run the normal first-run setup first:
 keyclaw init
 keyclaw proxy
 keyclaw proxy status
+keyclaw doctor
 ```
 
-If `keyclaw proxy status` is not healthy, do not enable the macOS system proxy yet. A system proxy that points at a dead KeyClaw listener can break browser and desktop-app connectivity.
+If `keyclaw proxy status` is not healthy, do not enable the macOS system proxy yet. A system proxy that points at a dead KeyClaw listener can break browser and desktop-app connectivity. On macOS, `keyclaw doctor` also warns when Finder-launched apps are likely bypassing the proxy or when `~/.keyclaw/ca.crt` is not trusted for SSL in the login keychain.
 
 ## Trust The KeyClaw CA
 
@@ -84,6 +85,7 @@ Use the same pattern for `Codex` or `ChatGPT`.
 Useful verification checks:
 
 ```bash
+keyclaw doctor
 keyclaw proxy status
 lsof -nP -iTCP:8877
 tail -n 50 ~/.keyclaw/audit.log

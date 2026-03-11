@@ -244,7 +244,7 @@ Finder-launched apps are different: they are started by macOS, not by your shell
 4. enable the macOS HTTP and HTTPS system proxy on the active network service
 5. fully quit and relaunch the desktop app
 
-If the system proxy is enabled while no healthy KeyClaw listener is actually serving the advertised address, desktop apps and browsers can fail with proxy-connection errors. Use [docs/macos-gui-apps.md](docs/macos-gui-apps.md) for the exact commands, verification steps, and rollback path.
+If the system proxy is enabled while no healthy KeyClaw listener is actually serving the advertised address, desktop apps and browsers can fail with proxy-connection errors. `keyclaw doctor` now warns on macOS when Finder-launched apps are likely bypassing the proxy or when the KeyClaw CA is not trusted for SSL in the login keychain. Use [docs/macos-gui-apps.md](docs/macos-gui-apps.md) for the exact commands, verification steps, and rollback path.
 
 ## How It Works
 
