@@ -1,12 +1,15 @@
 # Contributing to KeyClaw
 
-KeyClaw is a local security tool for AI developer workflows. Contributions should preserve the trust boundary, fail-closed behavior, and operator clarity that make the project usable in real environments.
+KeyClaw is a local security tool for AI developer workflows. Contributions
+should preserve the local trust boundary, fail-closed defaults, and operator
+clarity that make the tool safe to run in real environments.
 
 ## Before You Start
 
-1. Check existing [issues](https://github.com/GuthL/KeyClaw/issues) to avoid duplicate work.
-2. Open an issue before starting large behavioral or architectural changes.
-3. Read the [README](README.md), [docs/](docs/README.md), and [SECURITY.md](SECURITY.md) so your changes stay aligned with the published operating model.
+1. Check existing [issues](https://github.com/GuthL/KeyClaw/issues).
+2. Open an issue before large behavioral or architectural changes.
+3. Read [`README.md`](./README.md), [`docs/README.md`](./docs/README.md), and
+   [`SECURITY.md`](./SECURITY.md) before changing public behavior.
 
 ## Development Setup
 
@@ -18,28 +21,33 @@ cargo test
 cargo run -- --help
 ```
 
-### Prerequisites
+Prerequisites:
 
-- Rust 1.75+ via [rustup](https://rustup.rs)
-- No external detector binaries are required for the default runtime
+- Rust 1.75+ through [rustup](https://rustup.rs)
+- no external detector binaries for the default runtime
 
-KeyClaw now uses an in-process sensitive-data engine centered on `src/sensitive.rs`: typed structured detectors plus opaque high-entropy token detection, all backed by a session-scoped resolver.
+The current sensitive-data engine lives in `src/sensitive.rs`. That file owns:
+
+- detector configuration
+- opaque-token detection
+- typed structured detectors
+- optional classifier wiring
+- the session-scoped store used for placeholder resolution
 
 ## Project Layout
 
-- `src/`: runtime implementation
-- `tests/`: unit and integration coverage
-- `docs/`: user-facing documentation beyond the README
-- `.github/`: CI, release automation, and community templates
-- `scripts/`: release packaging and verification helpers
+- `src/`: runtime and CLI implementation
+- `tests/`: unit, integration, and end-to-end coverage
+- `docs/`: operator and maintainer documentation
+- `scripts/`: packaging and release verification helpers
+- `.github/`: CI, release automation, and templates
 
-For the codebase module map, see [AGENTS.md](AGENTS.md) or [CLAUDE.md](CLAUDE.md).
+`AGENTS.md` and `CLAUDE.md` contain the synchronized module map for coding
+agents.
 
 ## Local Validation
 
 ### Routine local iteration
-
-Use this as the default local loop:
 
 ```bash
 cargo fmt --check
@@ -51,54 +59,56 @@ cargo doc --no-deps
 
 ### Full verification before a pull request
 
-Run the slow daemon/proxy tier explicitly before you open a pull request:
+Run the slower daemon and proxy lifecycle tier explicitly before opening a pull
+request:
 
 ```bash
 cargo test --locked --test e2e_cli -- --ignored --test-threads=1
 ```
 
-The default `cargo test --locked` path skips the slow daemon/proxy lifecycle e2e scenarios so day-to-day iteration stays tighter. CI still runs that ignored tier explicitly.
+The regular `cargo test --locked` loop intentionally skips that ignored tier so
+day-to-day iteration stays faster.
 
-If you are changing release packaging, also run:
+If you are changing release packaging or release docs, also run:
 
 ```bash
 scripts/package-release.sh 0.1.0 x86_64-unknown-linux-gnu target/release/keyclaw dist
 scripts/verify-release-contract.sh 0.1.0 dist
 ```
 
+The maintainer release source of truth is
+[`docs/release/maintainer-checklist.md`](./docs/release/maintainer-checklist.md).
+
 ## Documentation Expectations
 
-When you change public behavior, keep the public docs in sync:
+When you change public behavior, update the public docs in the same change:
 
-- `README.md` for first-run setup, quickstart, positioning, and operator-facing guidance
-- `docs/` for deeper reference material such as configuration, architecture, and threat model
-- `SECURITY.md` for scope, trust boundary, and reporting guidance
-- CLI help text when commands, flags, or workflows change
-
-When you change setup guidance, keep these contracts intact unless the implementation changes intentionally:
-
-- `keyclaw proxy` starts the daemon
-- `source ~/.keyclaw/env.sh` wires the shell to the proxy
-- Linux autostart keeps the daemon alive across login or reboot, but does not reconfigure existing shells
-- `keyclaw doctor` is the primary operator verification path
+- `README.md` for first-run guidance and quickstart
+- `docs/configuration.md` for config and env surface
+- `docs/architecture.md` for runtime flow and trust boundaries
+- `docs/secret-patterns.md` for detector behavior
+- `docs/threat-model.md` for security framing
+- `SECURITY.md` for reporting instructions and high-level scope
 
 ## Testing Guidance
 
 ### General changes
 
-- Add or update tests close to the changed behavior.
-- Prefer focused tests over broad incidental coverage.
-- Preserve fail-closed behavior unless the change is explicitly about relaxing that policy.
+- add or update tests near the behavior you changed
+- prefer focused tests over incidental coverage
+- preserve fail-closed behavior unless the change is explicitly about relaxing
+  it
 
-### New sensitive-data detectors
+### Detection changes
 
-When adding or adjusting detection behavior:
+When you change `src/sensitive.rs`, update the detector-facing tests first:
 
-1. Edit `src/sensitive.rs`.
-2. Add tests in `tests/placeholder.rs` and `tests/pipeline.rs`.
-3. Add `tests/integration_proxy.rs` coverage when the behavior changes end-to-end proxy rewriting or response reinjection.
+- `tests/placeholder.rs`
+- `tests/pipeline.rs`
+- `tests/integration_proxy.rs` when end-to-end rewrite or reinjection behavior
+  changes
 
-Suggested verification:
+Useful commands:
 
 ```bash
 cargo test placeholder
@@ -106,37 +116,35 @@ cargo test --test pipeline
 cargo test --test integration_proxy
 ```
 
-In short: **`src/sensitive.rs` is the normal path for new detector work.**
+The normal rule is simple: new detector work should route through
+`src/sensitive.rs`, not a parallel detector subsystem.
 
 ## Pull Requests
 
-- Keep PRs focused and explain the operator or maintainer impact clearly.
-- Include the validation commands you ran.
-- Update docs and screenshots or SVG assets when the repo-facing experience changes.
-- Do not include real secrets, private certificates, or local machine state in commits.
+- keep PRs focused
+- explain operator impact clearly
+- list the validation commands you ran
+- update docs when CLI behavior, setup flow, or placeholder behavior changes
+- never commit real secrets, private certificates, or local runtime state
 
 ## CI And Releases
 
 GitHub Actions is the release gate for this repository.
 
-- `CI` runs formatting, clippy, build, and test checks on pushes and pull requests
-- `Release` builds the supported Linux/macOS archives on version tags and publishes the GitHub release artifacts used by downstream packaging
+- `CI` covers the fast loop and the explicit slow e2e tier
+- `Release` packages the supported Linux and macOS targets
 
-Maintainers are responsible for keeping all public distribution channels aligned on the same version:
-
-- crates.io package: `cargo publish --locked`
-- GitHub release artifacts: version tag `vX.Y.Z`
-- Homebrew tap: [`GuthL/homebrew-tap`](https://github.com/GuthL/homebrew-tap)
-
-The release workflow also updates the Homebrew tap automatically. Configure `HOMEBREW_TAP_GITHUB_TOKEN` in the KeyClaw repo secrets with a token that has write access to `GuthL/homebrew-tap`.
-
-Maintainers should use [docs/release/maintainer-checklist.md](docs/release/maintainer-checklist.md) as the release source of truth for versioning, verification, publication, and rollback.
-Treat `scripts/package-release.sh`, `scripts/verify-release-contract.sh`, `scripts/render-homebrew-formula.sh`, and `.github/workflows/release.yml` as the implementation backing that checklist.
+Maintain crates.io, GitHub release artifacts, and downstream packaging in lock
+step. Use
+[`docs/release/maintainer-checklist.md`](./docs/release/maintainer-checklist.md)
+for versioning, verification, publication, and rollback.
 
 ## Security
 
-If you discover a security vulnerability, follow [SECURITY.md](SECURITY.md). Do not open a public issue for vulnerabilities.
+If you discover a vulnerability, follow [`SECURITY.md`](./SECURITY.md). Do not
+open a public issue for security reports.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contributions are licensed under the
+[MIT License](./LICENSE).
