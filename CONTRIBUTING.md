@@ -129,8 +129,8 @@ Maintainers are responsible for keeping all public distribution channels aligned
 
 The release workflow also updates the Homebrew tap automatically. Configure `HOMEBREW_TAP_GITHUB_TOKEN` in the KeyClaw repo secrets with a token that has write access to `GuthL/homebrew-tap`.
 
-Maintainers should use [docs/release/maintainer-checklist.md](docs/release/maintainer-checklist.md) as the release source of truth for versioning, verification, publication, and rollback.
-Treat `scripts/package-release.sh`, `scripts/verify-release-contract.sh`, `scripts/render-homebrew-formula.sh`, and `.github/workflows/release.yml` as the implementation backing that checklist.
+Treat `scripts/package-release.sh`, `scripts/smoke-release.sh`, `scripts/verify-release-contract.sh`, `scripts/render-homebrew-formula.sh`, and `.github/workflows/release.yml` as the release source of truth for versioning, verification, publication, and rollback.
+Run `scripts/smoke-release.sh target/release/keyclaw` for local artifact validation and `cargo publish --dry-run --locked` before creating a release tag.
 
 ## Security
 
