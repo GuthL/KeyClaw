@@ -1,15 +1,15 @@
 # Architecture Overview
 
-KeyClaw is a local MITM proxy for AI developer tools. It protects live traffic by rewriting secrets out of outbound requests before they leave the machine, then resolving placeholders back into inbound responses before the local client sees them.
+KeyClaw is a local MITM proxy for AI developer tools. It protects live traffic by rewriting sensitive values out of outbound requests before they leave the machine, then resolving placeholders back into inbound responses before the local client sees them.
 
 ## High-Level Flow
 
 ```mermaid
 flowchart LR
     A[Local AI tool or API client] --> B[KeyClaw proxy]
-    B --> C[Bundled gitleaks matcher]
-    C --> D[Placeholder generator]
-    D --> E[(Encrypted local vault)]
+    B --> C[src/sensitive.rs detection engine]
+    C --> D[Typed placeholder generator]
+    D --> E[(Session-scoped store)]
     D --> F[Sanitized upstream request]
     F --> G[LLM provider API]
     G --> H[Placeholder resolver]
@@ -20,39 +20,43 @@ flowchart LR
 
 1. A local client sends HTTP, HTTPS, SSE, or WebSocket traffic through the KeyClaw proxy.
 2. KeyClaw checks whether the destination host is in scope for interception.
-3. The request body is scanned with the bundled `gitleaks.toml` rules and optional entropy detection.
-4. Each matched secret is replaced with a deterministic placeholder such as `{{KEYCLAW_SECRET_api_k_77dc0005c514277d}}`.
-5. The secret-to-placeholder mapping is stored in an AES-GCM encrypted local vault.
-6. The sanitized request is forwarded upstream.
+3. `src/pipeline.rs` walks JSON strings, stringified JSON, and supported base64-wrapped content.
+4. `src/sensitive.rs` runs structured typed detectors plus opaque-token entropy detection.
+5. Each match is rewritten to a typed placeholder such as `{{KEYCLAW_OPAQUE_<id>}}` or `{{KEYCLAW_EMAIL_<id>}}`.
+6. The mapping is stored in a session-scoped store for later reinjection.
+7. The sanitized request is forwarded upstream.
 
 ## Response Path
 
 1. The upstream API returns a response that may contain placeholders the model repeated or transformed.
-2. KeyClaw scans JSON, text, SSE chunks, and WebSocket messages for placeholders.
-3. Matching placeholders are resolved from the local vault.
-4. The client receives the restored response with the real secret material reinserted locally.
+2. KeyClaw scans JSON, text, SSE chunks, and WebSocket messages for complete placeholders.
+3. Matching placeholders are resolved from the session-scoped store.
+4. The local client receives the resolved response with the original values restored on-device.
 
 ## Core Design Decisions
 
-- **Transparent proxying:** KeyClaw works at the traffic layer, so it can protect clients without requiring wrapper SDKs.
-- **Deterministic placeholders:** the same secret maps to the same placeholder ID, which makes round-tripping stable.
-- **Encrypted local storage:** placeholder mappings are stored in a machine-local AES-GCM vault with atomic writes.
+- **Single in-process engine:** KeyClaw no longer splits runtime detection across built-in rules, optional subprocess passes, and multiple storage backends.
+- **Opaque typed placeholders:** placeholder IDs are session-scoped and do not leak value prefixes.
+- **Session-scoped storage:** reversible mappings are kept in-memory with TTL-based eviction.
 - **Fail closed by default:** if the proxy cannot safely inspect or rewrite the payload, the request is blocked instead of passed through silently.
-- **Streaming-aware resolution:** SSE and WebSocket flows are handled without flattening the stream into a single buffered blob.
+- **Streaming-aware resolution:** SSE and WebSocket flows preserve streaming semantics instead of flattening the whole exchange into a single buffered blob.
+- **Optional classifier:** the local classifier is secondary and only used to disambiguate low-confidence candidates.
 
 ## Module Map
 
 | Module | Purpose |
 |--------|---------|
-| `src/gitleaks_rules.rs` | Loads and compiles the bundled gitleaks rules |
-| `src/pipeline.rs` | Orchestrates request rewriting and response resolution |
-| `src/placeholder.rs` | Creates, parses, and resolves placeholder identifiers |
-| `src/redaction.rs` | Walks JSON payloads and injects operator/model notices |
-| `src/vault.rs` | Stores secret mappings in an encrypted local vault |
-| `src/proxy/http.rs` | Handles HTTP request/response interception |
-| `src/proxy/streaming.rs` | Resolves placeholders across SSE stream chunks |
-| `src/proxy/websocket.rs` | Handles WebSocket message redaction and resolution |
-| `src/launcher.rs` and `src/launcher/` | Exposes the CLI surface and operating workflows |
+| `src/sensitive.rs` | Detection engine, detector definitions, optional local classifier, and session-scoped store |
+| `src/pipeline.rs` | Request rewriting and response resolution orchestration |
+| `src/placeholder.rs` | Placeholder generation, parsing, and typed resolution |
+| `src/redaction.rs` | JSON walking and operator/model notice injection |
+| `src/hooks.rs` | Sanitized request-side hook dispatch |
+| `src/audit.rs` | Structured audit logging |
+| `src/stats.rs` | Audit-log summarization for CLI reporting |
+| `src/proxy/http.rs` | HTTP request/response interception |
+| `src/proxy/streaming.rs` | SSE placeholder resolution across chunk boundaries |
+| `src/proxy/websocket.rs` | WebSocket message rewriting and response resolution |
+| `src/launcher.rs` and `src/launcher/` | CLI surface, bootstrap, doctor checks, and launched-tool workflows |
 
 ## Deployment Assumptions
 

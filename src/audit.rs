@@ -43,6 +43,9 @@ pub fn append_redactions(
         let line = json!({
             "ts": ts,
             "rule_id": replacement.rule_id,
+            "kind": replacement.kind.as_str(),
+            "subtype": replacement.subtype,
+            "policy": replacement.policy.as_str(),
             "placeholder": replacement.placeholder,
             "request_host": request_host,
             "action": "redacted",
@@ -90,17 +93,20 @@ fn current_timestamp_utc() -> String {
 #[cfg(test)]
 mod tests {
     use super::append_redactions;
-    use crate::gitleaks_rules::{MatchConfidence, MatchSource};
     use crate::placeholder::Replacement;
+    use crate::sensitive::{MatchConfidence, MatchSource, ProtectionPolicy, SensitiveKind};
 
     #[test]
     fn append_redactions_writes_jsonl_without_secret_values() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("audit.log");
         let replacements = vec![Replacement {
-            rule_id: "generic-api-key".to_string(),
-            id: "api_k_deadbeef".to_string(),
-            placeholder: "{{KEYCLAW_SECRET_api_k_deadbeef}}".to_string(),
+            rule_id: "opaque.high_entropy".to_string(),
+            kind: SensitiveKind::OpaqueToken,
+            subtype: "opaque.high_entropy".to_string(),
+            policy: ProtectionPolicy::ReversibleSession,
+            id: "deadbeefcafebabe".to_string(),
+            placeholder: "{{KEYCLAW_OPAQUE_deadbeefcafebabe}}".to_string(),
             secret: "raw-secret-value".to_string(),
             source: MatchSource::Regex,
             confidence: MatchConfidence::Medium,
@@ -112,7 +118,10 @@ mod tests {
         append_redactions(Some(&path), "stdin", &replacements).expect("write audit log");
 
         let log = std::fs::read_to_string(path).expect("read audit log");
-        assert!(log.contains("\"rule_id\":\"generic-api-key\""), "log={log}");
+        assert!(
+            log.contains("\"rule_id\":\"opaque.high_entropy\""),
+            "log={log}"
+        );
         assert!(log.contains("\"request_host\":\"stdin\""), "log={log}");
         assert!(log.contains("\"confidence\":\"medium\""), "log={log}");
         assert!(log.contains("\"match_source\":\"regex\""), "log={log}");

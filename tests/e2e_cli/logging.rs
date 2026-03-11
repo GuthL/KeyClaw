@@ -3,12 +3,17 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::support::{
-    TEST_SECRET_CODEX, free_addr, rewrite_json_command, run_mitm, run_mitm_with_log_level,
-    start_upstream,
+    TEST_SECRET_CODEX, free_addr, loopback_bind_available, rewrite_json_command, run_mitm,
+    run_mitm_with_log_level, start_upstream,
 };
 
 #[test]
 fn logs_contain_no_raw_secrets() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM logging test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let (stderr, exit_code) = run_mitm_with_log_level(
@@ -32,6 +37,11 @@ fn logs_contain_no_raw_secrets() {
 
 #[test]
 fn mitm_info_log_level_hides_per_request_proxy_activity() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM logging test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let (stderr, exit_code) = run_mitm_with_log_level(
@@ -60,6 +70,11 @@ fn mitm_info_log_level_hides_per_request_proxy_activity() {
 
 #[test]
 fn mitm_debug_log_level_preserves_per_request_proxy_activity() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM logging test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let (stderr, exit_code) = run_mitm_with_log_level(
@@ -79,7 +94,9 @@ fn mitm_debug_log_level_preserves_per_request_proxy_activity() {
         "stderr={stderr}"
     );
     assert!(
-        stderr.contains("keyclaw debug: request rewritten for host 127.0.0.1: replaced 1 secrets"),
+        stderr.contains(
+            "keyclaw debug: request rewritten for host 127.0.0.1: replaced 1 sensitive value(s)"
+        ),
         "stderr={stderr}"
     );
 }
@@ -88,7 +105,6 @@ fn mitm_debug_log_level_preserves_per_request_proxy_activity() {
 fn coded_errors_emit_a_single_code_prefix() {
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");
-    let vault_path = temp.path().join("vault.enc");
 
     let output = Command::new(bin)
         .arg("mitm")
@@ -99,8 +115,6 @@ fn coded_errors_emit_a_single_code_prefix() {
         .env("KEYCLAW_PROXY_ADDR", "127.0.0.1:0")
         .env("KEYCLAW_PROXY_URL", "http://127.0.0.1:0")
         .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true")
-        .env("KEYCLAW_VAULT_PATH", &vault_path)
-        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase")
         .output()
         .expect("run mitm");
 
@@ -118,6 +132,11 @@ fn coded_errors_emit_a_single_code_prefix() {
 
 #[test]
 fn mitm_runtime_logs_use_leveled_prefixes() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM logging test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let (stderr, exit_code) = run_mitm(

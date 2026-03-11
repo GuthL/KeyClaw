@@ -4,22 +4,8 @@ use std::process::{Output, Stdio};
 
 use crate::support::rewrite_json_command;
 
-pub(crate) fn write_allowlist_test_rules(path: &Path) {
-    std::fs::write(
-        path,
-        r#"
-[[rules]]
-id = "example-secret"
-regex = '''([A-Za-z0-9]{24,})'''
-keywords = ["secret="]
-secretGroup = 1
-"#,
-    )
-    .expect("write gitleaks config");
-}
-
 pub(crate) fn allowlist_test_payload() -> (&'static str, String) {
-    let secret = "AbC123DeF456GhI789JkL012";
+    let secret = "AbC123DeF456GhI789JkL012MnO345";
     (secret, format!(r#"{{"prompt":"secret={secret}"}}"#))
 }
 

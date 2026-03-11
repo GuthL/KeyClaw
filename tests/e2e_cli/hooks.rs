@@ -15,7 +15,7 @@ fn rewrite_json_blocks_when_secret_detected_hook_requests_block() {
         r#"
 [[hooks]]
 event = "secret_detected"
-rule_ids = ["generic-api-key"]
+rule_ids = ["opaque.high_entropy"]
 action = "block"
 message = "production key detected"
 "#,
@@ -56,7 +56,7 @@ fn rewrite_json_logs_request_redacted_hook_without_secret_material() {
             r#"
 [[hooks]]
 event = "request_redacted"
-rule_ids = ["generic-api-key"]
+rule_ids = ["opaque.high_entropy"]
 action = "log"
 path = "{}"
 "#,
@@ -85,9 +85,12 @@ path = "{}"
     let log = std::fs::read_to_string(&hook_log).expect("read hook log");
     assert!(log.contains("\"event\":\"request_redacted\""), "log={log}");
     assert!(log.contains("\"request_host\":\"stdin\""), "log={log}");
-    assert!(log.contains("\"rule_id\":\"generic-api-key\""), "log={log}");
     assert!(
-        log.contains("\"placeholder\":\"{{KEYCLAW_SECRET_"),
+        log.contains("\"rule_id\":\"opaque.high_entropy\""),
+        "log={log}"
+    );
+    assert!(
+        log.contains("\"placeholder\":\"{{KEYCLAW_OPAQUE_"),
         "log={log}"
     );
     assert!(!log.contains(TEST_SECRET_CODEX), "log={log}");
@@ -119,7 +122,7 @@ cat > "$KEYCLAW_HOOK_CAPTURE_STDIN"
         r#"
 [[hooks]]
 event = "secret_detected"
-rule_ids = ["generic-api-key"]
+rule_ids = ["opaque.high_entropy"]
 action = "exec"
 command = "hook-capture"
 "#,
@@ -152,9 +155,12 @@ command = "hook-capture"
     let env_capture = std::fs::read_to_string(&capture_env).expect("read env capture");
     assert!(env_capture.contains("secret_detected"), "env={env_capture}");
     assert!(env_capture.contains("stdin"), "env={env_capture}");
-    assert!(env_capture.contains("generic-api-key"), "env={env_capture}");
     assert!(
-        env_capture.contains("{{KEYCLAW_SECRET_"),
+        env_capture.contains("opaque.high_entropy"),
+        "env={env_capture}"
+    );
+    assert!(
+        env_capture.contains("{{KEYCLAW_OPAQUE_"),
         "env={env_capture}"
     );
     assert!(
@@ -168,7 +174,7 @@ command = "hook-capture"
         "stdin={stdin_capture}"
     );
     assert!(
-        stdin_capture.contains("\"placeholder\":\"{{KEYCLAW_SECRET_"),
+        stdin_capture.contains("\"placeholder\":\"{{KEYCLAW_OPAQUE_"),
         "stdin={stdin_capture}"
     );
     assert!(

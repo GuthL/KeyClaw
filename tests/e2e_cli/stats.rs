@@ -7,9 +7,9 @@ fn proxy_stats_reads_audit_log_and_prints_summary() {
     std::fs::write(
         &audit_log,
         concat!(
-            "{\"ts\":\"2026-03-10T00:00:00Z\",\"rule_id\":\"generic-api-key\",\"request_host\":\"stdin\",\"action\":\"redacted\"}\n",
-            "{\"ts\":\"2026-03-10T00:00:01Z\",\"rule_id\":\"aws-access-key\",\"request_host\":\"api.openai.com\",\"action\":\"redacted\"}\n",
-            "{\"ts\":\"2026-03-10T00:00:02Z\",\"rule_id\":\"generic-api-key\",\"request_host\":\"api.openai.com\",\"action\":\"redacted\"}\n"
+            "{\"ts\":\"2026-03-10T00:00:00Z\",\"rule_id\":\"opaque.high_entropy\",\"kind\":\"opaque_token\",\"request_host\":\"stdin\",\"action\":\"redacted\"}\n",
+            "{\"ts\":\"2026-03-10T00:00:01Z\",\"rule_id\":\"typed.email\",\"kind\":\"email\",\"request_host\":\"api.openai.com\",\"action\":\"redacted\"}\n",
+            "{\"ts\":\"2026-03-10T00:00:02Z\",\"rule_id\":\"opaque.high_entropy\",\"kind\":\"opaque_token\",\"request_host\":\"api.openai.com\",\"action\":\"redacted\"}\n"
         ),
     )
     .expect("write audit log");
@@ -25,7 +25,8 @@ fn proxy_stats_reads_audit_log_and_prints_summary() {
     let out = String::from_utf8_lossy(&output.stdout);
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(out.contains("Total redactions: 3"), "stdout={out}");
-    assert!(out.contains("generic-api-key"), "stdout={out}");
+    assert!(out.contains("opaque.high_entropy"), "stdout={out}");
+    assert!(out.contains("opaque_token"), "stdout={out}");
     assert!(out.contains("api.openai.com"), "stdout={out}");
     assert!(err.trim().is_empty(), "stderr={err}");
 }

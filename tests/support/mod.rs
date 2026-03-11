@@ -183,7 +183,6 @@ fn run_tool_command(
     let temp = tempfile::tempdir().expect("tempdir");
     let tool_dir = temp.path().join("bin");
     fs::create_dir_all(&tool_dir).expect("create fake tool dir");
-    let vault_path = temp.path().join("vault.enc");
     let args_path = temp.path().join("child-args.txt");
     install_fake_tool(
         &tool_dir,
@@ -222,8 +221,6 @@ with opener.open(req, timeout=5):
         .env("KEYCLAW_PROXY_URL", format!("http://{}", &addr))
         .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true")
         .env("KEYCLAW_MAX_BODY_BYTES", "1048576")
-        .env("KEYCLAW_VAULT_PATH", &vault_path)
-        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase")
         .env("KEYCLAW_CODEX_HOSTS", "127.0.0.1")
         .env("KEYCLAW_CLAUDE_HOSTS", "127.0.0.1")
         .env("KEYCLAW_TEST_ARGS_OUT", &args_path)
@@ -256,32 +253,30 @@ pub fn keyclaw_command(home: &Path) -> Command {
 }
 
 pub fn doctor_command(home: &Path) -> Command {
-    let vault_path = home.join("vault.enc");
-
     let mut cmd = keyclaw_command(home);
     cmd.arg("doctor")
         .env_clear()
         .env("HOME", home)
         .env("KEYCLAW_PROXY_ADDR", "127.0.0.1:0")
         .env("KEYCLAW_PROXY_URL", "http://127.0.0.1:0")
-        .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true")
-        .env("KEYCLAW_VAULT_PATH", vault_path)
-        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
+        .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "true");
     cmd
 }
 
 pub fn rewrite_json_command(home: &Path) -> Command {
-    let vault_path = home.join("vault.enc");
-
     let mut cmd = keyclaw_command(home);
-    cmd.arg("rewrite-json")
-        .env("KEYCLAW_VAULT_PATH", vault_path)
-        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
+    cmd.arg("rewrite-json");
     cmd
 }
 
 pub fn can_bind(addr: SocketAddr) -> bool {
     TcpListener::bind(addr).map(drop).is_ok()
+}
+
+pub fn loopback_bind_available() -> bool {
+    TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .map(drop)
+        .is_ok()
 }
 
 pub fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {

@@ -7,12 +7,11 @@ KeyClaw's README is optimized for first contact. This directory holds the deeper
 - [Architecture overview](architecture.md): request/response flow, major modules, and runtime trust boundaries
 - [Configuration reference](configuration.md): config file sections, environment variables, allowlists, audit log behavior, and daemon restart semantics
 - [macOS desktop-app guide](macos-gui-apps.md): system-proxy and CA-trust setup for Finder-launched apps such as Claude.app, Codex.app, and ChatGPT.app
-- [Supported secret patterns](secret-patterns.md): what the bundled rules catch, how entropy detection fits in, and how to add or override rules
+- [Supported secret patterns](secret-patterns.md): how the typed detectors and opaque-token detection work today
 - [Threat model](threat-model.md): what KeyClaw protects against, what it does not, and how to deploy it safely
 
 ## Source Of Truth
 
-- Bundled detection rules live in [`gitleaks.toml`](../gitleaks.toml)
 - Cargo package metadata lives in [`Cargo.toml`](../Cargo.toml)
 - Runtime behavior lives under [`src/`](../src)
 - Contributor workflows live in [`.github/`](../.github)

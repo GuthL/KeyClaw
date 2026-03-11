@@ -9,6 +9,11 @@ use keyclaw::placeholder;
 
 #[test]
 fn upstream_guard_drop_releases_listener() {
+    if !support::loopback_bind_available() {
+        eprintln!("skipping loopback listener test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, _rx, upstream_guard) = support::start_upstream();
     let addr = url_socket_addr(&upstream_url);
 
@@ -27,6 +32,11 @@ fn upstream_guard_drop_releases_listener() {
 
 #[test]
 fn run_mitm_ignores_ambient_no_proxy() {
+    if !support::loopback_bind_available() {
+        eprintln!("skipping MITM e2e test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = support::start_upstream();
     let original = env::var_os("NO_PROXY");
     set_env_var("NO_PROXY", "*");

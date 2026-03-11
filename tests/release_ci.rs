@@ -89,22 +89,63 @@ fn contributor_validation_splits_fast_and_slow_loops() {
 }
 
 #[test]
-fn contributing_release_docs_point_to_repo_release_contract() {
+fn release_docs_define_artifacts_and_maintainer_checklist() {
+    let checklist = std::fs::read_to_string("docs/release/maintainer-checklist.md")
+        .expect("read docs/release/maintainer-checklist.md");
     let contributing = std::fs::read_to_string("CONTRIBUTING.md").expect("read CONTRIBUTING.md");
 
-    for required in [
-        "scripts/package-release.sh",
-        "scripts/smoke-release.sh",
-        "scripts/verify-release-contract.sh",
-        "scripts/render-homebrew-formula.sh",
-        ".github/workflows/release.yml",
-        "cargo publish --dry-run --locked",
-    ] {
-        assert!(
-            contributing.contains(required),
-            "CONTRIBUTING should document `{required}` in the release contract: {contributing}"
-        );
-    }
+    assert!(
+        checklist.contains("x86_64-unknown-linux-gnu"),
+        "checklist should name the Linux target: {checklist}"
+    );
+    assert!(
+        checklist.contains("x86_64-apple-darwin"),
+        "checklist should name the Intel macOS target: {checklist}"
+    );
+    assert!(
+        checklist.contains("aarch64-apple-darwin"),
+        "checklist should name the Apple Silicon macOS target: {checklist}"
+    );
+    assert!(
+        checklist.contains("keyclaw-v"),
+        "checklist should define artifact naming: {checklist}"
+    );
+    assert!(
+        checklist.contains("SHA256SUMS"),
+        "checklist should require published checksums: {checklist}"
+    );
+    assert!(
+        checklist.contains("Versioning")
+            && checklist.contains("Verification")
+            && checklist.contains("Publication"),
+        "checklist should cover the release flow: {checklist}"
+    );
+    assert!(
+        checklist.contains("Rollback")
+            || checklist.contains("Known Issues")
+            || checklist.contains("known issues"),
+        "checklist should cover rollback or known-issues handling: {checklist}"
+    );
+    assert!(
+        checklist.contains("docs/plans/2026-03-07-release-candidate-verification.md"),
+        "checklist should link to a documented dry run: {checklist}"
+    );
+    assert!(
+        checklist.contains("scripts/smoke-release.sh target/release/keyclaw"),
+        "checklist should point maintainers at the canonical smoke script: {checklist}"
+    );
+    assert!(
+        checklist.contains("cargo publish --dry-run"),
+        "checklist should rehearse crates.io publication: {checklist}"
+    );
+    assert!(
+        checklist.contains("cargo publish"),
+        "checklist should document the final crates.io publish step: {checklist}"
+    );
+    assert!(
+        contributing.contains("docs/release/maintainer-checklist.md"),
+        "CONTRIBUTING should link to the release checklist: {contributing}"
+    );
 }
 
 #[test]
@@ -128,10 +169,6 @@ fn cargo_manifest_is_ready_for_crates_io_publication() {
     assert!(
         gitignore.contains("*.bak"),
         ".gitignore should ignore local backup files so publish rehearsal stays clean: {gitignore}"
-    );
-    assert!(
-        gitignore.contains("docs/plans/") && gitignore.contains("docs/release/"),
-        ".gitignore should ignore internal plan and release docs: {gitignore}"
     );
 }
 

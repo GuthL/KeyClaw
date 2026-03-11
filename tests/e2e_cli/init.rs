@@ -28,12 +28,19 @@ fn init_creates_first_run_artifacts_and_runs_doctor() {
     let out = String::from_utf8_lossy(&output.stdout);
     assert!(out.contains("doctor:"), "stdout={out}");
     assert!(out.contains("env.sh"), "stdout={out}");
+    assert!(
+        out.contains("Session-scoped sensitive-data store"),
+        "stdout={out}"
+    );
 
     let keyclaw_dir = temp.path().join(".keyclaw");
     assert!(keyclaw_dir.join("ca.crt").exists(), "missing ca.crt");
     assert!(keyclaw_dir.join("ca.key").exists(), "missing ca.key");
     assert!(keyclaw_dir.join("env.sh").exists(), "missing env.sh");
-    assert!(keyclaw_dir.join("vault.key").exists(), "missing vault.key");
+    assert!(
+        !keyclaw_dir.join("vault.key").exists(),
+        "init should not create a machine-local vault key"
+    );
 }
 
 #[test]

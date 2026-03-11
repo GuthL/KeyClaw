@@ -200,7 +200,7 @@ fn websocket_request_host(ctx: &WebSocketContext) -> Option<String> {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicI64;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     use hudsucker::tokio_tungstenite::tungstenite::{self, error::ProtocolError};
 
@@ -208,51 +208,32 @@ mod tests {
     use super::{
         WsRequestRewrite, is_expected_websocket_close_error, uses_input_only_ws_rewrite_path,
     };
+    use crate::allowlist::Allowlist;
+    use crate::entropy::EntropyConfig;
     use crate::errors::{CODE_INVALID_JSON, code_of};
-    use crate::gitleaks_rules::RuleSet;
     use crate::pipeline::Processor;
     use crate::placeholder;
-    use crate::vault::Store;
+    use crate::sensitive::{DetectionEngine, SensitiveDataConfig, SensitiveKind, SessionStore};
 
-    fn empty_ruleset() -> Arc<RuleSet> {
-        Arc::new(RuleSet::from_toml("rules = []").expect("empty ruleset"))
+    fn test_engine() -> Arc<DetectionEngine> {
+        Arc::new(DetectionEngine::new(
+            SensitiveDataConfig::default(),
+            EntropyConfig::default(),
+            Allowlist::default(),
+            None,
+        ))
     }
 
-    fn sample_secret_ruleset() -> Arc<RuleSet> {
-        let mut rules = RuleSet::from_toml(
-            r#"
-[[rules]]
-id = "generic-api-key"
-regex = 'api_key = ([A-Za-z0-9]{30,})'
-secretGroup = 1
-entropy = 1
-keywords = ["api_key"]
-"#,
-        )
-        .expect("sample ruleset");
-        rules.entropy_config.enabled = false;
-        Arc::new(rules)
-    }
-
-    fn test_handler(strict_mode: bool, ruleset: Arc<RuleSet>) -> KeyclawHttpHandler {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        let vault = Arc::new(Store::new(
-            std::env::temp_dir().join(format!("keyclaw-ws-{unique}.enc")),
-            "test-passphrase".to_string(),
-        ));
-        let processor = Arc::new(Processor {
-            vault: Some(vault),
-            ruleset,
-            second_pass_scanner: None,
-            max_body_size: 1 << 20,
+    fn test_handler(strict_mode: bool) -> KeyclawHttpHandler {
+        let processor = Arc::new(Processor::new(
+            test_engine(),
+            Arc::new(SessionStore::new(Duration::from_secs(60))),
+            1 << 20,
             strict_mode,
-            notice_mode: crate::redaction::NoticeMode::Verbose,
-            dry_run: false,
-            hooks: None,
-        });
+            crate::redaction::NoticeMode::Verbose,
+            false,
+            None,
+        ));
 
         KeyclawHttpHandler {
             allowed_hosts: vec!["api.openai.com".to_string()],
@@ -302,7 +283,7 @@ keywords = ["api_key"]
 
     #[test]
     fn ws_request_text_messages_are_redacted() {
-        let handler = test_handler(true, sample_secret_ruleset());
+        let handler = test_handler(true);
         let secret = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
         let rewrite = handler.rewrite_ws_request_text(
             &format!(r#"{{"messages":[{{"content":"api_key = {}"}}]}}"#, secret),
@@ -321,7 +302,7 @@ keywords = ["api_key"]
 
     #[test]
     fn ws_request_rewrite_errors_block_in_strict_mode() {
-        let handler = test_handler(true, empty_ruleset());
+        let handler = test_handler(true);
 
         let rewrite = handler.rewrite_ws_request_text(r#"{"messages":[{"content":"oops"}"#, false);
 
@@ -333,7 +314,7 @@ keywords = ["api_key"]
 
     #[test]
     fn ws_request_rewrite_errors_pass_through_when_fail_closed_disabled() {
-        let handler = test_handler(false, empty_ruleset());
+        let handler = test_handler(false);
 
         let rewrite = handler.rewrite_ws_request_text(r#"{"messages":[{"content":"oops"}"#, false);
 
@@ -345,21 +326,16 @@ keywords = ["api_key"]
 
     #[test]
     fn ws_response_text_messages_are_resolved() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let vault = Arc::new(Store::new(
-            temp.path().join("vault.enc"),
-            "test-passphrase".to_string(),
+        let store = Arc::new(SessionStore::new(Duration::from_secs(60)));
+        let processor = Arc::new(Processor::new(
+            test_engine(),
+            Arc::clone(&store),
+            1 << 20,
+            true,
+            crate::redaction::NoticeMode::Verbose,
+            false,
+            None,
         ));
-        let processor = Arc::new(Processor {
-            vault: Some(Arc::clone(&vault)),
-            ruleset: empty_ruleset(),
-            second_pass_scanner: None,
-            max_body_size: 1 << 20,
-            strict_mode: true,
-            notice_mode: crate::redaction::NoticeMode::Verbose,
-            dry_run: false,
-            hooks: None,
-        });
         let handler = KeyclawHttpHandler {
             allowed_hosts: vec!["api.openai.com".to_string()],
             processor,
@@ -369,7 +345,9 @@ keywords = ["api_key"]
             intercepted: Arc::new(AtomicI64::new(0)),
         };
         let request_secret = "api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
-        let id = vault.store_secret(request_secret).expect("store secret");
+        let id = store
+            .store(SensitiveKind::OpaqueToken, request_secret)
+            .expect("store secret");
         let placeholder = placeholder::make(&id);
         let text = handler
             .resolve_ws_response_text(&format!(r#"{{"content":"{}"}}"#, placeholder))

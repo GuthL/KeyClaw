@@ -23,8 +23,7 @@ certs/
 .keyclaw/
 
 # Internal docs
-docs/plans/
-docs/release/
+# docs/ is tracked; tests depend on docs/plans/
 
 # Git worktrees
 .worktrees/

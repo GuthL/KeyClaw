@@ -27,7 +27,7 @@
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-KeyClaw sits between your AI tool and the upstream API, detects secrets in outbound payloads, swaps them for deterministic placeholders, stores the mapping in an encrypted local vault, and reinjects the real values into responses on the way back. The model never sees the raw secret, but your workflow still behaves as if it did.
+KeyClaw sits between your AI tool and the upstream API, detects sensitive values in outbound payloads, swaps them for typed placeholders like `{{KEYCLAW_OPAQUE_<id>}}`, stores the mapping in a session-scoped local resolver, and reinjects the real values into responses on the way back. The core runtime classes are `opaque_token` plus typed structured detectors, so the model never sees the raw value but your workflow still behaves as if it did.
 
 ## Why It Matters
 
@@ -44,13 +44,13 @@ KeyClaw sits between your AI tool and the upstream API, detects secrets in outbo
 |  Client      |<---------- |                 |<----------- | via --include        |
 +-------------+   response  +---------+-------+  response   +----------------------+
                   (resolved)          |
-                             +--------v--------+
-                             | Encrypted vault  |
-                             | (placeholder map)|
-                             +-----------------+
+                             +--------v---------+
+                             | Session-scoped   |
+                             | local store      |
+                             +------------------+
 
-    1. Detect secrets in outbound request body
-    2. Replace with deterministic placeholders, store mapping in vault
+    1. Detect opaque tokens and typed structured data in outbound request body
+    2. Replace with typed placeholders, store mapping in the session-scoped store
     3. Forward sanitized request upstream
     4. Resolve placeholders in response (HTTP, SSE, WebSocket)
 ```
@@ -84,26 +84,13 @@ KeyClaw is published on crates.io and packaged for Homebrew via `GuthL/tap`.
 
 ### Install With Cargo
 
-Use this when you want the built-in detection stack only: bundled gitleaks rules plus KeyClaw's entropy detector.
+The default runtime uses the built-in sensitive-data engine only: typed structured detectors plus opaque-token entropy detection.
 
 ```bash
 cargo install keyclaw
 keyclaw init
 keyclaw proxy
 source ~/.keyclaw/env.sh
-```
-
-### Install With Cargo And Optional Kingfisher
-
-Use this when you also want KeyClaw to run `kingfisher` as a second detection pass when the built-in rules miss.
-
-```bash
-cargo install keyclaw
-brew install kingfisher
-keyclaw init
-keyclaw proxy
-source ~/.keyclaw/env.sh
-keyclaw doctor
 ```
 
 ### Install With Homebrew
@@ -116,24 +103,9 @@ keyclaw proxy
 source ~/.keyclaw/env.sh
 ```
 
-### Install With Homebrew And Optional Kingfisher
-
-```bash
-brew tap GuthL/tap
-brew install keyclaw kingfisher
-keyclaw init
-keyclaw proxy
-source ~/.keyclaw/env.sh
-keyclaw doctor
-```
-
-If you do not use Homebrew, upstream Kingfisher also documents `uv tool install kingfisher-bin` as an installation path.
-
-KeyClaw automatically enables the kingfisher second pass when a `kingfisher` binary is available on `PATH`. If the binary is not installed, KeyClaw still works normally with its built-in detectors.
-
 If you want the latest unreleased KeyClaw commit instead of the published crate, use `cargo install --git https://github.com/GuthL/KeyClaw keyclaw`.
 
-That installs the CLI, generates the local CA and vault key, starts the detached proxy, and wires the current shell to trust and use it.
+That installs the CLI, generates the local CA, initializes the session-scoped runtime, starts the detached proxy, and wires the current shell to trust and use it.
 
 ### Claude Code
 
@@ -270,14 +242,14 @@ If the system proxy is enabled while no healthy KeyClaw listener is actually ser
   "messages": [
     {
       "role": "developer",
-      "content": "KeyClaw notice: 2 secrets were redacted before this request left the machine."
+      "content": "KeyClaw notice: 2 sensitive values were redacted before this request left the machine."
     },
     {
       "role": "user",
-      "content": "Deploy the staging stack with AWS_ACCESS_KEY_ID={{KEYCLAW_SECRET_AKIAI_77dc0005c514277d}} and AWS_SECRET_ACCESS_KEY={{KEYCLAW_SECRET_wJalr_8b4f0f2d14a8b2c1}}"
+      "content": "Deploy the staging stack with AWS_ACCESS_KEY_ID={{KEYCLAW_OPAQUE_77dc0005c514277d}} and AWS_SECRET_ACCESS_KEY={{KEYCLAW_OPAQUE_8b4f0f2d14a8b2c1}}"
     }
   ],
-  "x-keyclaw-contract": "placeholder:v1"
+  "x-keyclaw-contract": "placeholder:v2"
 }
 ```
 
@@ -295,27 +267,14 @@ If you want to inspect LLM traffic, `llm-interceptor` is a useful neighbor. If y
 
 ## Detection Stack
 
-KeyClaw detects secrets in two layers:
+KeyClaw now uses one in-process sensitive-data engine:
 
-1. First pass: bundled detection rules from [`gitleaks.toml`](gitleaks.toml), compiled natively into Rust regexes at startup, plus the built-in entropy detector.
-2. Second pass: optional external `kingfisher scan` execution when the first pass found nothing and a `kingfisher` binary is available on `PATH`.
+1. Structured typed detectors in `src/sensitive.rs` for `password`, `email`, `phone`, `national_id`, `passport`, `payment_card`, and `cvv`
+2. Opaque-token detection for high-entropy credential-like spans
+3. Allowlist filtering
+4. An optional local classifier only for ambiguous low-confidence candidates
 
-No subprocess or external `gitleaks` binary is required.
-
-The bundled rules cover:
-
-- Provider credentials such as AWS, OpenAI, Anthropic, GitHub, GitLab, Slack, Stripe, GCP, and many more
-- Generic assignment patterns like `api_key=...`, `secret_key=...`, and `access_token=...`
-- Private key material such as RSA, EC, OpenSSH, PGP, and age
-- High-entropy tokens via the built-in entropy detector
-
-Custom gitleaks-compatible rules can be loaded from a file via `KEYCLAW_GITLEAKS_CONFIG`.
-
-KeyClaw does not use or require `KEYCLAW_GITLEAKS_BIN`. Secret detection uses the bundled gitleaks rules compiled natively into the binary; set `KEYCLAW_GITLEAKS_CONFIG` only when you want to override those rules with your own TOML file.
-
-KeyClaw also does not vendor or install Kingfisher for you. The second pass is enabled only when the upstream `kingfisher` binary is already installed and discoverable on `PATH`.
-
-The bundled detection source of truth is `gitleaks.toml`; `src/gitleaks_rules.rs` is the loader/compiler for those rules.
+The runtime does not require any external detector binary. Placeholder mappings are kept in a session-scoped store, so the same value is stable within one daemon session but not across restarts.
 
 ## Verify It Works
 
@@ -323,7 +282,7 @@ The bundled detection source of truth is `gitleaks.toml`; `src/gitleaks_rules.rs
 keyclaw doctor
 ```
 
-`keyclaw doctor` is the fastest way to catch broken CA files, proxy bypass, invalid `~/.keyclaw/config.toml`, broken allowlist entries, custom ruleset problems, missing Kingfisher binaries for the optional second pass, and missing vault key material before you debug the client itself.
+`keyclaw doctor` is the fastest way to catch broken CA files, proxy bypass, invalid `~/.keyclaw/config.toml`, broken allowlist entries, and misconfigured detector knobs before you debug the client itself.
 
 Interpret the output like this:
 
@@ -380,13 +339,13 @@ providers = [
 include = ["*my-custom-api.com*"]
 
 [allowlist]
-rule_ids = ["generic-api-key"]
+rule_ids = ["opaque.high_entropy"]
 patterns = ["^sk-test-"]
 secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
 
 [[hooks]]
 event = "secret_detected"
-rule_ids = ["aws-access-key", "generic-api-key"]
+rule_ids = ["opaque.high_entropy", "typed.email"]
 action = "exec"
 command = "notify-slack --channel security"
 
@@ -398,16 +357,16 @@ path = "~/.keyclaw/hooks.log"
 
 [[hooks]]
 event = "secret_detected"
-rule_ids = ["generic-api-key"]
+rule_ids = ["opaque.high_entropy"]
 action = "block"
 message = "production key detected"
 ```
 
-Supported file sections today are `proxy`, `vault`, `logging`, `notice`, `detection`, `audit`, `hosts`, `allowlist`, and `hooks`. Use the file for steady-state local settings, then reach for env vars when you want a one-off override.
+Supported file sections today are `proxy`, `logging`, `notice`, `detection`, `audit`, `sensitive`, `classifier`, `hosts`, `allowlist`, and `hooks`. Use the file for steady-state local settings, then reach for env vars when you want a one-off override.
 
 Allowlist entries let you intentionally skip redaction for known-safe matches:
 
-- `rule_ids`: skip every match produced by specific gitleaks rule IDs
+- `rule_ids`: skip every match produced by a specific detector ID such as `opaque.high_entropy`
 - `patterns`: skip secrets whose matched value satisfies a regex
 - `secret_sha256`: skip one exact secret value by SHA-256 digest, without storing the plaintext in config
 
@@ -424,15 +383,15 @@ Disable persistent audit logging with:
 path = "off"
 ```
 
-Hook entries let you trigger local side effects from request-side events without exposing the raw secret:
+Hook entries let you trigger local side effects from request-side events without exposing the raw sensitive value:
 
-- `event = "secret_detected"` fires when a secret match is found during request rewriting
+- `event = "secret_detected"` fires when a sensitive value is found during request rewriting
 - `event = "request_redacted"` fires after a request has been rewritten, just before it is forwarded upstream
 - `action = "exec"` runs a local command with sanitized metadata in env vars and a JSON payload on `stdin`
 - `action = "log"` appends a JSON line to the configured file
 - `action = "block"` rejects matching `secret_detected` requests with `hook_blocked`
 
-Hook payloads include only `event`, `rule_id`, `placeholder`, and `request_host`. Raw secret values are never passed to hook commands or hook log files.
+Hook payloads include only `event`, `rule_id`, `kind`, `policy`, `placeholder`, and `request_host`. Raw values are never passed to hook commands or hook log files.
 
 ### Environment Variables
 
@@ -441,15 +400,12 @@ Hook payloads include only `event`, `rule_id`, `placeholder`, and `request_host`
 | `KEYCLAW_PROXY_ADDR` | `127.0.0.1:8877` | Proxy listen address |
 | `KEYCLAW_PROXY_URL` | `http://127.0.0.1:8877` | Proxy URL exported to child processes |
 | `KEYCLAW_CA_CERT` | `~/.keyclaw/ca.crt` | Override CA cert path passed to clients |
-| `KEYCLAW_VAULT_PATH` | `~/.keyclaw/vault.enc` | Encrypted vault location |
-| `KEYCLAW_VAULT_PASSPHRASE` | unset | Explicit vault passphrase override |
 | `KEYCLAW_CODEX_HOSTS` | `api.openai.com,chat.openai.com,chatgpt.com` | Codex/OpenAI hosts to intercept |
 | `KEYCLAW_CLAUDE_HOSTS` | `api.anthropic.com,claude.ai` | Claude/Anthropic hosts to intercept |
 | `KEYCLAW_PROVIDER_HOSTS` | `generativelanguage.googleapis.com,api.together.xyz,api.groq.com,api.mistral.ai,api.cohere.ai,api.deepseek.com` | Additional provider API hosts intercepted by default |
 | `KEYCLAW_INCLUDE_HOSTS` | unset | Extra exact hosts or glob patterns to intercept |
 | `KEYCLAW_MAX_BODY_BYTES` | `2097152` | Maximum request body size |
 | `KEYCLAW_DETECTOR_TIMEOUT` | `20s` | Timeout for request-body collection and rewrite processing; raise it for very large CLI payloads if `request_timeout` warnings persist |
-| `KEYCLAW_GITLEAKS_CONFIG` | bundled rules | Path to custom `gitleaks.toml` |
 | `KEYCLAW_AUDIT_LOG` | `~/.keyclaw/audit.log` | Append-only JSONL audit log path, or `off` to disable |
 | `KEYCLAW_LOG_LEVEL` | `info` | Runtime stderr verbosity: `error`, `warn`, `info`, `debug` |
 | `KEYCLAW_NOTICE_MODE` | `verbose` | Redaction notice mode: `verbose`, `minimal`, `off` |
@@ -457,9 +413,21 @@ Hook payloads include only `event`, `rule_id`, `placeholder`, and `request_host`
 | `KEYCLAW_UNSAFE_LOG` | `false` | Disable normal log scrubbing for debugging only |
 | `KEYCLAW_FAIL_CLOSED` | `true` | Block requests on rewrite or detection failures |
 | `KEYCLAW_REQUIRE_MITM_EFFECTIVE` | `true` | Fail if proxy bypass is detected |
-| `KEYCLAW_ENTROPY_ENABLED` | `true` | Enable high-entropy secret detection |
-| `KEYCLAW_ENTROPY_THRESHOLD` | `3.5` | Minimum entropy score for entropy-based matches |
-| `KEYCLAW_ENTROPY_MIN_LEN` | `20` | Minimum token length for entropy-based matches |
+| `KEYCLAW_ENTROPY_ENABLED` | `true` | Enable opaque-token detection |
+| `KEYCLAW_ENTROPY_THRESHOLD` | `3.5` | Minimum entropy score for opaque-token matches |
+| `KEYCLAW_ENTROPY_MIN_LEN` | `20` | Minimum token length for opaque-token matches |
+| `KEYCLAW_SENSITIVE_SESSION_TTL` | `1h` | Session-store TTL for placeholder mappings |
+| `KEYCLAW_SENSITIVE_EMAILS_ENABLED` | `false` | Enable email detection |
+| `KEYCLAW_SENSITIVE_PASSWORDS_ENABLED` | `false` | Enable password detection |
+| `KEYCLAW_SENSITIVE_PHONES_ENABLED` | `false` | Enable phone detection |
+| `KEYCLAW_SENSITIVE_NATIONAL_IDS_ENABLED` | `false` | Enable national-ID detection |
+| `KEYCLAW_SENSITIVE_PASSPORTS_ENABLED` | `false` | Enable passport detection |
+| `KEYCLAW_SENSITIVE_PAYMENT_CARDS_ENABLED` | `false` | Enable payment-card detection |
+| `KEYCLAW_SENSITIVE_CVV_ENABLED` | `false` | Enable CVV detection |
+| `KEYCLAW_LOCAL_CLASSIFIER_ENABLED` | `false` | Enable the optional local classifier |
+| `KEYCLAW_LOCAL_CLASSIFIER_ENDPOINT` | unset | OpenAI-compatible local classifier endpoint |
+| `KEYCLAW_LOCAL_CLASSIFIER_MODEL` | unset | Local classifier model name |
+| `KEYCLAW_LOCAL_CLASSIFIER_TIMEOUT` | `3s` | Local classifier HTTP timeout |
 
 Large top-level `prompt` or `instructions` strings that look like machine-generated hidden context are downgraded to input-only rewriting once they get big enough and do not contain obvious credential hints. Normal `messages` / `input` content is still inspected, and large prompt bodies that clearly contain secrets are still rewritten.
 
@@ -471,7 +439,7 @@ Inline for one command:
 
 ```bash
 KEYCLAW_LOG_LEVEL=debug KEYCLAW_NOTICE_MODE=minimal keyclaw claude --resume latest
-KEYCLAW_GITLEAKS_CONFIG="$PWD/gitleaks.toml" keyclaw doctor
+KEYCLAW_SENSITIVE_EMAILS_ENABLED=true KEYCLAW_SENSITIVE_PASSWORDS_ENABLED=true keyclaw doctor
 ```
 
 Persistent for the current shell session:
@@ -489,13 +457,11 @@ Persistent across new shells:
 # ~/.bashrc or ~/.zshrc
 export KEYCLAW_LOG_LEVEL=debug
 export KEYCLAW_NOTICE_MODE=minimal
-export KEYCLAW_GITLEAKS_CONFIG="$HOME/.config/keyclaw/gitleaks.toml"
+export KEYCLAW_SENSITIVE_PAYMENT_CARDS_ENABLED=true
 export KEYCLAW_INCLUDE_HOSTS="*my-custom-api.com*"
 ```
 
-If you use `keyclaw proxy` as a detached daemon, or enable `keyclaw proxy autostart`, daemon-side settings are read when that proxy process starts. After changing `~/.keyclaw/config.toml` or variables such as `KEYCLAW_PROXY_ADDR`, `KEYCLAW_LOG_LEVEL`, `KEYCLAW_GITLEAKS_CONFIG`, `KEYCLAW_NOTICE_MODE`, `KEYCLAW_REQUIRE_MITM_EFFECTIVE`, `KEYCLAW_PROVIDER_HOSTS`, or `KEYCLAW_INCLUDE_HOSTS`, restart the proxy so the running daemon picks them up.
-
-By default, KeyClaw creates a machine-local vault key next to the encrypted vault and reuses it on later runs. Set `KEYCLAW_VAULT_PASSPHRASE` only when you need to override that key material explicitly. Existing vaults written with the removed built-in default are migrated to a generated local key on the next successful write. If an existing vault cannot be decrypted or its key material is missing, KeyClaw fails closed and tells you how to recover.
+If you use `keyclaw proxy` as a detached daemon, or enable `keyclaw proxy autostart`, daemon-side settings are read when that proxy process starts. After changing `~/.keyclaw/config.toml` or variables such as `KEYCLAW_PROXY_ADDR`, `KEYCLAW_LOG_LEVEL`, `KEYCLAW_NOTICE_MODE`, `KEYCLAW_REQUIRE_MITM_EFFECTIVE`, `KEYCLAW_PROVIDER_HOSTS`, `KEYCLAW_INCLUDE_HOSTS`, or any `KEYCLAW_SENSITIVE_*` detector toggle, restart the proxy so the running daemon picks them up.
 
 `KEYCLAW_NOTICE_MODE=verbose` keeps the current full acknowledgment guidance, `minimal` injects a shorter notice, and `off` suppresses notice injection entirely while still redacting and reinjecting secrets normally.
 
@@ -556,7 +522,7 @@ For the full threat model, see [docs/threat-model.md](docs/threat-model.md).
 
 ### Trust Boundary
 
-The trust boundary is your machine. KeyClaw only protects traffic that a supported client actually routes through the local proxy. The CA certificate is generated locally and never leaves your machine. The encrypted vault and its machine-local key stay on disk locally unless you explicitly override the key with `KEYCLAW_VAULT_PASSPHRASE`. Secret detection, placeholder generation, and reinjection all happen in-process.
+The trust boundary is your machine. KeyClaw only protects traffic that a supported client actually routes through the local proxy. The CA certificate is generated locally and never leaves your machine. Sensitive detection, placeholder generation, session-scoped storage, and reinjection all happen in-process.
 
 ## Project Structure
 
@@ -569,12 +535,11 @@ src/
 ├── certgen.rs         # Runtime CA certificate generation
 ├── config.rs          # Env + TOML configuration
 ├── entropy.rs         # High-entropy token detection
-├── gitleaks_rules.rs  # Bundled gitleaks rule loading + native regex compilation
 ├── hooks.rs           # Configured request-side hook execution
+├── sensitive.rs       # Typed detection engine + session-scoped store
 ├── pipeline.rs        # Request rewrite pipeline
 ├── placeholder.rs     # Placeholder parsing, generation, and resolution
 ├── redaction.rs       # JSON walker + notice injection
-├── vault.rs           # AES-GCM encrypted secret storage
 ├── proxy.rs           # Proxy server entrypoint + handler wiring
 ├── proxy/
 │   ├── common.rs      # Shared host checks, response helpers, and logging
@@ -587,7 +552,6 @@ src/
 │   └── doctor.rs      # Operator health checks
 ├── logscrub.rs        # Log sanitization
 └── errors.rs          # Error types and codes
-gitleaks.toml          # Bundled detection rules compiled by gitleaks_rules.rs
 ```
 
 ## Additional Docs

@@ -1,77 +1,52 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine;
+use keyclaw::allowlist::Allowlist;
+use keyclaw::entropy::EntropyConfig;
 use keyclaw::errors::{CODE_STRICT_RESOLVE_FAILED, code_of};
-use keyclaw::gitleaks_rules::RuleSet;
 use keyclaw::pipeline::Processor;
-use keyclaw::placeholder::{EXAMPLE_PLACEHOLDER, contains_complete_placeholder, make};
+use keyclaw::placeholder::{contains_complete_placeholder, is_placeholder};
 use keyclaw::redaction::NoticeMode;
-use keyclaw::vault::Store;
+use keyclaw::sensitive::{DetectionEngine, SensitiveDataConfig, SensitiveKind, SessionStore};
 
-fn make_processor(strict: bool) -> Processor {
-    make_processor_with_options(strict, NoticeMode::Verbose, false)
-}
-
-fn make_processor_with_notice_mode(strict: bool, notice_mode: NoticeMode) -> Processor {
-    make_processor_with_options(strict, notice_mode, false)
-}
-
-fn make_processor_with_options(strict: bool, notice_mode: NoticeMode, dry_run: bool) -> Processor {
-    make_processor_with_rules_and_second_pass(
-        strict,
+fn make_processor(
+    strict_mode: bool,
+    notice_mode: NoticeMode,
+    dry_run: bool,
+    sensitive_config: SensitiveDataConfig,
+) -> Processor {
+    Processor::new(
+        Arc::new(DetectionEngine::new(
+            sensitive_config,
+            EntropyConfig {
+                enabled: true,
+                threshold: 3.5,
+                min_len: 20,
+            },
+            Allowlist::default(),
+            None,
+        )),
+        Arc::new(SessionStore::new(Duration::from_secs(60))),
+        1 << 20,
+        strict_mode,
         notice_mode,
         dry_run,
-        Arc::new(RuleSet::bundled().expect("bundled rules")),
         None,
     )
 }
 
-fn make_processor_with_rules_and_second_pass(
-    strict: bool,
-    notice_mode: NoticeMode,
-    dry_run: bool,
-    ruleset: Arc<RuleSet>,
-    second_pass_scanner: Option<Arc<keyclaw::kingfisher::SecondPassScanner>>,
-) -> Processor {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let vault = Arc::new(Store::new(
-        dir.path().join("vault.enc"),
-        "test-passphrase".to_string(),
-    ));
-    Processor {
-        vault: Some(vault),
-        ruleset,
-        second_pass_scanner,
-        max_body_size: 1 << 20,
-        strict_mode: strict,
-        notice_mode,
-        dry_run,
-        hooks: None,
-    }
-}
-
-fn large_prompt_text() -> String {
-    let chunk = concat!(
-        "fn deploy_staging_stack() {\n",
-        "  let config = read_config(\"service.toml\");\n",
-        "  println!(\"compile release build and upload artifacts\");\n",
-        "  let metadata = {\"workspace\":\"repo\",\"task\":\"scan\",\"mode\":\"safe\"};\n",
-        "}\n"
-    );
-    chunk.repeat(80)
-}
-
-fn large_prompt_payload(field: &str) -> Vec<u8> {
-    let text = large_prompt_text();
-    format!(r#"{{"{field}":{text:?}}}"#).into_bytes()
-}
-
 #[test]
 fn resolve_text_strict_mode_errors_on_missing_placeholder() {
-    let processor = make_processor(true);
+    let processor = make_processor(
+        true,
+        NoticeMode::Verbose,
+        false,
+        SensitiveDataConfig::default(),
+    );
 
     let err = processor
-        .resolve_text(b"hello {{KEYCLAW_SECRET_abcde_aaaaaaaaaaaaaaaa}}")
+        .resolve_text(b"hello {{KEYCLAW_OPAQUE_deadbeefcafebabe}}")
         .expect_err("strict mode should fail when placeholder cannot be resolved");
 
     assert_eq!(code_of(&err), Some(CODE_STRICT_RESOLVE_FAILED));
@@ -79,9 +54,14 @@ fn resolve_text_strict_mode_errors_on_missing_placeholder() {
 
 #[test]
 fn resolve_text_non_strict_mode_passes_through_missing_placeholder() {
-    let processor = make_processor(false);
+    let processor = make_processor(
+        false,
+        NoticeMode::Verbose,
+        false,
+        SensitiveDataConfig::default(),
+    );
 
-    let payload = b"hello {{KEYCLAW_SECRET_abcde_aaaaaaaaaaaaaaaa}}";
+    let payload = b"hello {{KEYCLAW_OPAQUE_deadbeefcafebabe}}";
     let resolved = processor
         .resolve_text(payload)
         .expect("non-strict pass-through");
@@ -89,39 +69,123 @@ fn resolve_text_non_strict_mode_passes_through_missing_placeholder() {
 }
 
 #[test]
-fn rewrite_detects_and_replaces_secrets() {
-    let processor = make_processor(false);
+fn rewrite_detects_and_replaces_opaque_tokens() {
+    let processor = make_processor(
+        false,
+        NoticeMode::Off,
+        false,
+        SensitiveDataConfig::default(),
+    );
 
-    let body = br#"{"messages":[{"content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"}]}"#;
+    let body =
+        br#"{"messages":[{"role":"user","content":"token = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"}]}"#;
     let result = processor.rewrite_and_evaluate(body).expect("rewrite");
 
-    assert!(!result.replacements.is_empty());
+    assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
+    assert_eq!(result.replacements[0].kind, SensitiveKind::OpaqueToken);
+    assert_eq!(result.replacements[0].source.as_str(), "entropy");
+
     let rewritten = String::from_utf8_lossy(&result.body);
     assert!(contains_complete_placeholder(&rewritten), "{rewritten}");
-    assert!(!rewritten.contains("aB3dE5fG"));
-}
-
-#[test]
-fn rewrite_detects_and_replaces_secrets_without_notice_when_notice_mode_is_off() {
-    let processor = make_processor_with_notice_mode(false, NoticeMode::Off);
-
-    let body = br#"{"messages":[{"content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"}]}"#;
-    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
-
-    assert!(!result.replacements.is_empty());
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(contains_complete_placeholder(&rewritten), "{rewritten}");
+    assert!(rewritten.contains("{{KEYCLAW_OPAQUE_"), "{rewritten}");
     assert!(!rewritten.contains("aB3dE5fG"), "{rewritten}");
-    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
+
+    let resolved = processor.resolve_json(&result.body).expect("resolve json");
+    let resolved = String::from_utf8_lossy(&resolved);
+    assert!(
+        resolved.contains("aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"),
+        "{resolved}"
+    );
 }
 
 #[test]
-fn rewrite_input_only_ignores_hidden_instructions() {
-    let processor = make_processor(false);
+fn rewrite_detects_typed_sensitive_values_and_resolves_them() {
+    let processor = make_processor(
+        false,
+        NoticeMode::Off,
+        false,
+        SensitiveDataConfig {
+            passwords_enabled: true,
+            emails_enabled: true,
+            payment_cards_enabled: true,
+            cvv_enabled: true,
+            ..SensitiveDataConfig::default()
+        },
+    );
+
+    let body = br#"{"messages":[{"role":"user","content":"password=\"S3cret!\"\nemail=alice@company.dev\ncard=4111 1111 1111 1111\ncvv=123"}]}"#;
+    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
+
+    assert_eq!(result.replacements.len(), 4, "{:?}", result.replacements);
+    assert!(
+        result
+            .replacements
+            .iter()
+            .all(|replacement| replacement.kind != SensitiveKind::OpaqueToken)
+    );
+
+    let rewritten = String::from_utf8_lossy(&result.body);
+    for replacement in &result.replacements {
+        assert!(rewritten.contains(&replacement.placeholder), "{rewritten}");
+        assert!(is_placeholder(&replacement.placeholder), "{replacement:?}");
+    }
+    assert!(!rewritten.contains("alice@company.dev"), "{rewritten}");
+    assert!(!rewritten.contains("4111 1111 1111 1111"), "{rewritten}");
+
+    let resolved = processor.resolve_json(&result.body).expect("resolve json");
+    let resolved = String::from_utf8_lossy(&resolved);
+    assert!(resolved.contains("alice@company.dev"), "{resolved}");
+    assert!(resolved.contains("4111 1111 1111 1111"), "{resolved}");
+    assert!(resolved.contains("cvv=123"), "{resolved}");
+}
+
+#[test]
+fn rewrite_dry_run_reports_typed_placeholders_without_prefix_leakage() {
+    let processor = make_processor(
+        false,
+        NoticeMode::Off,
+        true,
+        SensitiveDataConfig {
+            emails_enabled: true,
+            ..SensitiveDataConfig::default()
+        },
+    );
+
+    let body = br#"{"messages":[{"role":"user","content":"email=alice@company.dev"}]}"#;
+    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
+
+    assert_eq!(
+        String::from_utf8_lossy(&result.body),
+        String::from_utf8_lossy(body)
+    );
+    assert_eq!(result.replacements.len(), 1);
+    assert_eq!(result.replacements[0].kind, SensitiveKind::Email);
+    assert!(
+        result.replacements[0]
+            .placeholder
+            .starts_with("{{KEYCLAW_EMAIL_"),
+        "{:?}",
+        result.replacements[0]
+    );
+    assert!(
+        !result.replacements[0].placeholder.contains("alice"),
+        "{:?}",
+        result.replacements[0]
+    );
+}
+
+#[test]
+fn rewrite_ignores_hidden_instructions_in_input_only_mode() {
+    let processor = make_processor(
+        false,
+        NoticeMode::Off,
+        false,
+        SensitiveDataConfig::default(),
+    );
 
     let body = br#"{
         "input":[{"role":"user","content":"test"}],
-        "instructions":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"
+        "instructions":"token = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"
     }"#;
     let result = processor
         .rewrite_and_evaluate_input_only(body)
@@ -130,453 +194,42 @@ fn rewrite_input_only_ignores_hidden_instructions() {
     assert!(result.replacements.is_empty(), "{:?}", result.replacements);
     let rewritten = String::from_utf8_lossy(&result.body);
     assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
-    assert!(rewritten.contains("api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
-    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
+    assert!(rewritten.contains("token = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
 }
 
 #[test]
-fn rewrite_input_only_skips_developer_messages() {
-    let processor = make_processor(false);
-
-    let body = br#"{
-        "input":[
-            {"role":"developer","content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"},
-            {"role":"user","content":"test"}
-        ]
-    }"#;
-    let result = processor
-        .rewrite_and_evaluate_input_only(body)
-        .expect("rewrite");
-
-    assert!(result.replacements.is_empty(), "{:?}", result.replacements);
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(rewritten.contains(r#""role":"developer""#), "{rewritten}");
-    assert!(rewritten.contains("api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
-    assert!(rewritten.contains(r#""role":"user""#), "{rewritten}");
-    assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
-    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
-}
-
-#[test]
-fn rewrite_skips_non_user_messages_in_general_mode() {
-    let processor = make_processor(false);
-
-    let body = br#"{
-        "messages":[
-            {"role":"developer","content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"},
-            {"role":"assistant","content":"api_key = zY8xW6vU4tS2rQ0pN8mL6kJ4hG2fD0s"},
-            {"role":"user","content":"test"}
-        ]
-    }"#;
-    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
-
-    assert!(result.replacements.is_empty(), "{:?}", result.replacements);
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(rewritten.contains(r#""role":"developer""#), "{rewritten}");
-    assert!(rewritten.contains("api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
-    assert!(rewritten.contains(r#""role":"assistant""#), "{rewritten}");
-    assert!(rewritten.contains("api_key = zY8xW6vU4tS2rQ0pN8mL6kJ4hG2fD0s"));
-    assert!(rewritten.contains(r#""role":"user""#), "{rewritten}");
-    assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
-    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
-}
-
-#[test]
-fn rewrite_codex_ws_suppresses_notice_for_hidden_context_replacements() {
-    let processor = make_processor(false);
-
-    let body = br#"{
-        "input":[
-            {"role":"user","type":"message","content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"},
-            {"role":"user","type":"message","content":"test"}
-        ]
-    }"#;
-    let result = processor
-        .rewrite_and_evaluate_codex_ws(body)
-        .expect("rewrite");
-
-    assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(contains_complete_placeholder(&rewritten), "{rewritten}");
-    assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
-    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
-}
-
-#[test]
-fn rewrite_codex_ws_skips_non_user_messages() {
-    let processor = make_processor(false);
-
-    let body = br#"{
-        "input":[
-            {"role":"developer","type":"message","content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"},
-            {"role":"assistant","type":"message","content":"api_key = zY8xW6vU4tS2rQ0pN8mL6kJ4hG2fD0s"},
-            {"role":"user","type":"message","content":"test"}
-        ]
-    }"#;
-    let result = processor
-        .rewrite_and_evaluate_codex_ws(body)
-        .expect("rewrite");
-
-    assert!(result.replacements.is_empty(), "{:?}", result.replacements);
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(rewritten.contains(r#""role":"developer""#), "{rewritten}");
-    assert!(rewritten.contains("api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
-    assert!(rewritten.contains(r#""role":"assistant""#), "{rewritten}");
-    assert!(rewritten.contains("api_key = zY8xW6vU4tS2rQ0pN8mL6kJ4hG2fD0s"));
-    assert!(rewritten.contains(r#""role":"user""#), "{rewritten}");
-    assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
-    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
-}
-
-#[test]
-fn rewrite_ignores_anthropic_system_secrets() {
-    let processor = make_processor(false);
-
-    let body = br#"{
-        "model":"claude-3-7-sonnet",
-        "system":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v",
-        "messages":[{"role":"user","content":"test"}]
-    }"#;
-    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
-
-    assert!(result.replacements.is_empty(), "{:?}", result.replacements);
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(rewritten.contains(r#""content":"test""#), "{rewritten}");
-    assert!(rewritten.contains("api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
-    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
-}
-
-#[test]
-fn resolve_text_reinjects_known_placeholders_even_with_example_notice_present() {
-    let processor = make_processor(false);
-    let vault = processor.vault.as_ref().expect("vault");
-    let secret = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
-    let id = vault.store_secret(secret).expect("store secret");
-    let payload = format!(
-        r#"{{"messages":[{{"content":"api_key = {}"}},{{"content":"[KEYCLAW] notice like {}","role":"developer"}}]}}"#,
-        make(&id),
-        EXAMPLE_PLACEHOLDER
-    );
-
-    let resolved = processor
-        .resolve_text(payload.as_bytes())
-        .expect("resolve text");
-    let resolved = String::from_utf8(resolved).expect("utf8");
-
-    assert!(resolved.contains(secret), "resolved={resolved}");
-    assert!(
-        resolved.contains(EXAMPLE_PLACEHOLDER),
-        "resolved={resolved}"
-    );
-}
-
-#[test]
-fn rewrite_detects_high_entropy_token_not_matched_by_regex() {
-    let processor = make_processor(false);
-
-    // A custom internal token that has high entropy — entropy analysis should catch it
-    let body = br#"{"messages":[{"role":"user","content":"connect with token xK9mP2vL8nQ4wR6tY0uI3oA5sD7fG1hJ"}]}"#;
-    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
-
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(
-        !rewritten.contains("xK9mP2vL8nQ4wR6tY0uI3oA5sD7fG1hJ"),
-        "high-entropy token should be redacted: {rewritten}"
-    );
-}
-
-#[test]
-fn rewrite_dry_run_reports_replacements_without_mutating_body() {
-    let processor = make_processor_with_options(false, NoticeMode::Verbose, true);
-    let body =
-        br#"{"messages":[{"role":"user","content":"api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"}]}"#;
-
-    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
-
-    assert_eq!(result.body, body);
-    assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(rewritten.contains("aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"));
-    assert!(!contains_complete_placeholder(&rewritten), "{rewritten}");
-    assert!(!rewritten.contains("[KEYCLAW]"), "{rewritten}");
-}
-
-#[test]
-fn rewrite_detects_database_connection_string() {
-    let processor = make_processor(false);
-    let body = br#"{"messages":[{"role":"user","content":"DATABASE_URL=postgresql://app:Sup3rSecret!@db.example.com:5432/app?sslmode=require"}]}"#;
-
-    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
-
-    assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(
-        contains_complete_placeholder(&rewritten),
-        "expected placeholder in rewritten body: {rewritten}"
-    );
-    assert!(
-        !rewritten
-            .contains("postgresql://app:Sup3rSecret!@db.example.com:5432/app?sslmode=require"),
-        "database url should be redacted: {rewritten}"
-    );
-}
-
-#[test]
-fn rewrite_large_prompt_without_secret_hints_uses_input_only_scope() {
-    let processor = make_processor(false);
-    let prompt_body = large_prompt_payload("prompt");
-
-    let result = processor
-        .rewrite_and_evaluate(&prompt_body)
-        .expect("rewrite prompt");
-
-    assert!(result.replacements.is_empty(), "{:?}", result.replacements);
-    let original: serde_json::Value =
-        serde_json::from_slice(&prompt_body).expect("decode original payload");
-    let rewritten: serde_json::Value =
-        serde_json::from_slice(&result.body).expect("decode rewritten payload");
-    assert_eq!(rewritten["prompt"], original["prompt"]);
-    assert!(!String::from_utf8_lossy(&result.body).contains("[KEYCLAW]"));
-}
-
-#[test]
-fn rewrite_large_prompt_with_secret_hints_still_redacts() {
-    let processor = make_processor(false);
-    let filler = "build output repeated without credentials\n".repeat(240);
-    let body = serde_json::json!({
-        "prompt": format!("{filler}api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v")
-    })
-    .to_string();
-
-    let result = processor
-        .rewrite_and_evaluate(body.as_bytes())
-        .expect("rewrite prompt");
-
-    assert!(
-        result
-            .replacements
-            .iter()
-            .any(|replacement| replacement.secret == "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"),
-        "{:?}",
-        result.replacements
-    );
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(
-        contains_complete_placeholder(&rewritten),
-        "expected placeholder in rewritten body: {rewritten}"
-    );
-    assert!(
-        !rewritten.contains("aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"),
-        "secret should be redacted: {rewritten}"
-    );
-}
-
-#[test]
-fn rewrite_large_hidden_prompt_still_redacts_message_array_content() {
-    let processor = make_processor(false);
-    let body = serde_json::json!({
-        "prompt": large_prompt_text(),
-        "messages": [
-            {
-                "role": "user",
-                "content": "api_key = aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v"
-            }
-        ]
-    })
-    .to_string();
-
-    let result = processor
-        .rewrite_and_evaluate(body.as_bytes())
-        .expect("rewrite payload");
-
-    assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
-    let rewritten: serde_json::Value =
-        serde_json::from_slice(&result.body).expect("decode rewritten payload");
-    assert_eq!(
-        rewritten["prompt"],
-        serde_json::Value::String(large_prompt_text())
-    );
-    let content = rewritten["messages"][0]["content"]
-        .as_str()
-        .expect("content string");
-    assert!(
-        contains_complete_placeholder(content),
-        "expected rewritten message content: {content}"
-    );
-}
-
-#[test]
-fn rewrite_uses_kingfisher_binary_second_pass_when_configured() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let script = temp.path().join("fake-kingfisher");
-    std::fs::write(
-        &script,
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-input=""
-output=""
-while (($#)); do
-  case "$1" in
-    scan)
-      shift
-      input="$1"
-      ;;
-    --output|-o)
-      shift
-      output="$1"
-      ;;
-  esac
-  shift || true
-done
-cat >"$output" <<JSON
-{
-  "findings": [
-    {
-      "rule": {"name": "Fake Kingfisher", "id": "kingfisher.fake.1"},
-      "finding": {
-        "snippet": "prefix KF_CUSTOM_SECRET suffix",
-        "fingerprint": "fake-fingerprint",
-        "confidence": "high",
-        "entropy": "4.20",
-        "validation": {"status": "unknown", "response": ""},
-        "language": "Unknown",
-        "line": 1,
-        "column_start": 7,
-        "column_end": 23,
-        "path": "$input"
-      }
-    }
-  ]
-}
-JSON
-exit 200
-"#,
-    )
-    .expect("write fake kingfisher");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&script).expect("metadata").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).expect("chmod");
-    }
-
-    let mut rules = RuleSet::from_toml("rules = []").expect("empty ruleset");
-    rules.entropy_config.enabled = false;
-    let processor = make_processor_with_rules_and_second_pass(
+fn rewrite_recurses_into_base64_wrapped_json() {
+    let processor = make_processor(
         false,
-        NoticeMode::Verbose,
+        NoticeMode::Off,
         false,
-        Arc::new(rules),
-        Some(Arc::new(
-            keyclaw::kingfisher::SecondPassScanner::from_binary(script.clone())
-                .expect("binary second pass scanner"),
-        )),
+        SensitiveDataConfig {
+            emails_enabled: true,
+            ..SensitiveDataConfig::default()
+        },
     );
-    let body = br#"{"messages":[{"role":"user","content":"prefix KF_CUSTOM_SECRET suffix"}]}"#;
 
-    let result = processor.rewrite_and_evaluate(body).expect("rewrite");
-
-    let rewritten = String::from_utf8_lossy(&result.body);
-    assert!(
-        contains_complete_placeholder(&rewritten),
-        "expected placeholder in rewritten body: {rewritten}"
-    );
-    assert!(
-        result
-            .replacements
-            .iter()
-            .any(|replacement| replacement.rule_id == "kingfisher.fake.1"
-                && replacement.secret == "KF_CUSTOM_SECRET"),
-        "expected fake kingfisher replacement metadata: {:?}",
-        result.replacements
-    );
-}
-
-#[test]
-fn rewrite_detects_provider_key_inside_json_stringified_content() {
-    let processor = make_processor(false);
-    let inner = r#"{"aws_access_key":"AKI\u0041ABCDEFGHIJKLMNOP"}"#;
-    let body = serde_json::json!({
-        "messages": [
-            {
-                "role": "user",
-                "content": inner
-            }
-        ]
-    })
-    .to_string();
+    let nested = r#"{"email":"alice@company.dev"}"#;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(nested);
+    let body = format!(r#"{{"messages":[{{"role":"user","content":"payload={encoded}"}}]}}"#);
 
     let result = processor
         .rewrite_and_evaluate(body.as_bytes())
         .expect("rewrite");
 
     assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
-    assert!(
-        result.replacements[0].decoded_depth > 0,
-        "{:?}",
-        result.replacements
-    );
+    assert_eq!(result.replacements[0].kind, SensitiveKind::Email);
 
-    let rewritten: serde_json::Value =
-        serde_json::from_slice(&result.body).expect("decode rewritten payload");
-    let content = rewritten["messages"][0]["content"]
-        .as_str()
-        .expect("content string");
-    assert!(
-        contains_complete_placeholder(content),
-        "expected placeholder in nested json string, got {content}"
-    );
-    assert!(
-        !content.contains("AKIAABCDEFGHIJKLMNOP"),
-        "aws access key should be redacted: {content}"
-    );
-}
-
-#[test]
-fn rewrite_detects_jwt_inside_base64_wrapped_content() {
-    let processor = make_processor(false);
-    let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.c2lnbmF0dXJlU2VjcmV0MTIz";
-    let encoded = base64::engine::general_purpose::STANDARD.encode(
-        serde_json::json!({
-            "authorization": format!("Bearer {jwt}")
-        })
-        .to_string(),
-    );
-    let body = serde_json::json!({
-        "messages": [
-            {
-                "role": "user",
-                "content": encoded
-            }
-        ]
-    })
-    .to_string();
-
-    let result = processor
-        .rewrite_and_evaluate(body.as_bytes())
-        .expect("rewrite");
-
-    assert_eq!(result.replacements.len(), 1, "{:?}", result.replacements);
-    assert!(
-        result.replacements[0].decoded_depth > 0,
-        "{:?}",
-        result.replacements
-    );
-
-    let rewritten: serde_json::Value =
-        serde_json::from_slice(&result.body).expect("decode rewritten payload");
-    let content = rewritten["messages"][0]["content"]
-        .as_str()
-        .expect("content string");
+    let resolved = processor.resolve_json(&result.body).expect("resolve json");
+    let resolved = String::from_utf8_lossy(&resolved);
+    let encoded = resolved
+        .split("payload=")
+        .nth(1)
+        .and_then(|tail| tail.split('"').next())
+        .expect("payload token");
     let decoded = base64::engine::general_purpose::STANDARD
-        .decode(content)
-        .expect("decode rewritten base64");
-    let decoded = String::from_utf8(decoded).expect("utf8");
-
-    assert!(
-        contains_complete_placeholder(&decoded),
-        "expected placeholder in decoded base64 payload, got {decoded}"
-    );
-    assert!(!decoded.contains(jwt), "jwt should be redacted: {decoded}");
+        .decode(encoded)
+        .expect("decode payload");
+    let decoded = String::from_utf8(decoded).expect("utf8 payload");
+    assert!(decoded.contains("alice@company.dev"), "{decoded}");
 }

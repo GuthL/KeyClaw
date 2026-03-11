@@ -18,6 +18,7 @@ pub struct CountEntry {
 pub struct StatsSummary {
     pub total_redactions: usize,
     pub latest_event: Option<String>,
+    pub top_kinds: Vec<CountEntry>,
     pub top_rules: Vec<CountEntry>,
     pub top_hosts: Vec<CountEntry>,
 }
@@ -28,6 +29,8 @@ struct AuditRecord {
     ts: String,
     #[serde(default)]
     rule_id: String,
+    #[serde(default)]
+    kind: String,
     #[serde(default)]
     request_host: String,
     #[serde(default)]
@@ -46,6 +49,7 @@ pub fn summarize_audit_log(path: &Path) -> Result<StatsSummary, KeyclawError> {
 
     let mut total_redactions = 0usize;
     let mut latest_event: Option<String> = None;
+    let mut kind_counts = HashMap::<String, usize>::new();
     let mut rule_counts = HashMap::<String, usize>::new();
     let mut host_counts = HashMap::<String, usize>::new();
 
@@ -80,6 +84,9 @@ pub fn summarize_audit_log(path: &Path) -> Result<StatsSummary, KeyclawError> {
         {
             latest_event = Some(record.ts);
         }
+        if !record.kind.is_empty() {
+            *kind_counts.entry(record.kind).or_insert(0) += 1;
+        }
         if !record.rule_id.is_empty() {
             *rule_counts.entry(record.rule_id).or_insert(0) += 1;
         }
@@ -91,6 +98,7 @@ pub fn summarize_audit_log(path: &Path) -> Result<StatsSummary, KeyclawError> {
     Ok(StatsSummary {
         total_redactions,
         latest_event,
+        top_kinds: sorted_counts(kind_counts),
         top_rules: sorted_counts(rule_counts),
         top_hosts: sorted_counts(host_counts),
     })
@@ -103,6 +111,7 @@ pub fn render_stats(path: &Path, summary: &StatsSummary, limit: usize) -> String
     if let Some(ts) = &summary.latest_event {
         let _ = writeln!(&mut out, "Latest event: {ts}");
     }
+    append_top_section(&mut out, "Top kinds", &summary.top_kinds, limit);
     append_top_section(&mut out, "Top rules", &summary.top_rules, limit);
     append_top_section(&mut out, "Top hosts", &summary.top_hosts, limit);
     out

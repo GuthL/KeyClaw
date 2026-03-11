@@ -15,6 +15,7 @@ use crate::allowlist::Allowlist;
 use crate::hooks::{Hook, RawHookConfig};
 use crate::logging::LogLevel;
 use crate::redaction::NoticeMode;
+use crate::sensitive::{LocalClassifierConfig, SensitiveDataConfig};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -24,10 +25,6 @@ pub struct Config {
     pub proxy_url: String,
     /// CA certificate path passed to clients that need explicit trust wiring.
     pub ca_cert_path: String,
-    /// Encrypted vault location on disk.
-    pub vault_path: PathBuf,
-    /// Optional explicit passphrase override for the vault.
-    pub vault_passphrase: Option<String>,
     /// Whether request processing should fail closed on rewrite errors.
     pub fail_closed: bool,
     /// Maximum request body size accepted for inspection.
@@ -42,8 +39,6 @@ pub struct Config {
     pub known_provider_hosts: Vec<String>,
     /// Additional exact hosts or glob patterns to intercept.
     pub include_hosts: Vec<String>,
-    /// Optional custom gitleaks rule file.
-    pub gitleaks_config_path: Option<PathBuf>,
     /// Operator-visible runtime log level.
     pub log_level: LogLevel,
     /// Whether raw logs may include unsanitized secret material.
@@ -62,6 +57,10 @@ pub struct Config {
     pub entropy_min_len: usize,
     /// Optional audit log location. `None` disables persistent audit logging.
     pub audit_log_path: Option<PathBuf>,
+    /// Typed sensitive-data detection configuration.
+    pub sensitive_data: SensitiveDataConfig,
+    /// Optional local classifier configuration for ambiguous sensitive-data matches.
+    pub local_classifier: LocalClassifierConfig,
     /// Operator-defined allowlist entries.
     pub allowlist: Allowlist,
     /// Configured request-side hook actions.
@@ -80,11 +79,12 @@ pub(crate) enum ConfigFileStatus {
 #[serde(default, deny_unknown_fields)]
 struct FileConfig {
     proxy: FileProxyConfig,
-    vault: FileVaultConfig,
     logging: FileLoggingConfig,
     notice: FileNoticeConfig,
     detection: FileDetectionConfig,
     audit: FileAuditConfig,
+    sensitive: FileSensitiveConfig,
+    classifier: FileClassifierConfig,
     hosts: FileHostsConfig,
     allowlist: FileAllowlistConfig,
     hooks: Vec<RawHookConfig>,
@@ -97,12 +97,6 @@ struct FileProxyConfig {
     url: Option<String>,
     ca_cert: Option<String>,
     require_mitm_effective: Option<bool>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct FileVaultConfig {
-    path: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -125,7 +119,6 @@ struct FileDetectionConfig {
     dry_run: Option<bool>,
     max_body_bytes: Option<i64>,
     detector_timeout: Option<String>,
-    gitleaks_config: Option<PathBuf>,
     entropy_enabled: Option<bool>,
     entropy_threshold: Option<f64>,
     entropy_min_len: Option<usize>,
@@ -135,6 +128,28 @@ struct FileDetectionConfig {
 #[serde(default, deny_unknown_fields)]
 struct FileAuditConfig {
     path: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct FileSensitiveConfig {
+    passwords_enabled: Option<bool>,
+    emails_enabled: Option<bool>,
+    phones_enabled: Option<bool>,
+    national_ids_enabled: Option<bool>,
+    passports_enabled: Option<bool>,
+    payment_cards_enabled: Option<bool>,
+    cvv_enabled: Option<bool>,
+    session_ttl: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct FileClassifierConfig {
+    enabled: Option<bool>,
+    endpoint: Option<String>,
+    model: Option<String>,
+    timeout: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -213,8 +228,6 @@ impl Config {
             proxy_listen_addr: "127.0.0.1:8877".to_string(),
             proxy_url: "http://127.0.0.1:8877".to_string(),
             ca_cert_path: String::new(),
-            vault_path: default_vault_path(),
-            vault_passphrase: None,
             fail_closed: true,
             max_body_bytes: 2 * 1024 * 1024,
             detector_timeout: Duration::from_secs(20),
@@ -222,7 +235,6 @@ impl Config {
             known_claude_hosts: default_claude_hosts(),
             known_provider_hosts: default_provider_hosts(),
             include_hosts: Vec::new(),
-            gitleaks_config_path: None,
             log_level: LogLevel::Info,
             unsafe_log: false,
             require_mitm_effective: true,
@@ -232,6 +244,8 @@ impl Config {
             entropy_threshold: 3.5,
             entropy_min_len: 20,
             audit_log_path: Some(crate::audit::default_audit_log_path()),
+            sensitive_data: SensitiveDataConfig::default(),
+            local_classifier: LocalClassifierConfig::default(),
             allowlist: Allowlist::default(),
             hooks: Vec::new(),
             config_file_status: ConfigFileStatus::Missing(default_config_path()),
@@ -279,9 +293,6 @@ impl Config {
         if let Some(require_mitm_effective) = file_cfg.proxy.require_mitm_effective {
             self.require_mitm_effective = require_mitm_effective;
         }
-        if let Some(vault_path) = &file_cfg.vault.path {
-            self.vault_path = vault_path.clone();
-        }
         if let Some(level) = file_cfg.logging.level.as_deref() {
             self.log_level = LogLevel::parse(level).ok_or_else(|| {
                 format!(
@@ -318,9 +329,6 @@ impl Config {
                 )
             })?;
         }
-        if let Some(gitleaks_config) = &file_cfg.detection.gitleaks_config {
-            self.gitleaks_config_path = Some(gitleaks_config.clone());
-        }
         if let Some(entropy_enabled) = file_cfg.detection.entropy_enabled {
             self.entropy_enabled = entropy_enabled;
         }
@@ -334,6 +342,52 @@ impl Config {
             self.audit_log_path = parse_audit_log_setting(audit_path).map_err(|err| {
                 format!(
                     "config file {} has invalid audit.path: {err}",
+                    path.display()
+                )
+            })?;
+        }
+        if let Some(enabled) = file_cfg.sensitive.passwords_enabled {
+            self.sensitive_data.passwords_enabled = enabled;
+        }
+        if let Some(enabled) = file_cfg.sensitive.emails_enabled {
+            self.sensitive_data.emails_enabled = enabled;
+        }
+        if let Some(enabled) = file_cfg.sensitive.phones_enabled {
+            self.sensitive_data.phones_enabled = enabled;
+        }
+        if let Some(enabled) = file_cfg.sensitive.national_ids_enabled {
+            self.sensitive_data.national_ids_enabled = enabled;
+        }
+        if let Some(enabled) = file_cfg.sensitive.passports_enabled {
+            self.sensitive_data.passports_enabled = enabled;
+        }
+        if let Some(enabled) = file_cfg.sensitive.payment_cards_enabled {
+            self.sensitive_data.payment_cards_enabled = enabled;
+        }
+        if let Some(enabled) = file_cfg.sensitive.cvv_enabled {
+            self.sensitive_data.cvv_enabled = enabled;
+        }
+        if let Some(session_ttl) = file_cfg.sensitive.session_ttl.as_deref() {
+            self.sensitive_data.session_ttl = parse_duration(session_ttl).ok_or_else(|| {
+                format!(
+                    "config file {} has invalid sensitive.session_ttl `{session_ttl}`",
+                    path.display()
+                )
+            })?;
+        }
+        if let Some(enabled) = file_cfg.classifier.enabled {
+            self.local_classifier.enabled = enabled;
+        }
+        if let Some(endpoint) = file_cfg.classifier.endpoint.as_deref() {
+            self.local_classifier.endpoint = endpoint.trim().to_string();
+        }
+        if let Some(model) = file_cfg.classifier.model.as_deref() {
+            self.local_classifier.model = model.trim().to_string();
+        }
+        if let Some(timeout) = file_cfg.classifier.timeout.as_deref() {
+            self.local_classifier.timeout = parse_duration(timeout).ok_or_else(|| {
+                format!(
+                    "config file {} has invalid classifier.timeout `{timeout}`",
                     path.display()
                 )
             })?;
@@ -366,8 +420,6 @@ impl Config {
         self.proxy_listen_addr = env_or("KEYCLAW_PROXY_ADDR", &self.proxy_listen_addr);
         self.proxy_url = env_or("KEYCLAW_PROXY_URL", &self.proxy_url);
         self.ca_cert_path = env_or("KEYCLAW_CA_CERT", &self.ca_cert_path);
-        self.vault_path = path_env("KEYCLAW_VAULT_PATH").unwrap_or_else(|| self.vault_path.clone());
-        self.vault_passphrase = optional_env("KEYCLAW_VAULT_PASSPHRASE");
         self.fail_closed = bool_env("KEYCLAW_FAIL_CLOSED", self.fail_closed);
         self.max_body_bytes = int64_env("KEYCLAW_MAX_BODY_BYTES", self.max_body_bytes);
         self.detector_timeout = duration_env("KEYCLAW_DETECTOR_TIMEOUT", self.detector_timeout);
@@ -376,8 +428,6 @@ impl Config {
         self.known_provider_hosts =
             env_csv_or("KEYCLAW_PROVIDER_HOSTS", &self.known_provider_hosts);
         self.include_hosts = env_csv_or("KEYCLAW_INCLUDE_HOSTS", &self.include_hosts);
-        self.gitleaks_config_path =
-            path_env("KEYCLAW_GITLEAKS_CONFIG").or_else(|| self.gitleaks_config_path.clone());
         self.log_level = log_level_env("KEYCLAW_LOG_LEVEL", self.log_level);
         self.unsafe_log = bool_env("KEYCLAW_UNSAFE_LOG", self.unsafe_log);
         self.require_mitm_effective = bool_env(
@@ -390,6 +440,54 @@ impl Config {
         self.entropy_threshold = f64_env("KEYCLAW_ENTROPY_THRESHOLD", self.entropy_threshold);
         self.entropy_min_len = usize_env("KEYCLAW_ENTROPY_MIN_LEN", self.entropy_min_len);
         self.audit_log_path = audit_log_env("KEYCLAW_AUDIT_LOG", self.audit_log_path.clone());
+        self.sensitive_data.passwords_enabled = bool_env(
+            "KEYCLAW_SENSITIVE_PASSWORDS_ENABLED",
+            self.sensitive_data.passwords_enabled,
+        );
+        self.sensitive_data.emails_enabled = bool_env(
+            "KEYCLAW_SENSITIVE_EMAILS_ENABLED",
+            self.sensitive_data.emails_enabled,
+        );
+        self.sensitive_data.phones_enabled = bool_env(
+            "KEYCLAW_SENSITIVE_PHONES_ENABLED",
+            self.sensitive_data.phones_enabled,
+        );
+        self.sensitive_data.national_ids_enabled = bool_env(
+            "KEYCLAW_SENSITIVE_NATIONAL_IDS_ENABLED",
+            self.sensitive_data.national_ids_enabled,
+        );
+        self.sensitive_data.passports_enabled = bool_env(
+            "KEYCLAW_SENSITIVE_PASSPORTS_ENABLED",
+            self.sensitive_data.passports_enabled,
+        );
+        self.sensitive_data.payment_cards_enabled = bool_env(
+            "KEYCLAW_SENSITIVE_PAYMENT_CARDS_ENABLED",
+            self.sensitive_data.payment_cards_enabled,
+        );
+        self.sensitive_data.cvv_enabled = bool_env(
+            "KEYCLAW_SENSITIVE_CVV_ENABLED",
+            self.sensitive_data.cvv_enabled,
+        );
+        self.sensitive_data.session_ttl = duration_env(
+            "KEYCLAW_SENSITIVE_SESSION_TTL",
+            self.sensitive_data.session_ttl,
+        );
+        self.local_classifier.enabled = bool_env(
+            "KEYCLAW_LOCAL_CLASSIFIER_ENABLED",
+            self.local_classifier.enabled,
+        );
+        self.local_classifier.endpoint = env_or(
+            "KEYCLAW_LOCAL_CLASSIFIER_ENDPOINT",
+            &self.local_classifier.endpoint,
+        );
+        self.local_classifier.model = env_or(
+            "KEYCLAW_LOCAL_CLASSIFIER_MODEL",
+            &self.local_classifier.model,
+        );
+        self.local_classifier.timeout = duration_env(
+            "KEYCLAW_LOCAL_CLASSIFIER_TIMEOUT",
+            self.local_classifier.timeout,
+        );
     }
 
     pub(crate) fn add_include_hosts(&mut self, include_hosts: Vec<String>) {
@@ -471,20 +569,6 @@ fn usize_env(key: &str, fallback: usize) -> usize {
     match env::var(key) {
         Ok(v) => v.trim().parse::<usize>().unwrap_or(fallback),
         Err(_) => fallback,
-    }
-}
-
-fn path_env(key: &str) -> Option<PathBuf> {
-    match env::var(key) {
-        Ok(v) if !v.trim().is_empty() => Some(PathBuf::from(v.trim())),
-        _ => None,
-    }
-}
-
-fn optional_env(key: &str) -> Option<String> {
-    match env::var(key) {
-        Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
-        _ => None,
     }
 }
 
@@ -589,11 +673,6 @@ fn parse_duration(input: &str) -> Option<Duration> {
     Some(Duration::new(secs as u64, nanos))
 }
 
-fn default_vault_path() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".keyclaw").join("vault.enc")
-}
-
 fn default_codex_hosts() -> Vec<String> {
     split_csv("api.openai.com,chat.openai.com,chatgpt.com")
 }
@@ -640,7 +719,7 @@ mod tests {
 
     use std::ffi::OsString;
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
         // These tests serialize process-wide environment mutation with the shared test lock.
@@ -661,9 +740,6 @@ mod tests {
             "KEYCLAW_PROXY_ADDR",
             "KEYCLAW_PROXY_URL",
             "KEYCLAW_CA_CERT",
-            "KEYCLAW_VAULT_PATH",
-            "KEYCLAW_VAULT_PASSPHRASE",
-            "KEYCLAW_GITLEAKS_CONFIG",
             "KEYCLAW_LOG_LEVEL",
             "KEYCLAW_UNSAFE_LOG",
             "KEYCLAW_DETECTOR_TIMEOUT",
@@ -676,9 +752,6 @@ mod tests {
         set_env_var("KEYCLAW_PROXY_ADDR", "127.0.0.1:9999");
         set_env_var("KEYCLAW_PROXY_URL", "http://127.0.0.1:9999");
         set_env_var("KEYCLAW_CA_CERT", "/tmp/keyclaw-ca.crt");
-        set_env_var("KEYCLAW_VAULT_PATH", "/tmp/keyclaw-vault.enc");
-        set_env_var("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase");
-        set_env_var("KEYCLAW_GITLEAKS_CONFIG", "/tmp/keyclaw-gitleaks.toml");
         set_env_var("KEYCLAW_LOG_LEVEL", "debug");
         set_env_var("KEYCLAW_UNSAFE_LOG", "true");
         set_env_var("KEYCLAW_DETECTOR_TIMEOUT", "250ms");
@@ -690,12 +763,6 @@ mod tests {
         assert_eq!(cfg.proxy_listen_addr, "127.0.0.1:9999");
         assert_eq!(cfg.proxy_url, "http://127.0.0.1:9999");
         assert_eq!(cfg.ca_cert_path, "/tmp/keyclaw-ca.crt");
-        assert_eq!(cfg.vault_path, PathBuf::from("/tmp/keyclaw-vault.enc"));
-        assert_eq!(cfg.vault_passphrase.as_deref(), Some("test-passphrase"));
-        assert_eq!(
-            cfg.gitleaks_config_path.as_deref(),
-            Some(Path::new("/tmp/keyclaw-gitleaks.toml"))
-        );
         assert_eq!(cfg.log_level, LogLevel::Debug);
         assert!(cfg.unsafe_log);
         assert_eq!(cfg.detector_timeout, Duration::from_millis(250));
@@ -714,9 +781,6 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let keys = [
             "HOME",
-            "KEYCLAW_VAULT_PATH",
-            "KEYCLAW_VAULT_PASSPHRASE",
-            "KEYCLAW_GITLEAKS_CONFIG",
             "KEYCLAW_LOG_LEVEL",
             "KEYCLAW_UNSAFE_LOG",
             "KEYCLAW_DETECTOR_TIMEOUT",
@@ -726,9 +790,6 @@ mod tests {
         let saved = capture_env(&keys);
 
         set_env_var("HOME", temp.path());
-        remove_env_var("KEYCLAW_VAULT_PATH");
-        remove_env_var("KEYCLAW_VAULT_PASSPHRASE");
-        remove_env_var("KEYCLAW_GITLEAKS_CONFIG");
         remove_env_var("KEYCLAW_LOG_LEVEL");
         remove_env_var("KEYCLAW_UNSAFE_LOG");
         remove_env_var("KEYCLAW_DETECTOR_TIMEOUT");
@@ -737,12 +798,6 @@ mod tests {
 
         let cfg = Config::from_env();
 
-        assert_eq!(
-            cfg.vault_path,
-            temp.path().join(".keyclaw").join("vault.enc")
-        );
-        assert_eq!(cfg.vault_passphrase, None);
-        assert_eq!(cfg.gitleaks_config_path, None);
         assert_eq!(cfg.log_level, LogLevel::Info);
         assert!(!cfg.unsafe_log);
         assert_eq!(cfg.detector_timeout, Duration::from_secs(20));
@@ -979,7 +1034,7 @@ level = "LOUD"
             config_dir.join("config.toml"),
             r#"
 [allowlist]
-rule_ids = ["generic-api-key"]
+rule_ids = ["opaque.high_entropy"]
 patterns = ["^sk-test-"]
 secret_sha256 = ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
 "#,

@@ -3,12 +3,17 @@ use std::time::Duration;
 use keyclaw::placeholder;
 
 use crate::support::{
-    TEST_SECRET_CLAUDE, TEST_SECRET_CODEX, free_addr, run_mitm, run_mitm_with_args,
-    run_mitm_with_include, run_tool_alias, start_upstream,
+    TEST_SECRET_CLAUDE, TEST_SECRET_CODEX, free_addr, loopback_bind_available, run_mitm,
+    run_mitm_with_args, run_mitm_with_include, run_tool_alias, start_upstream,
 };
 
 #[test]
 fn mitm_codex_intercepts_and_sanitizes() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM e2e test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let (stderr, exit_code) = run_mitm(
@@ -35,6 +40,11 @@ fn mitm_codex_intercepts_and_sanitizes() {
 
 #[test]
 fn mitm_claude_intercepts_and_sanitizes() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM e2e test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let (stderr, exit_code) = run_mitm(
@@ -61,6 +71,11 @@ fn mitm_claude_intercepts_and_sanitizes() {
 
 #[test]
 fn codex_alias_intercepts_and_forwards_child_args() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM e2e test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let run = run_tool_alias(
@@ -93,6 +108,11 @@ fn codex_alias_intercepts_and_forwards_child_args() {
 
 #[test]
 fn claude_alias_intercepts_and_sanitizes() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM e2e test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let run = run_tool_alias(
@@ -125,6 +145,11 @@ fn claude_alias_intercepts_and_sanitizes() {
 
 #[test]
 fn mitm_codex_forwards_child_args_without_repeating_executable() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM e2e test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let run = run_mitm_with_args(
@@ -149,6 +174,11 @@ fn mitm_codex_forwards_child_args_without_repeating_executable() {
 
 #[test]
 fn mitm_include_glob_intercepts_custom_host() {
+    if !loopback_bind_available() {
+        eprintln!("skipping MITM e2e test: bind not permitted");
+        return;
+    }
+
     let (upstream_url, rx, _guard) = start_upstream();
 
     let (stderr, exit_code) = run_mitm_with_include(

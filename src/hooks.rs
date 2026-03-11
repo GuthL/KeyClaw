@@ -69,11 +69,20 @@ pub struct HookRunner {
     hooks: Vec<Hook>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchMode {
+    Blocking,
+    NonBlocking,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct HookRecord {
     ts: u64,
     event: String,
     rule_id: String,
+    kind: String,
+    subtype: String,
+    policy: String,
     placeholder: String,
     request_host: String,
 }
@@ -87,6 +96,9 @@ impl HookRecord {
                 .as_secs(),
             event: event.as_str().to_string(),
             rule_id: replacement.rule_id.clone(),
+            kind: replacement.kind.as_str().to_string(),
+            subtype: replacement.subtype.clone(),
+            policy: replacement.policy.as_str().to_string(),
             placeholder: replacement.placeholder.clone(),
             request_host: request_host.to_string(),
         }
@@ -111,7 +123,27 @@ impl HookRunner {
         request_host: &str,
         replacements: &[Replacement],
     ) -> Result<(), KeyclawError> {
-        self.dispatch_event(HookEvent::SecretDetected, request_host, replacements, true)
+        self.dispatch_event(
+            HookEvent::SecretDetected,
+            request_host,
+            replacements,
+            true,
+            DispatchMode::NonBlocking,
+        )
+    }
+
+    pub fn on_secret_detected_blocking(
+        &self,
+        request_host: &str,
+        replacements: &[Replacement],
+    ) -> Result<(), KeyclawError> {
+        self.dispatch_event(
+            HookEvent::SecretDetected,
+            request_host,
+            replacements,
+            true,
+            DispatchMode::Blocking,
+        )
     }
 
     pub fn on_request_redacted(
@@ -124,6 +156,21 @@ impl HookRunner {
             request_host,
             replacements,
             false,
+            DispatchMode::NonBlocking,
+        )
+    }
+
+    pub fn on_request_redacted_blocking(
+        &self,
+        request_host: &str,
+        replacements: &[Replacement],
+    ) -> Result<(), KeyclawError> {
+        self.dispatch_event(
+            HookEvent::RequestRedacted,
+            request_host,
+            replacements,
+            false,
+            DispatchMode::Blocking,
         )
     }
 
@@ -133,6 +180,7 @@ impl HookRunner {
         request_host: &str,
         replacements: &[Replacement],
         allow_block: bool,
+        mode: DispatchMode,
     ) -> Result<(), KeyclawError> {
         if self.hooks.is_empty() || replacements.is_empty() {
             return Ok(());
@@ -153,7 +201,12 @@ impl HookRunner {
                         return Err(KeyclawError::coded(CODE_HOOK_BLOCKED, msg));
                     }
                     HookAction::Block { .. } => {}
-                    action => spawn_nonblocking(action.clone(), record.clone()),
+                    action => match mode {
+                        DispatchMode::Blocking => run_and_log(action.clone(), record.clone()),
+                        DispatchMode::NonBlocking => {
+                            spawn_nonblocking(action.clone(), record.clone())
+                        }
+                    },
                 }
             }
         }
@@ -261,12 +314,16 @@ fn spawn_nonblocking(action: HookAction, record: HookRecord) {
     if let Err(err) = thread::Builder::new()
         .name("keyclaw-hook".to_string())
         .spawn(move || {
-            if let Err(err) = run_action(action, record) {
-                crate::logging::warn(&format!("hook action failed: {err}"));
-            }
+            run_and_log(action, record);
         })
     {
         crate::logging::warn(&format!("failed to spawn hook worker: {err}"));
+    }
+}
+
+fn run_and_log(action: HookAction, record: HookRecord) {
+    if let Err(err) = run_action(action, record) {
+        crate::logging::warn(&format!("hook action failed: {err}"));
     }
 }
 
@@ -304,6 +361,9 @@ fn run_exec_hook(
     let mut child = shell_command(command)
         .env("KEYCLAW_HOOK_EVENT", &record.event)
         .env("KEYCLAW_HOOK_RULE_ID", &record.rule_id)
+        .env("KEYCLAW_HOOK_KIND", &record.kind)
+        .env("KEYCLAW_HOOK_SUBTYPE", &record.subtype)
+        .env("KEYCLAW_HOOK_POLICY", &record.policy)
         .env("KEYCLAW_HOOK_PLACEHOLDER", &record.placeholder)
         .env("KEYCLAW_HOOK_REQUEST_HOST", &record.request_host)
         .stdin(Stdio::piped())
@@ -363,14 +423,18 @@ fn shell_command(command: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::{HookRunner, RawHookConfig, hook_matches_rule, parse_hooks};
-    use crate::gitleaks_rules::{MatchConfidence, MatchSource};
     use crate::placeholder::Replacement;
+    use crate::sensitive::{MatchConfidence, MatchSource};
+    use crate::sensitive::{ProtectionPolicy, SensitiveKind};
 
     fn sample_replacement(rule_id: &str) -> Replacement {
         Replacement {
             rule_id: rule_id.to_string(),
-            id: "api_k_deadbeef".to_string(),
-            placeholder: "{{KEYCLAW_SECRET_api_k_deadbeef}}".to_string(),
+            kind: SensitiveKind::OpaqueToken,
+            subtype: rule_id.to_string(),
+            policy: ProtectionPolicy::ReversibleSession,
+            id: "deadbeefcafebabe".to_string(),
+            placeholder: "{{KEYCLAW_OPAQUE_deadbeefcafebabe}}".to_string(),
             secret: "sk-live-real-secret".to_string(),
             source: MatchSource::Regex,
             confidence: MatchConfidence::High,
@@ -400,7 +464,7 @@ mod tests {
     fn hook_matches_exact_rules_and_wildcards() {
         let hooks = parse_hooks(&[RawHookConfig {
             event: "request_redacted".to_string(),
-            rule_ids: vec!["generic-api-key".to_string()],
+            rule_ids: vec!["opaque.high_entropy".to_string()],
             action: "log".to_string(),
             command: None,
             path: Some(std::env::temp_dir().join("hooks.log")),
@@ -410,8 +474,8 @@ mod tests {
         .expect("parse hooks");
 
         let hook = &hooks[0];
-        assert!(hook_matches_rule(hook, "generic-api-key"));
-        assert!(!hook_matches_rule(hook, "aws-access-key"));
+        assert!(hook_matches_rule(hook, "opaque.high_entropy"));
+        assert!(!hook_matches_rule(hook, "typed.email"));
     }
 
     #[test]
@@ -419,7 +483,7 @@ mod tests {
         let hooks = HookRunner::new(
             parse_hooks(&[RawHookConfig {
                 event: "secret_detected".to_string(),
-                rule_ids: vec!["generic-api-key".to_string()],
+                rule_ids: vec!["opaque.high_entropy".to_string()],
                 action: "block".to_string(),
                 command: None,
                 path: None,
@@ -428,7 +492,7 @@ mod tests {
             }])
             .expect("parse hooks"),
         );
-        let replacement = sample_replacement("generic-api-key");
+        let replacement = sample_replacement("opaque.high_entropy");
 
         let err = hooks
             .on_secret_detected("stdin", &[replacement])

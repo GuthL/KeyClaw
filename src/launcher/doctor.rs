@@ -8,8 +8,6 @@ use url::Url;
 
 use crate::config::Config;
 use crate::errors::{CODE_MITM_NOT_EFFECTIVE, KeyclawError};
-use crate::gitleaks_rules::RuleSet;
-use crate::vault::VaultPassphraseStatus;
 
 pub(super) fn run_doctor(cfg: &Config) -> i32 {
     let checks = doctor_checks(cfg);
@@ -84,13 +82,10 @@ fn doctor_checks_with_runtime(cfg: &Config, runtime: &impl DoctorRuntime) -> Vec
         checks.push(check_macos_ca_trust(cfg, runtime));
     }
     checks.extend([
-        check_vault_path(cfg),
-        check_ruleset(cfg),
-        check_kingfisher(),
+        check_detection(cfg),
         check_allowlist(cfg),
         check_proxy_bypass(cfg),
         check_unsafe_log(cfg),
-        check_vault_passphrase(cfg),
     ]);
     checks
 }
@@ -214,6 +209,14 @@ fn check_proxy_bind(cfg: &Config) -> DoctorCheck {
             drop(listener);
             pass_check("proxy-bind", format!("can bind proxy listener on {addr}"))
         }
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => warn_check(
+            "proxy-bind",
+            format!(
+                "could not verify proxy listener bind on {} in this environment: {err}",
+                cfg.proxy_listen_addr.trim()
+            ),
+            "run `keyclaw doctor` outside restricted sandboxes, or set KEYCLAW_PROXY_ADDR to a free local address on the target machine".to_string(),
+        ),
         Err(err) => fail_check(
             "proxy-bind",
             format!(
@@ -450,67 +453,24 @@ fn check_macos_ca_trust(cfg: &Config, runtime: &impl DoctorRuntime) -> DoctorChe
     }
 }
 
-fn check_vault_path(cfg: &Config) -> DoctorCheck {
-    match validate_vault_path(&cfg.vault_path) {
-        Ok(()) => pass_check(
-            "vault-path",
-            format!("vault path is writable at {}", cfg.vault_path.display()),
-        ),
-        Err(err) => fail_check(
-            "vault-path",
-            err.to_string(),
-            "set KEYCLAW_VAULT_PATH to a writable file path".to_string(),
-        ),
-    }
-}
-
-fn check_ruleset(cfg: &Config) -> DoctorCheck {
-    match cfg.gitleaks_config_path.as_deref() {
-        Some(path) => match RuleSet::from_file(path) {
-            Ok(ruleset) if ruleset.skipped_rules > 0 => warn_check(
-                "ruleset",
-                format!(
-                    "loaded {} custom gitleaks rules from {}, skipped {} invalid rule(s)",
-                    ruleset.rules.len(),
-                    path.display(),
-                    ruleset.skipped_rules
-                ),
-                "fix the invalid rules in KEYCLAW_GITLEAKS_CONFIG or unset it to use the bundled rules".to_string(),
-            ),
-            Ok(ruleset) => pass_check(
-                "ruleset",
-                format!(
-                    "loaded {} custom gitleaks rules from {}",
-                    ruleset.rules.len(),
-                    path.display()
-                ),
-            ),
-            Err(err) => fail_check(
-                "ruleset",
-                format!(
-                    "cannot load custom gitleaks rules from {}: {err}",
-                    path.display()
-                ),
-                "fix KEYCLAW_GITLEAKS_CONFIG or unset it to use the bundled rules".to_string(),
-            ),
+fn check_detection(cfg: &Config) -> DoctorCheck {
+    let mut details = vec![format!(
+        "opaque-token detection {} (threshold {:.2}, min_len {})",
+        if cfg.entropy_enabled {
+            "enabled"
+        } else {
+            "disabled"
         },
-        None => pass_check("ruleset", "using bundled gitleaks rules".to_string()),
+        cfg.entropy_threshold,
+        cfg.entropy_min_len
+    )];
+    if cfg.sensitive_data.any_enabled() {
+        details.push("typed detectors enabled".to_string());
     }
-}
-
-fn check_kingfisher() -> DoctorCheck {
-    if crate::kingfisher::default_binary_available() {
-        pass_check(
-            "kingfisher",
-            "kingfisher binary is available for second-pass detection".to_string(),
-        )
-    } else {
-        warn_check(
-            "kingfisher",
-            "kingfisher binary not found; second-pass detection is disabled".to_string(),
-            "install `kingfisher` and ensure it is on PATH to enable the second pass".to_string(),
-        )
+    if cfg.local_classifier.is_enabled() {
+        details.push("local classifier enabled".to_string());
     }
+    pass_check("detection", details.join("; "))
 }
 
 fn check_allowlist(cfg: &Config) -> DoctorCheck {
@@ -568,48 +528,6 @@ fn check_unsafe_log(cfg: &Config) -> DoctorCheck {
             "unsafe-log",
             "unsafe logging is disabled; log scrubbing remains active".to_string(),
         )
-    }
-}
-
-fn check_vault_passphrase(cfg: &Config) -> DoctorCheck {
-    match crate::vault::inspect_vault_passphrase_status(
-        &cfg.vault_path,
-        cfg.vault_passphrase.as_deref(),
-    ) {
-        Ok(VaultPassphraseStatus::EnvOverride) => pass_check(
-            "vault-key",
-            "custom vault passphrase configured via KEYCLAW_VAULT_PASSPHRASE".to_string(),
-        ),
-        Ok(VaultPassphraseStatus::LegacyEnvOverride) => warn_check(
-            "vault-key",
-            "KEYCLAW_VAULT_PASSPHRASE is set to the legacy built-in default".to_string(),
-            "set KEYCLAW_VAULT_PASSPHRASE to a unique value or remove it to use a generated machine-local key".to_string(),
-        ),
-        Ok(VaultPassphraseStatus::GeneratedKeyReady(path)) => pass_check(
-            "vault-key",
-            format!("machine-local vault key ready at {}", path.display()),
-        ),
-        Ok(VaultPassphraseStatus::GeneratedKeyWillBeCreated(path)) => pass_check(
-            "vault-key",
-            format!(
-                "machine-local vault key will be created at {} on first write",
-                path.display()
-            ),
-        ),
-        Ok(VaultPassphraseStatus::LegacyVaultWillMigrate(path)) => warn_check(
-            "vault-key",
-            "existing vault still uses the legacy built-in default and will be migrated on next write"
-                .to_string(),
-            format!(
-                "run a write path once to generate {} and re-encrypt the vault",
-                path.display()
-            ),
-        ),
-        Err(err) => fail_check(
-            "vault-key",
-            err.to_string(),
-            "restore the machine-local vault key or set KEYCLAW_VAULT_PASSPHRASE to the correct value".to_string(),
-        ),
     }
 }
 
@@ -723,42 +641,6 @@ fn validate_generated_ca_pair(cert_path: &Path, key_path: &Path) -> Result<(), K
     crate::certgen::validate_generated_ca_pair(cert_path, key_path).map(|_| ())
 }
 
-fn validate_vault_path(path: &Path) -> Result<(), KeyclawError> {
-    if path.is_dir() {
-        return Err(KeyclawError::uncoded(format!(
-            "vault path {} is a directory, not a file",
-            path.display()
-        )));
-    }
-
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    ensure_dir_writable(dir)?;
-
-    if path.exists() {
-        let metadata = fs::metadata(path).map_err(|err| {
-            KeyclawError::uncoded(format!(
-                "cannot access vault path {}: {err}",
-                path.display()
-            ))
-        })?;
-        if !metadata.is_file() {
-            return Err(KeyclawError::uncoded(format!(
-                "vault path {} is not a regular file",
-                path.display()
-            )));
-        }
-        fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(|err| {
-                KeyclawError::uncoded(format!("cannot open vault path {}: {err}", path.display()))
-            })?;
-    }
-
-    Ok(())
-}
-
 fn ensure_dir_writable(path: &Path) -> Result<(), KeyclawError> {
     fs::create_dir_all(path)
         .map_err(|err| KeyclawError::uncoded(format!("cannot create {}: {err}", path.display())))?;
@@ -807,6 +689,7 @@ mod tests {
     use crate::hooks::Hook;
     use crate::logging::LogLevel;
     use crate::redaction::NoticeMode;
+    use crate::sensitive::{LocalClassifierConfig, SensitiveDataConfig};
 
     #[derive(Default)]
     struct FakeDoctorRuntime {
@@ -855,6 +738,7 @@ mod tests {
 
     #[test]
     fn macos_doctor_warns_when_system_proxy_is_off() {
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let cert_path = write_test_ca(&temp);
         let cfg = test_config(&cert_path);
@@ -899,6 +783,7 @@ mod tests {
 
     #[test]
     fn macos_doctor_passes_when_system_proxy_and_ca_trust_match() {
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let cert_path = write_test_ca(&temp);
         let cfg = test_config(&cert_path);
@@ -957,6 +842,7 @@ mod tests {
 
     #[test]
     fn macos_doctor_warns_when_ca_is_not_trusted_for_ssl() {
+        let _guard = crate::test_support::ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let cert_path = write_test_ca(&temp);
         let cfg = test_config(&cert_path);
@@ -1019,8 +905,6 @@ mod tests {
             proxy_listen_addr: "127.0.0.1:8877".to_string(),
             proxy_url: "http://127.0.0.1:8877".to_string(),
             ca_cert_path: cert_path.display().to_string(),
-            vault_path: PathBuf::from("/tmp/keyclaw-test-vault.enc"),
-            vault_passphrase: Some("test-passphrase".to_string()),
             fail_closed: true,
             max_body_bytes: 1024 * 1024,
             detector_timeout: Duration::from_secs(4),
@@ -1028,7 +912,6 @@ mod tests {
             known_claude_hosts: Vec::new(),
             known_provider_hosts: Vec::new(),
             include_hosts: Vec::new(),
-            gitleaks_config_path: None,
             log_level: LogLevel::Info,
             unsafe_log: false,
             require_mitm_effective: true,
@@ -1038,6 +921,8 @@ mod tests {
             entropy_threshold: 3.5,
             entropy_min_len: 20,
             audit_log_path: None,
+            sensitive_data: SensitiveDataConfig::default(),
+            local_classifier: LocalClassifierConfig::default(),
             allowlist: Allowlist::default(),
             hooks: Vec::<Hook>::new(),
             config_file_status: ConfigFileStatus::Missing(PathBuf::from(

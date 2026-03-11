@@ -1,6 +1,6 @@
 //! Public library surface for KeyClaw.
 //!
-//! KeyClaw is a local MITM proxy that rewrites secrets out of outbound LLM
+//! KeyClaw is a local MITM proxy that rewrites sensitive data out of outbound LLM
 //! traffic before it leaves the machine, then resolves placeholders back into
 //! inbound responses for the local client.
 
@@ -12,21 +12,17 @@ pub mod audit;
 pub mod certgen;
 /// Runtime configuration loaded from defaults, `~/.keyclaw/config.toml`, and env vars.
 pub mod config;
-/// High-entropy token detection used alongside provider-specific rules.
+/// High-entropy token detection used for opaque-token replacement.
 pub mod entropy;
 /// Error types and deterministic error-code helpers.
 pub mod errors;
-/// Bundled gitleaks rule loading, compilation, and matching.
-pub mod gitleaks_rules;
 /// Configured hook actions for request-side events.
 pub mod hooks;
-/// Second-pass secret scanning backed by Kingfisher.
-pub mod kingfisher;
 /// CLI entrypoints and launched-tool integration.
 pub mod launcher;
 /// Operator-facing runtime logging utilities.
 pub mod logging;
-/// Log scrubbing utilities for redacting secrets from operator-visible output.
+/// Log scrubbing utilities for redacting sensitive values from operator-visible output.
 pub mod logscrub;
 /// Request rewrite and placeholder-resolution pipeline.
 pub mod pipeline;
@@ -36,10 +32,10 @@ pub mod placeholder;
 pub mod proxy;
 /// JSON-walking utilities and redaction-notice injection.
 pub mod redaction;
+/// Typed sensitive-data detection and session-scoped storage.
+pub mod sensitive;
 /// Audit-log backed CLI stats summaries.
 pub mod stats;
-/// AES-GCM encrypted local secret storage.
-pub mod vault;
 
 #[cfg(test)]
 pub(crate) mod test_support;

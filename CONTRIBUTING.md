@@ -21,9 +21,9 @@ cargo run -- --help
 ### Prerequisites
 
 - Rust 1.75+ via [rustup](https://rustup.rs)
-- No external `gitleaks` binary is required
+- No external detector binaries are required for the default runtime
 
-KeyClaw compiles the bundled [`gitleaks.toml`](gitleaks.toml) rules into native Rust regexes. If you want to test a custom ruleset, point `KEYCLAW_GITLEAKS_CONFIG` at your own TOML file and verify it with `keyclaw doctor`.
+KeyClaw now uses an in-process sensitive-data engine centered on `src/sensitive.rs`: typed structured detectors plus opaque high-entropy token detection, all backed by a session-scoped resolver.
 
 ## Project Layout
 
@@ -90,22 +90,23 @@ When you change setup guidance, keep these contracts intact unless the implement
 - Prefer focused tests over broad incidental coverage.
 - Preserve fail-closed behavior unless the change is explicitly about relaxing that policy.
 
-### New secret patterns
+### New sensitive-data detectors
 
-When adding new secret detection patterns:
+When adding or adjusting detection behavior:
 
-1. Edit [`gitleaks.toml`](gitleaks.toml).
-2. Add tests in `tests/placeholder.rs` and, when relevant, `tests/integration_proxy.rs`.
-3. If rule loading or compilation behavior must change, update `src/gitleaks_rules.rs`.
+1. Edit `src/sensitive.rs`.
+2. Add tests in `tests/placeholder.rs` and `tests/pipeline.rs`.
+3. Add `tests/integration_proxy.rs` coverage when the behavior changes end-to-end proxy rewriting or response reinjection.
 
 Suggested verification:
 
 ```bash
 cargo test placeholder
+cargo test --test pipeline
 cargo test --test integration_proxy
 ```
 
-In short: **Adding new secret detection patterns to `gitleaks.toml` is the normal path.**
+In short: **`src/sensitive.rs` is the normal path for new detector work.**
 
 ## Pull Requests
 
@@ -129,8 +130,8 @@ Maintainers are responsible for keeping all public distribution channels aligned
 
 The release workflow also updates the Homebrew tap automatically. Configure `HOMEBREW_TAP_GITHUB_TOKEN` in the KeyClaw repo secrets with a token that has write access to `GuthL/homebrew-tap`.
 
-Treat `scripts/package-release.sh`, `scripts/smoke-release.sh`, `scripts/verify-release-contract.sh`, `scripts/render-homebrew-formula.sh`, and `.github/workflows/release.yml` as the release source of truth for versioning, verification, publication, and rollback.
-Run `scripts/smoke-release.sh target/release/keyclaw` for local artifact validation and `cargo publish --dry-run --locked` before creating a release tag.
+Maintainers should use [docs/release/maintainer-checklist.md](docs/release/maintainer-checklist.md) as the release source of truth for versioning, verification, publication, and rollback.
+Treat `scripts/package-release.sh`, `scripts/verify-release-contract.sh`, `scripts/render-homebrew-formula.sh`, and `.github/workflows/release.yml` as the implementation backing that checklist.
 
 ## Security
 
