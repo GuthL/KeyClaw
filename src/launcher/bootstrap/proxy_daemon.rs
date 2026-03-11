@@ -1,4 +1,7 @@
 use std::fs;
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -23,6 +26,7 @@ pub(crate) fn run_proxy_foreground(cfg: &Config, processor: Arc<Processor>, ca: 
     proxy_server.max_body_bytes = cfg.max_body_bytes;
     proxy_server.body_timeout = cfg.detector_timeout;
     proxy_server.audit_log_path = cfg.audit_log_path.clone();
+    proxy_server.allow_addr_in_use_fallback = false;
 
     let running_proxy = match proxy_server.start() {
         Ok(p) => p,
@@ -81,8 +85,31 @@ pub(crate) fn run_proxy_detached(cfg: &Config) -> Result<i32, KeyclawError> {
     let pid_path = keyclaw_dir.join("proxy.pid");
     let env_path = keyclaw_dir.join("env.sh");
     let log_path = keyclaw_dir.join("proxy.log");
-    let _ = fs::remove_file(&pid_path);
-    let _ = fs::remove_file(&env_path);
+
+    let existing_addr = read_proxy_addr_from_env(&env_path);
+    let existing_pid = read_and_validate_proxy_pid(&pid_path);
+    let mut reset_tracking_files = existing_pid.is_none();
+    if let Some(existing_pid) = existing_pid {
+        if should_replace_existing_proxy(cfg, &env_path) {
+            if let Some(existing_addr) = existing_addr.as_deref() {
+                crate::logging::info(&format!(
+                    "stopping existing proxy on {existing_addr} before restart"
+                ));
+            } else {
+                crate::logging::info("stopping existing proxy before restart");
+            }
+            stop_proxy_process(&pid_path, existing_pid)?;
+            if let Some(existing_addr) = existing_addr.as_deref() {
+                wait_for_proxy_addr_to_stop_listening(existing_addr)?;
+            }
+            reset_tracking_files = true;
+        }
+    }
+
+    if reset_tracking_files {
+        let _ = fs::remove_file(&pid_path);
+        let _ = fs::remove_file(&env_path);
+    }
 
     let current_exe = std::env::current_exe()
         .map_err(|e| KeyclawError::uncoded(format!("resolve current executable: {e}")))?;
@@ -97,17 +124,30 @@ pub(crate) fn run_proxy_detached(cfg: &Config) -> Result<i32, KeyclawError> {
         .try_clone()
         .map_err(|e| KeyclawError::uncoded(format!("clone proxy log handle: {e}")))?;
 
-    let mut child = Command::new(current_exe)
+    let mut command = Command::new(current_exe);
+    command
         .arg("proxy")
         .arg("--foreground")
         .envs(std::env::vars())
-        .env(
-            "KEYCLAW_DRY_RUN",
-            if cfg.dry_run { "true" } else { "false" },
-        )
+        .envs(detached_proxy_env(cfg))
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file_err))
+        .stderr(Stdio::from(log_file_err));
+
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            // SAFETY: `pre_exec` runs in the child after `fork` and before
+            // `exec`. Calling `setsid` here detaches the proxy into its own
+            // session so parent-terminal teardown does not also tear it down.
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = command
         .spawn()
         .map_err(|e| KeyclawError::uncoded(format!("start detached proxy: {e}")))?;
 
@@ -125,6 +165,20 @@ pub(crate) fn run_proxy_detached(cfg: &Config) -> Result<i32, KeyclawError> {
     Ok(0)
 }
 
+pub(super) fn detached_proxy_env(cfg: &Config) -> Vec<(String, String)> {
+    let mut env = vec![(
+        "KEYCLAW_DRY_RUN".to_string(),
+        if cfg.dry_run { "true" } else { "false" }.to_string(),
+    )];
+    if !cfg.include_hosts().is_empty() {
+        env.push((
+            "KEYCLAW_INCLUDE_HOSTS".to_string(),
+            cfg.include_hosts().join(","),
+        ));
+    }
+    env
+}
+
 pub(crate) fn run_proxy_stop() -> i32 {
     let keyclaw_dir = crate::certgen::keyclaw_dir();
     let pid_path = keyclaw_dir.join("proxy.pid");
@@ -137,34 +191,19 @@ pub(crate) fn run_proxy_stop() -> i32 {
         }
     };
 
-    let kill_result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-    if kill_result != 0 {
-        crate::logging::info("no running proxy found");
-        let _ = fs::remove_file(&pid_path);
-        return 0;
-    }
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut exited = false;
-    while Instant::now() < deadline {
-        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
-        if !alive {
-            exited = true;
-            break;
+    match stop_proxy_process(&pid_path, pid) {
+        Ok(true) => {
+            crate::logging::info(&format!("proxy stopped (pid={pid})"));
+            0
         }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    let _ = fs::remove_file(&pid_path);
-
-    if exited {
-        crate::logging::info(&format!("proxy stopped (pid={pid})"));
-        0
-    } else {
-        crate::logging::error(&format!(
-            "proxy (pid={pid}) did not exit within 5 seconds after SIGTERM"
-        ));
-        1
+        Ok(false) => {
+            crate::logging::info("no running proxy found");
+            0
+        }
+        Err(err) => {
+            crate::logging::error(&err.to_string());
+            1
+        }
     }
 }
 
@@ -182,6 +221,12 @@ pub(crate) fn run_proxy_status() -> i32 {
     };
 
     let addr = read_proxy_addr_from_env(&env_path).unwrap_or_else(|| "127.0.0.1:8877".to_string());
+    if !proxy_addr_is_listening(&addr) {
+        crate::logging::error(&format!(
+            "proxy process is alive but not listening on {addr}"
+        ));
+        return 1;
+    }
     crate::logging::info(&format!("proxy running (pid={pid}, addr={addr})"));
     0
 }
@@ -213,6 +258,7 @@ pub(super) fn read_and_validate_proxy_pid(pid_path: &Path) -> Option<u32> {
 
 pub(super) fn is_keyclaw_proxy_process(pid: u32) -> bool {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("keyclaw"));
+    let current_exe_display = current_exe.display().to_string();
     let exe_name = current_exe
         .file_name()
         .and_then(|name| name.to_str())
@@ -227,10 +273,6 @@ pub(super) fn is_keyclaw_proxy_process(pid: u32) -> bool {
         Err(_) => return false,
     };
 
-    if comm != exe_name {
-        return false;
-    }
-
     let args = match Command::new("ps")
         .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
         .output()
@@ -238,6 +280,16 @@ pub(super) fn is_keyclaw_proxy_process(pid: u32) -> bool {
         Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
         Err(_) => return false,
     };
+
+    let argv0 = args.split_whitespace().next().unwrap_or_default();
+    let argv0_matches = argv0 == current_exe_display
+        || Path::new(argv0).file_name().and_then(|name| name.to_str()) == Some(exe_name);
+    let comm_matches = comm == exe_name
+        || Path::new(&comm).file_name().and_then(|name| name.to_str()) == Some(exe_name);
+
+    if !argv0_matches && !comm_matches {
+        return false;
+    }
 
     args.contains(" proxy") && (args.ends_with(" proxy") || args.contains(" proxy "))
 }
@@ -252,6 +304,49 @@ pub(super) fn read_proxy_addr_from_env(env_path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+pub(super) fn proxy_addr_is_listening(addr: &str) -> bool {
+    let timeout = Duration::from_millis(250);
+    let addrs = match addr.to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(_) => return false,
+    };
+
+    addrs
+        .into_iter()
+        .any(|socket_addr| TcpStream::connect_timeout(&socket_addr, timeout).is_ok())
+}
+
+fn proxy_addr_can_bind(addr: &str) -> bool {
+    let addrs = match addr.to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(_) => return false,
+    };
+
+    addrs
+        .into_iter()
+        .any(|socket_addr| TcpListener::bind(socket_addr).is_ok())
+}
+
+fn should_replace_existing_proxy(cfg: &Config, env_path: &Path) -> bool {
+    match read_proxy_addr_from_env(env_path) {
+        Some(existing_addr) => listen_addrs_match(&existing_addr, &cfg.proxy_listen_addr),
+        None => true,
+    }
+}
+
+fn listen_addrs_match(lhs: &str, rhs: &str) -> bool {
+    let lhs = lhs.trim();
+    let rhs = rhs.trim();
+    if lhs == rhs {
+        return true;
+    }
+
+    match (lhs.parse::<SocketAddr>(), rhs.parse::<SocketAddr>()) {
+        (Ok(lhs), Ok(rhs)) => lhs == rhs,
+        _ => false,
+    }
 }
 
 pub(crate) fn render_proxy_env_script(
@@ -336,7 +431,11 @@ fn wait_for_detached_proxy_ready(
 
     while Instant::now() < deadline {
         if pid_matches_child(pid_path, child.id())? && env_path.exists() {
-            return Ok(());
+            if let Some(addr) = read_proxy_addr_from_env(env_path) {
+                if proxy_addr_is_listening(&addr) {
+                    return Ok(());
+                }
+            }
         }
 
         if let Some(status) = child
@@ -363,6 +462,42 @@ fn wait_for_detached_proxy_ready(
     )))
 }
 
+fn stop_proxy_process(pid_path: &Path, pid: u32) -> Result<bool, KeyclawError> {
+    let kill_result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if kill_result != 0 {
+        let _ = fs::remove_file(pid_path);
+        return Ok(false);
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        if !alive {
+            let _ = fs::remove_file(pid_path);
+            return Ok(true);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    Err(KeyclawError::uncoded(format!(
+        "proxy (pid={pid}) did not exit within 5 seconds after SIGTERM"
+    )))
+}
+
+fn wait_for_proxy_addr_to_stop_listening(addr: &str) -> Result<(), KeyclawError> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if proxy_addr_can_bind(addr) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    Err(KeyclawError::uncoded(format!(
+        "proxy address {addr} did not stop listening within 5 seconds after SIGTERM"
+    )))
+}
+
 fn pid_matches_child(pid_path: &Path, child_pid: u32) -> Result<bool, KeyclawError> {
     let pid = match fs::read_to_string(pid_path) {
         Ok(pid) => pid,
@@ -371,7 +506,7 @@ fn pid_matches_child(pid_path: &Path, child_pid: u32) -> Result<bool, KeyclawErr
             return Err(KeyclawError::uncoded(format!(
                 "read proxy pid file {}: {err}",
                 pid_path.display()
-            )))
+            )));
         }
     };
 

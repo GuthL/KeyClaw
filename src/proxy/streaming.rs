@@ -239,12 +239,14 @@ fn drain_complete_sse_events(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
-    use super::{drain_complete_sse_events, BufferedInputJsonDeltaEvent, SseStreamResolver};
-    use crate::gitleaks_rules::RuleSet;
+    use super::{BufferedInputJsonDeltaEvent, SseStreamResolver, drain_complete_sse_events};
+    use crate::allowlist::Allowlist;
+    use crate::entropy::EntropyConfig;
     use crate::pipeline::Processor;
     use crate::placeholder;
-    use crate::vault::Store;
+    use crate::sensitive::{DetectionEngine, SensitiveDataConfig, SensitiveKind, SessionStore};
 
     #[test]
     fn buffered_input_json_delta_event_parses_fragment_and_metadata_lines() {
@@ -291,7 +293,9 @@ mod tests {
 
     #[test]
     fn sse_resolver_passes_through_non_json_events() {
-        let mut resolver = SseStreamResolver::new(test_processor());
+        let mut resolver = SseStreamResolver::new(test_processor(Arc::new(SessionStore::new(
+            Duration::from_secs(60),
+        ))));
         let event = b"event: ping\ndata: [DONE]\n\n";
 
         assert_eq!(resolver.process_frame(event), event);
@@ -299,15 +303,13 @@ mod tests {
 
     #[test]
     fn sse_resolver_resolves_split_placeholder_without_breaking_utf8_boundaries() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let vault = Arc::new(Store::new(
-            temp.path().join("vault.enc"),
-            "test-passphrase".to_string(),
-        ));
+        let store = Arc::new(SessionStore::new(Duration::from_secs(60)));
         let secret = "é漢";
-        let id = vault.store_secret(secret).expect("store secret");
+        let id = store
+            .store(SensitiveKind::OpaqueToken, secret)
+            .expect("store secret");
         let placeholder = placeholder::make(&id);
-        let mut resolver = SseStreamResolver::new(test_processor_with_vault(Arc::clone(&vault)));
+        let mut resolver = SseStreamResolver::new(test_processor(Arc::clone(&store)));
 
         let out1 = resolver.process_frame(input_json_delta_event(&placeholder[..1]).as_bytes());
         let out2 = resolver.process_frame(input_json_delta_event(&placeholder[1..4]).as_bytes());
@@ -322,12 +324,16 @@ mod tests {
             vec!["".to_string(), "é".to_string(), "漢".to_string()]
         );
         assert_eq!(fragments.concat(), secret);
-        assert!(!String::from_utf8(out2)
-            .expect("utf8")
-            .contains(&placeholder));
-        assert!(!String::from_utf8(out3)
-            .expect("utf8")
-            .contains(&placeholder));
+        assert!(
+            !String::from_utf8(out2)
+                .expect("utf8")
+                .contains(&placeholder)
+        );
+        assert!(
+            !String::from_utf8(out3)
+                .expect("utf8")
+                .contains(&placeholder)
+        );
     }
 
     fn input_json_delta_event(fragment: &str) -> String {
@@ -358,25 +364,20 @@ mod tests {
             .collect()
     }
 
-    fn test_processor() -> Arc<Processor> {
-        Arc::new(Processor {
-            vault: None,
-            ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
-            max_body_size: 1 << 20,
-            strict_mode: true,
-            notice_mode: crate::redaction::NoticeMode::Verbose,
-            dry_run: false,
-        })
-    }
-
-    fn test_processor_with_vault(vault: Arc<Store>) -> Arc<Processor> {
-        Arc::new(Processor {
-            vault: Some(vault),
-            ruleset: Arc::new(RuleSet::bundled().expect("bundled rules")),
-            max_body_size: 1 << 20,
-            strict_mode: true,
-            notice_mode: crate::redaction::NoticeMode::Verbose,
-            dry_run: false,
-        })
+    fn test_processor(store: Arc<SessionStore>) -> Arc<Processor> {
+        Arc::new(Processor::new(
+            Arc::new(DetectionEngine::new(
+                SensitiveDataConfig::default(),
+                EntropyConfig::default(),
+                Allowlist::default(),
+                None,
+            )),
+            store,
+            1 << 20,
+            true,
+            crate::redaction::NoticeMode::Verbose,
+            false,
+            None,
+        ))
     }
 }

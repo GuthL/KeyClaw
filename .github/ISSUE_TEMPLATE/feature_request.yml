@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a new capability, workflow improvement, or docs enhancement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      placeholder: I want a clearer way to verify that Cursor traffic is being intercepted without manually inspecting logs.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What change would you like?
+      placeholder: Add a `keyclaw proxy doctor` summary for active intercept counts and trusted-CA status.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: I can script this locally today, but it is clumsy and easy to get wrong.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Detection
+        - Proxy/runtime
+        - CLI UX
+        - Documentation
+        - Release/distribution
+        - Security hardening
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked for an existing issue or discussion first.
+          required: true

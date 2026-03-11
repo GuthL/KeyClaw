@@ -80,13 +80,11 @@ run_doctor_smoke() {
   KEYCLAW_PROXY_ADDR=127.0.0.1:0 \
   KEYCLAW_PROXY_URL=http://127.0.0.1:0 \
   KEYCLAW_REQUIRE_MITM_EFFECTIVE=true \
-  KEYCLAW_VAULT_PATH="${home}/doctor-vault.enc" \
-  KEYCLAW_VAULT_PASSPHRASE=test-passphrase \
   "$bin" doctor >"${work}/doctor.out" 2>"${work}/doctor.err"
 
   grep -Fq "PASS proxy-bind" "${work}/doctor.out"
   grep -Fq "PASS ca-cert" "${work}/doctor.out"
-  grep -Fq "PASS ruleset" "${work}/doctor.out"
+  grep -Fq "PASS detection" "${work}/doctor.out"
   grep -Fq "doctor: summary:" "${work}/doctor.out"
 }
 
@@ -97,8 +95,6 @@ run_proxy_smoke() {
   HOME="$home" \
   KEYCLAW_PROXY_ADDR=127.0.0.1:0 \
   KEYCLAW_PROXY_URL=http://127.0.0.1:0 \
-  KEYCLAW_VAULT_PATH="${home}/proxy-vault.enc" \
-  KEYCLAW_VAULT_PASSPHRASE=test-passphrase \
   "$bin" proxy >"${work}/proxy.out" 2>"$proxy_log"
   local status=$?
   if [ "$status" -ne 0 ]; then
@@ -178,8 +174,6 @@ run_mitm_smoke() {
   KEYCLAW_PROXY_URL="http://${proxy_addr}" \
   KEYCLAW_REQUIRE_MITM_EFFECTIVE=true \
   KEYCLAW_MAX_BODY_BYTES=1048576 \
-  KEYCLAW_VAULT_PATH="${home}/${tool}.vault.enc" \
-  KEYCLAW_VAULT_PASSPHRASE=test-passphrase \
   KEYCLAW_CODEX_HOSTS=127.0.0.1 \
   KEYCLAW_CLAUDE_HOSTS=127.0.0.1 \
   UPSTREAM_URL="$upstream_url" \
@@ -188,7 +182,7 @@ run_mitm_smoke() {
     >"${work}/${tool}.out" 2>"${work}/${tool}.err"
 
   wait "$upstream_pid"
-  if ! grep -Fq "KEYCLAW_SECRET_" "$body_file"; then
+  if ! grep -Fq "KEYCLAW_OPAQUE_" "$body_file"; then
     echo "expected ${tool} upstream body to contain a placeholder" >&2
     cat "${work}/${tool}.err" >&2
     cat "$body_file" >&2

@@ -1,20 +1,15 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::common::{
-    allowlist_test_payload, run_rewrite_json_with_input, write_allowlist_test_rules,
-};
-use crate::support::{rewrite_json_command, TEST_SECRET_CLAUDE, TEST_SECRET_CODEX};
+use crate::common::{allowlist_test_payload, run_rewrite_json_with_input};
+use crate::support::{TEST_SECRET_CLAUDE, TEST_SECRET_CODEX, rewrite_json_command, wait_until};
 
 #[test]
-fn rewrite_json_respects_custom_gitleaks_config() {
+fn rewrite_json_respects_entropy_toggle() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let gitleaks_config = temp.path().join("gitleaks.toml");
-    std::fs::write(&gitleaks_config, "rules = []\n").expect("write gitleaks config");
     let payload = format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX);
 
     let mut child = rewrite_json_command(temp.path())
-        .env("KEYCLAW_GITLEAKS_CONFIG", &gitleaks_config)
         .env("KEYCLAW_ENTROPY_ENABLED", "false")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -58,23 +53,14 @@ fn rewrite_json_fails_on_invalid_config_file() {
 #[test]
 fn rewrite_json_skips_rule_id_allowlisted_matches() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let gitleaks_config = temp.path().join("gitleaks.toml");
-    write_allowlist_test_rules(&gitleaks_config);
     let config_dir = temp.path().join(".keyclaw");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     std::fs::write(
         config_dir.join("config.toml"),
-        format!(
-            r#"
-[detection]
-gitleaks_config = "{}"
-entropy_enabled = false
-
+        r#"
 [allowlist]
-rule_ids = ["example-secret"]
+rule_ids = ["opaque.high_entropy"]
 "#,
-            gitleaks_config.display()
-        ),
     )
     .expect("write config");
     let (_, payload) = allowlist_test_payload();
@@ -89,23 +75,14 @@ rule_ids = ["example-secret"]
 #[test]
 fn rewrite_json_skips_regex_allowlisted_matches() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let gitleaks_config = temp.path().join("gitleaks.toml");
-    write_allowlist_test_rules(&gitleaks_config);
     let config_dir = temp.path().join(".keyclaw");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     std::fs::write(
         config_dir.join("config.toml"),
-        format!(
-            r#"
-[detection]
-gitleaks_config = "{}"
-entropy_enabled = false
-
+        r#"
 [allowlist]
 patterns = ["^AbC123"]
 "#,
-            gitleaks_config.display()
-        ),
     )
     .expect("write config");
     let (_, payload) = allowlist_test_payload();
@@ -122,8 +99,6 @@ fn rewrite_json_skips_sha256_allowlisted_matches() {
     use sha2::{Digest, Sha256};
 
     let temp = tempfile::tempdir().expect("tempdir");
-    let gitleaks_config = temp.path().join("gitleaks.toml");
-    write_allowlist_test_rules(&gitleaks_config);
     let config_dir = temp.path().join(".keyclaw");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     let (secret, payload) = allowlist_test_payload();
@@ -132,14 +107,9 @@ fn rewrite_json_skips_sha256_allowlisted_matches() {
         config_dir.join("config.toml"),
         format!(
             r#"
-[detection]
-gitleaks_config = "{}"
-entropy_enabled = false
-
 [allowlist]
 secret_sha256 = ["{}"]
 "#,
-            gitleaks_config.display(),
             digest
         ),
     )
@@ -177,8 +147,13 @@ fn rewrite_json_writes_audit_log_without_secret_material() {
     let log = std::fs::read_to_string(&audit_log).expect("read audit log");
     assert!(log.contains("\"action\":\"redacted\""), "log={log}");
     assert!(log.contains("\"request_host\":\"stdin\""), "log={log}");
+    assert!(log.contains("\"kind\":\"opaque_token\""), "log={log}");
     assert!(
-        log.contains("\"placeholder\":\"{{KEYCLAW_SECRET_"),
+        log.contains("\"rule_id\":\"opaque.high_entropy\""),
+        "log={log}"
+    );
+    assert!(
+        log.contains("\"placeholder\":\"{{KEYCLAW_OPAQUE_"),
         "log={log}"
     );
     assert!(!log.contains(TEST_SECRET_CODEX), "log={log}");
@@ -240,9 +215,8 @@ fn rewrite_json_appends_audit_log_entries() {
 }
 
 #[test]
-fn rewrite_json_creates_machine_local_vault_key_without_env_override() {
+fn rewrite_json_uses_session_placeholders_without_machine_local_vault_key() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let vault_path = temp.path().join("vault.enc");
     let payload = format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX);
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
 
@@ -250,7 +224,6 @@ fn rewrite_json_creates_machine_local_vault_key_without_env_override() {
         .arg("rewrite-json")
         .env_clear()
         .env("HOME", temp.path())
-        .env("KEYCLAW_VAULT_PATH", &vault_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -266,10 +239,10 @@ fn rewrite_json_creates_machine_local_vault_key_without_env_override() {
 
     assert_eq!(output.status.code(), Some(0));
     let out = String::from_utf8_lossy(&output.stdout);
-    assert!(out.contains("{{KEYCLAW_SECRET_"), "output={out}");
+    assert!(out.contains("{{KEYCLAW_OPAQUE_"), "output={out}");
     assert!(
-        vault_path.with_extension("key").exists(),
-        "vault key missing"
+        !temp.path().join("vault.key").exists(),
+        "session-scoped runtime should not create a vault key"
     );
 }
 
@@ -294,13 +267,13 @@ fn rewrite_json_preserves_env_style_assignment_boundaries() {
 
     assert_eq!(output.status.code(), Some(0));
     let out = String::from_utf8_lossy(&output.stdout);
-    assert!(out.contains("K_API_KEY: {{KEYCLAW_SECRET_"), "output={out}");
+    assert!(out.contains("K_API_KEY: {{KEYCLAW_OPAQUE_"), "output={out}");
     assert!(
-        out.contains("K_API_KEY = {{KEYCLAW_SECRET_"),
+        out.contains("K_API_KEY = {{KEYCLAW_OPAQUE_"),
         "output={out}"
     );
     assert!(out.contains("}} in .env"), "output={out}");
-    assert!(!out.contains("install {{KEYCLAW_SECRET_"), "output={out}");
+    assert!(!out.contains("install {{KEYCLAW_OPAQUE_"), "output={out}");
 }
 
 #[test]
@@ -327,4 +300,48 @@ fn rewrite_json_dry_run_leaves_payload_unchanged() {
     assert_eq!(output.status.code(), Some(0));
     let out = String::from_utf8_lossy(&output.stdout);
     assert_eq!(out, payload, "output={out}");
+}
+
+#[test]
+fn rewrite_json_secret_detected_log_hook_writes_placeholder_only() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let hook_log = temp.path().join("hooks.log");
+    let config_dir = temp.path().join(".keyclaw");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"
+[[hooks]]
+event = "secret_detected"
+rule_ids = ["opaque.high_entropy"]
+action = "log"
+path = "{}"
+"#,
+            hook_log.display()
+        ),
+    )
+    .expect("write config");
+
+    let payload = format!(r#"{{"prompt":"api_key = {}"}}"#, TEST_SECRET_CODEX);
+    let output = run_rewrite_json_with_input(temp.path(), &payload);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    wait_until(std::time::Duration::from_secs(2), || hook_log.exists());
+    let log = std::fs::read_to_string(&hook_log).expect("read hook log");
+    assert!(log.contains("\"event\":\"secret_detected\""), "log={log}");
+    assert!(
+        log.contains("\"rule_id\":\"opaque.high_entropy\""),
+        "log={log}"
+    );
+    assert!(
+        log.contains("\"placeholder\":\"{{KEYCLAW_OPAQUE_"),
+        "log={log}"
+    );
+    assert!(!log.contains(TEST_SECRET_CODEX), "log={log}");
 }

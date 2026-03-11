@@ -1,16 +1,22 @@
+//! JSON-walking utilities and redaction-notice injection.
+
 use serde_json::Value;
 
-use crate::errors::{KeyclawError, CODE_STRICT_RESOLVE_FAILED};
-use crate::placeholder::{self};
+use crate::errors::{CODE_STRICT_RESOLVE_FAILED, KeyclawError};
+use crate::placeholder::{self, Replacement};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeMode {
+    /// Inject the full explanatory notice.
     Verbose,
+    /// Inject a shorter operational notice.
     Minimal,
+    /// Do not inject a notice after redaction.
     Off,
 }
 
 impl NoticeMode {
+    /// Parse a notice mode from operator configuration text.
     pub fn parse(input: &str) -> Option<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
             "verbose" => Some(Self::Verbose),
@@ -21,6 +27,7 @@ impl NoticeMode {
     }
 }
 
+/// Walk all JSON string values in a payload and apply `transform`.
 pub fn walk_json_strings<F>(input: &[u8], mut transform: F) -> Result<Vec<u8>, KeyclawError>
 where
     F: FnMut(&str) -> Result<String, KeyclawError>,
@@ -31,20 +38,33 @@ where
     serde_json::to_vec(&rewritten).map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
 }
 
+/// Preserve the request body while the contract marker is carried in headers.
 pub fn inject_contract_marker(input: &[u8]) -> Result<Vec<u8>, KeyclawError> {
     // Contract marker is now injected as an HTTP header (X-Keyclaw-Contract)
     // rather than in the JSON body, to avoid API schema rejections.
     Ok(input.to_vec())
 }
 
+/// Inject a verbose redaction notice into a request payload.
 pub fn inject_redaction_notice(input: &[u8], count: usize) -> Result<Vec<u8>, KeyclawError> {
-    inject_redaction_notice_with_mode(input, count, NoticeMode::Verbose)
+    inject_redaction_notice_with_mode_and_replacements(input, count, NoticeMode::Verbose, &[])
 }
 
+/// Inject a redaction notice using the selected notice mode.
 pub fn inject_redaction_notice_with_mode(
     input: &[u8],
     count: usize,
     mode: NoticeMode,
+) -> Result<Vec<u8>, KeyclawError> {
+    inject_redaction_notice_with_mode_and_replacements(input, count, mode, &[])
+}
+
+/// Inject a redaction notice using the selected notice mode and replacements metadata.
+pub fn inject_redaction_notice_with_mode_and_replacements(
+    input: &[u8],
+    count: usize,
+    mode: NoticeMode,
+    replacements: &[Replacement],
 ) -> Result<Vec<u8>, KeyclawError> {
     if matches!(mode, NoticeMode::Off) {
         return Ok(input.to_vec());
@@ -53,13 +73,13 @@ pub fn inject_redaction_notice_with_mode(
     let mut parsed: serde_json::Value = serde_json::from_slice(input)
         .map_err(|e| KeyclawError::uncoded_with_source("decode json for notice injection", e))?;
 
-    let notice = redaction_notice_text(count, mode);
+    let notice = redaction_notice_text(count, mode, replacements);
 
     let obj = match parsed.as_object_mut() {
         Some(o) => o,
         None => {
             return serde_json::to_vec(&parsed)
-                .map_err(|e| KeyclawError::uncoded_with_source("encode json", e))
+                .map_err(|e| KeyclawError::uncoded_with_source("encode json", e));
         }
     };
 
@@ -109,33 +129,55 @@ pub fn inject_redaction_notice_with_mode(
         .map_err(|e| KeyclawError::uncoded_with_source("encode json after notice", e))
 }
 
-fn redaction_notice_text(count: usize, mode: NoticeMode) -> String {
+fn redaction_notice_text(count: usize, mode: NoticeMode, replacements: &[Replacement]) -> String {
+    let detail = replacement_kind_summary(replacements);
     match mode {
         NoticeMode::Verbose => format!(
-            "{} secret(s) in this conversation were automatically redacted and replaced \
+            "{} sensitive value(s) in this conversation were automatically redacted and replaced \
              with placeholders (like {}) by KeyClaw, an on-device security proxy. \
+             {} \
              You did NOT see the real secret values. \
              IMPORTANT: The first time you encounter a redacted placeholder in this conversation, \
              you MUST acknowledge it to the user by saying something like: \
-             'I can see a secret was shared, but it has been securely swapped by KeyClaw. \
+             'I can see sensitive data was shared, but it has been securely swapped by KeyClaw. \
              I never see the real value - only a safe placeholder. Everything will work normally \
              because the proxy reinjects the real credential on the fly.' \
              After that first acknowledgment, continue operating normally. Use the placeholder \
              values in commands, code, and tool calls without hesitation - the on-device proxy \
              will automatically reinject the real credentials before anything reaches external services.",
             count,
-            placeholder::EXAMPLE_PLACEHOLDER
+            placeholder::EXAMPLE_PLACEHOLDER,
+            detail,
         ),
         NoticeMode::Minimal => format!(
-            "{} secret(s) in this conversation were redacted by KeyClaw and replaced with \
+            "{} sensitive value(s) in this conversation were redacted by KeyClaw and replaced with \
              placeholders (like {}). You only see the placeholders, not the real secret values. \
+             {} \
              Use the placeholders normally; the on-device proxy reinjects the real credentials \
              before requests leave this machine.",
             count,
-            placeholder::EXAMPLE_PLACEHOLDER
+            placeholder::EXAMPLE_PLACEHOLDER,
+            detail,
         ),
         NoticeMode::Off => String::new(),
     }
+}
+
+fn replacement_kind_summary(replacements: &[Replacement]) -> String {
+    if replacements.is_empty() {
+        return "This may include secrets, passwords, or other typed sensitive values.".to_string();
+    }
+
+    let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+    for replacement in replacements {
+        *counts.entry(replacement.kind.display_label()).or_insert(0) += 1;
+    }
+    let summary = counts
+        .into_iter()
+        .map(|(kind, count)| format!("{count} {kind}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Detected classes in this payload: {summary}.")
 }
 
 /// Walk only user message content strings in chat API payloads.
@@ -262,16 +304,17 @@ fn should_rewrite_message(msg: &Value) -> bool {
     }
 }
 
+/// Resolve placeholders inside JSON string fields.
 pub fn resolve_json_placeholders<F>(
     input: &[u8],
     strict: bool,
     mut resolver: F,
 ) -> Result<Vec<u8>, KeyclawError>
 where
-    F: FnMut(&str) -> Result<Option<String>, KeyclawError>,
+    F: FnMut(crate::sensitive::SensitiveKind, &str) -> Result<Option<String>, KeyclawError>,
 {
     walk_json_strings(input, |s| {
-        match placeholder::resolve_placeholders(s, strict, &mut resolver) {
+        match placeholder::resolve_placeholders_typed(s, strict, &mut resolver) {
             Ok(resolved) => Ok(resolved),
             Err(err) if strict => Err(KeyclawError::coded_with_source(
                 CODE_STRICT_RESOLVE_FAILED,

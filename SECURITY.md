@@ -15,11 +15,10 @@ We will acknowledge receipt within 48 hours and provide a timeline for a fix.
 
 KeyClaw's security model is documented in the [README](README.md#security-model). In scope:
 
-- Bypass of secret detection (a secret that should be caught but isn't)
-- Vault encryption weaknesses
+- Bypass of sensitive-data detection (a value that should be caught but isn't)
 - Proxy bypass techniques (traffic that avoids interception)
 - CA certificate generation weaknesses
-- Log scrubbing failures (secrets appearing in log output)
+- Log scrubbing failures (sensitive values appearing in log output)
 
 Out of scope:
 
@@ -33,8 +32,8 @@ Out of scope:
 KeyClaw is a local developer tool, not a hosted secret manager.
 
 - It only protects supported Claude/Codex traffic that actually routes through the KeyClaw proxy on your machine.
-- The CA certificate, encrypted vault, and generated `vault.key` stay local unless you explicitly move or override them.
-- Secret detection, placeholder generation, and placeholder reinjection run in-process on the local machine.
+- The CA certificate and session-scoped placeholder store stay local to the machine running KeyClaw.
+- Sensitive-data detection, placeholder generation, and placeholder reinjection run in-process on the local machine.
 
 ## Non-Goals And Limits
 
@@ -53,9 +52,9 @@ KeyClaw is a local developer tool, not a hosted secret manager.
 
 1. **Fail closed** — If detection fails, requests are blocked, not passed through
 2. **No embedded secrets** — CA certificates are generated per-machine at runtime
-3. **Encrypted at rest** — The vault uses AES-256-GCM with scrypt key derivation, keyed by either an explicit `KEYCLAW_VAULT_PASSPHRASE` override or a generated machine-local `vault.key`
-4. **Log sanitization** — All log output is scrubbed for known secret patterns
+3. **Session-scoped storage** — Placeholder mappings live in a TTL-bound local store instead of a long-lived secret vault
+4. **Log sanitization** — All log output is scrubbed for known sensitive patterns
 5. **Minimal trust** — The proxy only intercepts configured hosts; all other traffic passes through untouched
-6. **In-process detection** — Secret detection uses the bundled gitleaks rules compiled into the binary; there is no external gitleaks subprocess in the runtime trust boundary
-7. **Fail closed on bad key material** — Missing, mismatched, or corrupt vault key material is treated as an operator-visible error, not as an empty vault
+6. **In-process detection** — Detection runs inside `src/sensitive.rs`; there is no required external detector subprocess in the runtime trust boundary
+7. **Strict local resolution** — Missing or expired placeholders are treated as operator-visible errors in strict paths instead of being silently resolved to empty values
 8. **Unsafe logging is explicit** — `KEYCLAW_UNSAFE_LOG=true` is the only intentional way to bypass normal log scrubbing, and it is for local debugging only

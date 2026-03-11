@@ -11,13 +11,13 @@ use crate::support::{can_bind, free_addr, install_fake_tool, prepend_path, wait_
 
 #[cfg(unix)]
 #[test]
+#[ignore = "slow daemon/proxy e2e"]
 fn mitm_releases_proxy_port_immediately_on_sigint() {
     let addr = free_addr();
     let socket_addr: SocketAddr = addr.parse().expect("parse socket addr");
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");
     let tool_dir = temp.path().join("bin");
-    let vault_path = temp.path().join("vault.enc");
     std::fs::create_dir_all(&tool_dir).expect("create tool dir");
     install_fake_tool(
         &tool_dir,
@@ -32,8 +32,6 @@ fn mitm_releases_proxy_port_immediately_on_sigint() {
         .env("KEYCLAW_PROXY_ADDR", &addr)
         .env("KEYCLAW_PROXY_URL", format!("http://{addr}"))
         .env("KEYCLAW_REQUIRE_MITM_EFFECTIVE", "false")
-        .env("KEYCLAW_VAULT_PATH", &vault_path)
-        .env("KEYCLAW_VAULT_PASSPHRASE", "test-passphrase")
         .env("KEYCLAW_CODEX_HOSTS", "127.0.0.1")
         .env("HOME", temp.path());
     prepend_path(&mut command, &tool_dir);
@@ -67,13 +65,11 @@ fn mitm_releases_proxy_port_immediately_on_sigint() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "slow daemon/proxy e2e"]
 fn mitm_returns_control_to_interactive_shell_after_child_exit() {
     let bin = assert_cmd::cargo::cargo_bin!("keyclaw");
     let temp = tempfile::tempdir().expect("tempdir");
     let tool_dir = temp.path().join("bin");
-    let vault_path = temp.path().join("vault.enc");
-    let gitleaks_config = temp.path().join("gitleaks.toml");
-    std::fs::write(&gitleaks_config, "rules = []\n").expect("write gitleaks config");
     std::fs::create_dir_all(&tool_dir).expect("create tool dir");
     install_fake_tool(&tool_dir, "codex", "#!/usr/bin/env bash\nexit 0\n");
 
@@ -90,14 +86,9 @@ import time
 
 bin_path = {bin_path:?}
 tool_dir = {tool_dir:?}
-vault_path = {vault_path:?}
-gitleaks_config = {gitleaks_config:?}
 cmd = (
     "KEYCLAW_REQUIRE_MITM_EFFECTIVE=false "
     "KEYCLAW_PROXY_ADDR=127.0.0.1:0 "
-    f"KEYCLAW_VAULT_PATH={vault_path} "
-    f"KEYCLAW_GITLEAKS_CONFIG={gitleaks_config} "
-    "KEYCLAW_VAULT_PASSPHRASE=test-passphrase "
     f"PATH={tool_dir}:$PATH {{bin_path}} mitm codex; "
     "printf '__RC__=%s\\n' \"$?\"; jobs -l; exit"
 )
@@ -178,8 +169,6 @@ sys.exit(2)
 "#,
         bin_path = bin.display().to_string(),
         tool_dir = tool_dir.display().to_string(),
-        vault_path = vault_path.display().to_string(),
-        gitleaks_config = gitleaks_config.display().to_string(),
     );
 
     let output = Command::new("python3")

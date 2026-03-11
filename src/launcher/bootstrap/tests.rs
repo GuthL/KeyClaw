@@ -1,22 +1,21 @@
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config::Config;
 use crate::logging::LogLevel;
+use crate::sensitive::{LocalClassifierConfig, SensitiveDataConfig};
 
-fn test_config(vault_path: PathBuf) -> Config {
+fn test_config() -> Config {
     Config {
         proxy_listen_addr: "127.0.0.1:8877".into(),
         proxy_url: "http://127.0.0.1:8877".into(),
         ca_cert_path: String::new(),
-        vault_path,
-        vault_passphrase: None,
         fail_closed: true,
         max_body_bytes: 2 * 1024 * 1024,
         detector_timeout: Duration::from_secs(4),
         known_codex_hosts: Vec::new(),
         known_claude_hosts: Vec::new(),
-        gitleaks_config_path: None,
+        known_provider_hosts: Vec::new(),
+        include_hosts: Vec::new(),
         log_level: LogLevel::Info,
         unsafe_log: false,
         require_mitm_effective: true,
@@ -26,7 +25,10 @@ fn test_config(vault_path: PathBuf) -> Config {
         entropy_threshold: 3.5,
         entropy_min_len: 20,
         audit_log_path: Some(crate::audit::default_audit_log_path()),
+        sensitive_data: SensitiveDataConfig::default(),
+        local_classifier: LocalClassifierConfig::default(),
         allowlist: crate::allowlist::Allowlist::default(),
+        hooks: Vec::new(),
         config_file_status: crate::config::ConfigFileStatus::Missing(
             crate::config::default_config_path(),
         ),
@@ -34,17 +36,17 @@ fn test_config(vault_path: PathBuf) -> Config {
 }
 
 #[test]
-fn load_runtime_ruleset_falls_back_to_bundled_rules_when_custom_file_fails() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let mut cfg = test_config(temp.path().join("vault.enc"));
-    cfg.gitleaks_config_path = Some(temp.path().join("missing-gitleaks.toml"));
+fn test_detection_engine_uses_entropy_settings_from_config() {
+    let mut cfg = test_config();
+    cfg.entropy_enabled = false;
+    cfg.entropy_threshold = 4.25;
+    cfg.entropy_min_len = 28;
 
-    let ruleset = super::detection::load_runtime_ruleset(&cfg).expect("fallback to bundled rules");
+    let engine = super::detection::test_detection_engine(&cfg);
 
-    assert!(
-        !ruleset.rules.is_empty(),
-        "bundled fallback should still load shipped rules"
-    );
+    assert!(!engine.entropy_config().enabled);
+    assert!((engine.entropy_config().threshold - 4.25).abs() < f64::EPSILON);
+    assert_eq!(engine.entropy_config().min_len, 28);
 }
 
 #[test]
@@ -97,5 +99,54 @@ fn read_proxy_addr_from_env_returns_none_for_missing_file() {
     assert_eq!(
         super::proxy_daemon::read_proxy_addr_from_env(&env_path),
         None
+    );
+}
+
+#[test]
+fn proxy_addr_is_listening_detects_live_listener() {
+    let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping loopback listener test: {err}");
+            return;
+        }
+        Err(err) => panic!("bind listener: {err}"),
+    };
+    let addr = listener.local_addr().expect("local addr");
+
+    assert!(super::proxy_daemon::proxy_addr_is_listening(
+        &addr.to_string()
+    ));
+
+    drop(listener);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        if !super::proxy_daemon::proxy_addr_is_listening(&addr.to_string()) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    assert!(
+        !super::proxy_daemon::proxy_addr_is_listening(&addr.to_string()),
+        "listener should stop accepting connections after drop"
+    );
+}
+
+#[test]
+fn detached_proxy_env_forwards_include_hosts() {
+    let mut cfg = test_config();
+    cfg.add_include_hosts(vec![
+        "*my-custom-api.com*".into(),
+        "api.together.xyz".into(),
+    ]);
+
+    let env = super::proxy_daemon::detached_proxy_env(&cfg);
+
+    assert_eq!(
+        env.iter()
+            .find(|(key, _)| key == "KEYCLAW_INCLUDE_HOSTS")
+            .map(|(_, value): &(String, String)| value.as_str()),
+        Some("*my-custom-api.com*,api.together.xyz")
     );
 }

@@ -95,13 +95,13 @@ mod tests {
     #[test]
     fn allows_by_rule_id_pattern_and_hash() {
         let allowlist = Allowlist::from_parts(
-            &["generic-api-key".to_string()],
+            &["opaque.high_entropy".to_string()],
             &["^sk-test-".to_string()],
             &[hex::encode(sha2::Sha256::digest(b"exact-secret-value"))],
         )
         .expect("allowlist");
 
-        assert!(allowlist.allows("generic-api-key", "ignored"));
+        assert!(allowlist.allows("opaque.high_entropy", "ignored"));
         assert!(allowlist.allows("other-rule", "sk-test-123"));
         assert!(allowlist.allows("other-rule", "exact-secret-value"));
         assert!(!allowlist.allows("other-rule", "real-secret"));

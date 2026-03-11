@@ -1,147 +1,127 @@
 # AGENTS.md — Agent Guide to KeyClaw
 
-This file helps AI coding agents (Claude, Codex, Cursor, etc.) understand and work with the KeyClaw codebase effectively.
+This guide gives coding agents the minimum context needed to work in the KeyClaw repository without rediscovering the runtime model from scratch.
 
-## What Is KeyClaw?
+## What KeyClaw Is
 
-KeyClaw is a **local MITM proxy** written in Rust that sits between AI coding CLI tools and their APIs. It intercepts HTTP/HTTPS/WebSocket traffic, detects secrets in request payloads, replaces them with safe placeholders, and reinjects the real values in responses — all transparently.
+KeyClaw is a local MITM proxy for AI developer tools. It strips sensitive values out of outbound HTTP, SSE, and WebSocket traffic before it reaches the remote model, then resolves placeholders back into inbound responses on the local machine.
 
-## Build & Test
+The v2 runtime is built around:
+
+- `opaque_token` replacement for high-entropy credential-like spans
+- typed structured detectors for `password`, `email`, `phone`, `national_id`, `passport`, `payment_card`, and `cvv`
+- a session-scoped in-memory store instead of the old encrypted vault
+
+## Build And Test
 
 ```bash
-cargo build --release      # Build optimized binary
-cargo test                 # Run all tests
-cargo build                # Debug build (faster compilation)
+cargo build
+cargo test
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-The binary is at `./target/release/keyclaw`. No external services needed for building or testing.
+Use focused loops when you change sensitive-data behavior:
 
-## Architecture Overview
-
-### Request Flow (outbound)
-
-```
-User CLI → KeyClaw Proxy → detect secrets → replace with {{KEYCLAW_SECRET_<prefix>_<16 hex chars>}}
-→ store mapping in encrypted vault → forward sanitized request to API
+```bash
+cargo test placeholder
+cargo test --test pipeline
+cargo test --test integration_proxy
 ```
 
-### Response Flow (inbound)
+## Runtime Shape
 
+### Request path
+
+```text
+Client -> KeyClaw proxy -> detect sensitive values -> replace with {{KEYCLAW_<KIND>_<id>}}
+-> store in session-scoped resolver -> forward sanitized request upstream
 ```
-API response → KeyClaw Proxy → scan for {{KEYCLAW_SECRET_<prefix>_<16 hex chars>}} placeholders
-→ resolve from vault → reinject real secrets → forward to CLI
+
+### Response path
+
+```text
+Provider response -> KeyClaw proxy -> detect placeholders -> resolve from session store
+-> reinject real values -> forward resolved response to the local client
 ```
 
-### Key Design Decisions
+### Important design decisions
 
-1. **hudsucker** is the MITM proxy engine (HTTP/HTTPS/WebSocket)
-2. **Placeholders are deterministic** — same secret always produces same placeholder ID (SHA-256 based)
-3. **Vault is AES-GCM encrypted** with scrypt key derivation, atomic writes via temp file + rename
-4. **Fail-closed by default** — if detection errors occur, requests are blocked, not silently passed
-5. **WebSocket compression is stripped** — `Sec-WebSocket-Extensions` header is removed because tungstenite can't handle permessage-deflate (RSV1 bits)
-6. **SSE streams are not buffered** — placeholders are resolved per-chunk via `map_frame` to preserve streaming behavior
-7. **CA certs are generated at runtime** — no embedded certs, each machine generates its own on first run
+1. Placeholders are opaque and typed, for example `{{KEYCLAW_OPAQUE_<id>}}` or `{{KEYCLAW_EMAIL_<id>}}`.
+2. Placeholder IDs are session-scoped and do not expose prefixes from the original value.
+3. `src/sensitive.rs` is the detector center. Do not add new runtime detection paths outside it unless there is a clear architectural reason.
+4. `src/pipeline.rs` owns recursive request rewriting and response-side placeholder resolution.
+5. SSE and WebSocket resolution must preserve streaming semantics instead of flattening the whole exchange into one buffer.
+6. Fail-closed remains the default.
 
 ## Module Map
 
 | Module | Purpose | Key Types |
 |--------|---------|-----------|
-| `gitleaks_rules.rs` | Bundled gitleaks rule loading + compiled regex matching | `RuleSet` |
-| `pipeline.rs` | Orchestrates rewrite + policy evaluation | `Processor`, `RewriteResult` |
-| `placeholder.rs` | Placeholder parsing, generation, and resolution | `make_id()`, `resolve_placeholders()` |
-| `redaction.rs` | JSON tree walker, notice injection | `walk_json_strings()`, `inject_redaction_notice()` |
-| `vault.rs` | AES-GCM encrypted secret↔placeholder storage | `Store` |
-| `certgen.rs` | Runtime CA cert/key generation via rcgen | `ensure_ca()`, `CaPair` |
-| `proxy.rs` | Proxy server entrypoint + handler wiring | `Server`, `RunningServer` |
-| `proxy/common.rs` | Shared host checks, response helpers, and operator logging | `allowed()`, `request_host()` |
-| `proxy/http.rs` | HTTP request/response interception | `HttpHandler for KeyclawHttpHandler` |
-| `proxy/streaming.rs` | SSE frame resolution and buffering | `SseStreamResolver` |
-| `proxy/websocket.rs` | WebSocket message redaction and resolution | `WebSocketHandler for KeyclawHttpHandler` |
-| `launcher.rs` | CLI surface and subcommand dispatch | `run_cli()` |
-| `launcher/bootstrap.rs` | Processor/bootstrap setup and launched-tool wiring | `build_processor()`, `Runner` |
+| `sensitive.rs` | Typed detection engine, optional local classifier, session store | `DetectionEngine`, `SensitiveKind`, `SessionStore` |
+| `pipeline.rs` | Request rewrite and response resolution orchestration | `Processor`, `RewriteResult` |
+| `placeholder.rs` | Placeholder generation, parsing, and resolution helpers | `make_typed()`, `resolve_placeholders_typed()` |
+| `redaction.rs` | JSON walking and notice injection | `walk_json_strings()`, `inject_redaction_notice()` |
+| `hooks.rs` | Hook parsing and request-side dispatch | `HookRunner` |
+| `audit.rs` | Structured audit logging without raw values | `append_redactions()` |
+| `stats.rs` | Audit-log summarization for CLI reporting | `summarize_audit_log()` |
+| `proxy/common.rs` | Shared host checks and response helpers | `allowed()`, `request_host()` |
+| `proxy/http.rs` | HTTP interception | `HttpHandler for KeyclawHttpHandler` |
+| `proxy/streaming.rs` | SSE chunk buffering and placeholder resolution | `SseStreamResolver` |
+| `proxy/websocket.rs` | WebSocket message rewriting and resolution | `WebSocketHandler for KeyclawHttpHandler` |
+| `launcher/bootstrap.rs` | Runtime bootstrap and launched-tool wiring | `build_processor()`, `Runner` |
 | `launcher/doctor.rs` | Operator health checks | `run_doctor()` |
-| `config.rs` | Environment variable configuration | `Config` |
-| `errors.rs` | Error types with deterministic codes | `KeyclawError` |
-| `logging.rs` | Leveled runtime logger for operator-visible output | `configure()`, `info()` |
-| `logscrub.rs` | Sanitizes secrets from log output | `scrub()` |
+| `config.rs` | Config-file and env parsing | `Config` |
 
 ## Common Tasks
 
-### Adding a new secret pattern
+### Adding a new sensitive-data detector
 
-Edit `gitleaks.toml` to add or adjust the bundled rule, then use `tests/placeholder.rs` and `tests/integration_proxy.rs` to confirm the rewritten placeholder and round-trip resolution behavior. If the loading or compilation behavior itself needs to change, edit `src/gitleaks_rules.rs`.
+Edit `src/sensitive.rs` first. Add or adjust the detector, then extend:
+
+- `tests/placeholder.rs` for placeholder contract checks
+- `tests/pipeline.rs` for JSON rewrite behavior
+- `tests/integration_proxy.rs` when the change affects end-to-end proxy behavior
+
+If the change affects request notices or reporting, update `src/redaction.rs`, `src/audit.rs`, `src/hooks.rs`, or `src/stats.rs` as needed.
 
 ### Changing proxy behavior
 
-Edit the focused proxy modules rather than only the thin `src/proxy.rs` entrypoint:
-- `src/proxy/http.rs` — HTTP request/response interception, body collection, and response reinjection
-- `src/proxy/streaming.rs` — SSE frame handling and split-placeholder buffering
-- `src/proxy/websocket.rs` — WebSocket message redaction and resolution
-- `src/proxy/common.rs` — shared host checks, helpers, and operator-visible response building
+Edit the focused modules under `src/proxy/` rather than the thin `src/proxy.rs` entrypoint:
 
-### Adding a new CLI subcommand
+- `src/proxy/http.rs`
+- `src/proxy/streaming.rs`
+- `src/proxy/websocket.rs`
+- `src/proxy/common.rs`
 
-Edit `src/launcher.rs` to extend the clap surface and subcommand dispatch, then put the concrete behavior in the split launcher modules (`src/launcher/bootstrap.rs` today, or a new sibling module if the command needs its own file).
+### Changing configuration or CLI setup
 
-### Changing the redaction notice
+Edit `src/config.rs` for config/env parsing and the split launcher modules under `src/launcher/` for command behavior. `keyclaw doctor` and `keyclaw init` should stay aligned with the documented runtime model.
 
-Edit `src/redaction.rs` → `inject_redaction_notice_with_mode()` and `src/config.rs` for `KEYCLAW_NOTICE_MODE`. The notice is injected differently for Anthropic (appended to `system` field) vs OpenAI (added as `developer` role message), and the shipped modes are `verbose`, `minimal`, and `off`.
+## Placeholder Contract
 
-## Important Patterns
+Examples:
 
-### Placeholder format
-```
-{{KEYCLAW_SECRET_<prefix>_<16 hex chars>}}
-```
-The prefix is up to 5 visible characters derived from the secret, followed by a 16-hex SHA-256 digest fragment.
-Example: `{{KEYCLAW_SECRET_api_k_77dc0005c514277d}}`
-
-### Vault path
-```
-~/.keyclaw/vault.enc
+```text
+{{KEYCLAW_OPAQUE_<16 hex chars>}}
+{{KEYCLAW_EMAIL_<16 hex chars>}}
+{{KEYCLAW_PASSWORD_<16 hex chars>}}
 ```
 
-### CA cert/key (auto-generated)
-```
-~/.keyclaw/ca.crt
-~/.keyclaw/ca.key
-```
-
-### Proxy env integration
-```bash
-keyclaw proxy              # Start proxy daemon in the background
-source ~/.keyclaw/env.sh   # Route the current shell through it
-keyclaw proxy status       # Check if proxy is running
-keyclaw proxy stop         # Graceful shutdown
-```
-
-On Linux with `systemd --user`, `keyclaw proxy autostart enable` installs a per-user autostart service. That keeps the daemon alive across login/reboot, but shells still need `source ~/.keyclaw/env.sh`.
+Use the shared helpers in `src/placeholder.rs` rather than hard-coding raw string checks in runtime code or tests.
 
 ## Error Handling
 
-All errors use `KeyclawError` with optional deterministic codes:
-- `mitm_not_effective` — proxy bypass detected
-- `body_too_large` — request exceeds the configured max body size
-- `invalid_json` — JSON parse/rewrite failed
-- `request_timeout` — request body read timed out before inspection completed
-- `strict_resolve_failed` — placeholder resolution failed in strict mode
+All CLI/runtime errors use `KeyclawError` with optional stable codes:
 
-Check errors with `code_of(&err)` to get the code string.
+- `mitm_not_effective`
+- `body_too_large`
+- `invalid_json`
+- `request_timeout`
+- `strict_resolve_failed`
+- `hook_blocked`
 
-## Testing
+## Notes
 
-Tests are in `tests/`. Integration tests in `tests/integration_proxy.rs` spin up a real proxy. Unit tests cover detection, placeholder logic, policy decisions, and vault operations.
-
-```bash
-cargo test                          # All tests
-cargo test placeholder              # Just placeholder tests
-cargo test --test integration_proxy # Just proxy integration tests
-```
-
-## Dependencies to Know
-
-- **hudsucker 0.24** — MITM proxy engine (wraps hyper + rustls + tungstenite)
-- **rcgen 0.14** — CA certificate generation (via hudsucker re-export)
-- **aes-gcm** — Vault encryption
-- **aho-corasick** — Fast multi-pattern string matching for secret detection
-- **scrypt** — Key derivation for vault passphrase
+- `keyclaw doctor` is the first place to look for operator-facing configuration and trust-boundary problems.
+- The local classifier is optional and must remain secondary to deterministic detection.
+- Keep raw sensitive values out of logs, hooks, audit records, and tests unless a test is explicitly proving scrubbing behavior.

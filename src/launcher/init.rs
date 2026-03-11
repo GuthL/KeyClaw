@@ -40,14 +40,9 @@ fn run_init_inner(cfg: &Config, force: bool) -> Result<(), KeyclawError> {
     println!("[ok] CA certificate ready at {}", ca_cert_path.display());
     println!("[ok] CA key ready at {}", ca_key_path.display());
 
-    if let Some(vault_key_path) = ensure_vault_key(cfg, force)? {
-        println!("[ok] Vault key ready at {}", vault_key_path.display());
-    } else {
-        println!("[ok] Vault passphrase override is configured; skipped machine-local vault key");
-    }
-
     let env_path = ensure_env_script(cfg, force)?;
     println!("[ok] Env script ready at {}", env_path.display());
+    println!("[ok] Session-scoped sensitive-data store will initialize on first use");
 
     maybe_patch_shell_rc()?;
     Ok(())
@@ -66,22 +61,6 @@ fn ensure_ca_artifacts(force: bool) -> Result<(PathBuf, PathBuf), KeyclawError> 
     crate::certgen::ensure_ca()?;
     Ok((cert_path, key_path))
 }
-
-fn ensure_vault_key(cfg: &Config, force: bool) -> Result<Option<PathBuf>, KeyclawError> {
-    if cfg.vault_passphrase.is_some() {
-        return Ok(None);
-    }
-
-    let key_path = crate::vault::vault_key_path(&cfg.vault_path);
-    if force && key_path.exists() && !cfg.vault_path.exists() {
-        let _ = fs::remove_file(&key_path);
-    }
-
-    let _ =
-        crate::vault::resolve_vault_passphrase(&cfg.vault_path, cfg.vault_passphrase.as_deref())?;
-    Ok(Some(key_path))
-}
-
 fn ensure_env_script(cfg: &Config, force: bool) -> Result<PathBuf, KeyclawError> {
     let keyclaw_dir = crate::certgen::keyclaw_dir();
     let env_path = keyclaw_dir.join("env.sh");
@@ -174,7 +153,7 @@ fn append_shell_snippet(path: &Path) -> Result<(), KeyclawError> {
             return Err(KeyclawError::uncoded(format!(
                 "read shell rc {}: {err}",
                 path.display()
-            )))
+            )));
         }
     };
 

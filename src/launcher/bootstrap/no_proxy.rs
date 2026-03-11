@@ -87,6 +87,9 @@ fn normalize_no_proxy_host(host: &str) -> Option<String> {
     if host.is_empty() {
         return None;
     }
+    if host.contains('*') || host.contains('?') {
+        return None;
+    }
     Some(split_host_port(host).0.to_lowercase())
 }
 

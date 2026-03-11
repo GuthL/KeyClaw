@@ -6,6 +6,8 @@ mod command_surface;
 mod common;
 #[path = "e2e_cli/doctor.rs"]
 mod doctor;
+#[path = "e2e_cli/hooks.rs"]
+mod hooks;
 #[path = "e2e_cli/init.rs"]
 mod init;
 #[path = "e2e_cli/logging.rs"]
@@ -18,3 +20,5 @@ mod process_lifecycle;
 mod proxy;
 #[path = "e2e_cli/rewrite_json.rs"]
 mod rewrite_json;
+#[path = "e2e_cli/stats.rs"]
+mod stats;
