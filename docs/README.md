@@ -1,31 +1,37 @@
-# KeyClaw Docs
+# Documentation
 
-KeyClaw's README is optimized for first contact. This directory holds the deeper operational material that maintainers, reviewers, and security-minded adopters usually ask for next.
+This directory holds the operator and maintainer reference material that sits
+behind the top-level `README.md`.
 
-## Start Here
+## Operator Docs
 
-- [Architecture overview](architecture.md): request/response flow, major modules, and runtime trust boundaries
-- [Configuration reference](configuration.md): config file sections, environment variables, allowlists, audit log behavior, and daemon restart semantics
-- [macOS desktop-app guide](macos-gui-apps.md): system-proxy and CA-trust setup for Finder-launched apps such as Claude.app, Codex.app, and ChatGPT.app
-- [Supported secret patterns](secret-patterns.md): how the typed detectors and opaque-token detection work today
-- [Threat model](threat-model.md): what KeyClaw protects against, what it does not, and how to deploy it safely
+- [`architecture.md`](./architecture.md): how the runtime rewrites requests,
+  injects the KeyClaw notice, and resolves placeholders on the way back
+- [`configuration.md`](./configuration.md): config-file schema, environment
+  variables, and precedence rules
+- [`secret-patterns.md`](./secret-patterns.md): detector coverage, placeholder
+  shape, allowlist behavior, and testing notes for `src/sensitive.rs`
+- [`threat-model.md`](./threat-model.md): assets, trust boundaries, expected
+  adversaries, and residual risk
+- [`macos-gui-apps.md`](./macos-gui-apps.md): the supported path for
+  Finder-launched macOS apps
 
-## Source Of Truth
+## Maintainer Docs
 
-- Cargo package metadata lives in [`Cargo.toml`](../Cargo.toml)
-- Runtime behavior lives under [`src/`](../src)
-- Contributor workflows live in [`.github/`](../.github)
+- [`release/maintainer-checklist.md`](./release/maintainer-checklist.md):
+  release checklist for versioning, verification, publication, and rollback
+- [`plans/`](./plans/): archived plans, verification notes, and design records
 
-## Related Guides
+## Read This First
 
-- [README](../README.md): landing page, quickstart, positioning, and top-level operating guide
-- [CONTRIBUTING](../CONTRIBUTING.md): contributor workflow and local validation
-- [SECURITY](../SECURITY.md): private vulnerability reporting
-- [AGENTS](../AGENTS.md) and [CLAUDE](../CLAUDE.md): AI-agent repo guides
+If you are new to KeyClaw, start in this order:
 
-## Distribution
+1. [`../README.md`](../README.md)
+2. [`configuration.md`](./configuration.md)
+3. [`architecture.md`](./architecture.md)
+4. [`threat-model.md`](./threat-model.md)
 
-- Cargo install path: `cargo install keyclaw`
-- Homebrew tap: `brew tap GuthL/tap && brew install keyclaw`
-- Homebrew formula source: [`GuthL/homebrew-tap`](https://github.com/GuthL/homebrew-tap)
-- GitHub release artifacts: version tags published from [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+If you are changing detection behavior, also read:
+
+1. [`secret-patterns.md`](./secret-patterns.md)
+2. [`../CONTRIBUTING.md`](../CONTRIBUTING.md)

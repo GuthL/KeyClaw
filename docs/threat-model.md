@@ -1,61 +1,127 @@
 # Threat Model
 
-KeyClaw is a local developer-security tool. Its goal is to keep raw sensitive values out of model prompts and responses that traverse supported proxied traffic.
+KeyClaw is a local protective layer for supported AI traffic. Its main purpose
+is to keep raw sensitive values from reaching remote models, providers, logs,
+and downstream tools when those values travel through the configured proxy path.
 
-## Protected Assets
+## Assets
 
-- Opaque tokens and credentials that would otherwise be sent to upstream providers
-- Typed structured data such as passwords, emails, phone numbers, IDs, passport numbers, payment cards, and CVV values
-- Placeholder mappings kept in the session-scoped store
-- Operator confidence that the proxy path is actually effective
+The primary assets are:
 
-## What KeyClaw Protects Against
-
-- Accidental transmission of sensitive values to upstream LLM providers
-- Prompt payloads that include credentials, `.env` snippets, or structured personal data
-- Model responses that echo placeholders and need local reinjection
-- Silent proxy bypass when `KEYCLAW_REQUIRE_MITM_EFFECTIVE=true`
+- opaque tokens that may act like credentials
+- passwords
+- PII such as emails, phones, national IDs, and passports
+- payment cards and CVV
+- prompt content that may contain sensitive business data
+- audit metadata
+- placeholder mappings held in the session-scoped store
+- the local CA private key
 
 ## Trust Boundary
 
-The trust boundary is the local machine running KeyClaw and the AI client.
+Trusted local components:
 
-- Detection runs locally.
-- Placeholder generation runs locally.
-- The session-scoped store lives locally in memory.
-- Upstream providers only see sanitized placeholder forms, not raw values.
+- the rewrite engine in `src/pipeline.rs`
+- the detector and session-scoped store in `src/sensitive.rs`
+- placeholder parsing in `src/placeholder.rs`
+- the local filesystem state under `~/.keyclaw/`
 
-## Assumptions
+Untrusted or semi-trusted components:
 
-- The workstation itself is not already compromised.
-- The client is configured to route the relevant traffic through KeyClaw.
-- The client trusts the KeyClaw-generated CA.
-- Operators do not intentionally disable safety features such as log scrubbing without understanding the risk.
+- remote providers and hosted models
+- retrieved web content and prompt content
+- model output
+- tool output
+- request hooks that execute arbitrary commands
+- the optional local classifier, because it can misclassify even when it runs on
+  the same machine
+
+KeyClaw assumes the workstation itself is trusted enough to run the local
+process. A fully compromised workstation is out of scope.
+
+## Main Adversaries
+
+- a remote model or provider that logs or misuses raw input
+- prompt injection that tries to force tool-based exfiltration
+- accidental logging or telemetry that captures raw sensitive values
+- local misconfiguration that causes traffic to bypass the proxy
+- malformed payloads that try to confuse rewrite or reinjection logic
+- a user or tool that replays stale placeholders after the session-scoped store
+  has expired them
+
+## Security Goals
+
+1. Replace sensitive values before they leave the machine.
+2. Keep placeholder mappings in a session-scoped store instead of a long-lived
+   persistent secret database.
+3. Prevent raw sensitive values from appearing in normal logs, audit records,
+   and hook payloads.
+4. Fail clearly when traffic bypasses the proxy or when placeholder resolution
+   cannot be completed safely.
+
+## Controls
+
+### Pre-Provider Redaction
+
+The core control is local request rewriting before the request reaches the
+provider. If redaction succeeds, the model sees only placeholders such as
+`{{KEYCLAW_...}}`.
+
+### Session-Scoped Store
+
+Placeholder mappings live in a session-scoped store with TTL behavior. This
+limits the lifetime of locally stored sensitive material and reduces the blast
+radius of restart-time state leakage.
+
+### Fail-Closed Defaults
+
+The normal posture is fail closed:
+
+- rewrite failures block the request
+- `KEYCLAW_REQUIRE_MITM_EFFECTIVE=true` can block wrapped CLI sessions if the
+  proxy never sees traffic
+- strict placeholder resolution treats unknown or expired placeholders as
+  operator-visible failures
+
+### Sanitized Observability
+
+Audit logs, stats, and hook records are meant to carry metadata only:
+
+- rule id
+- kind
+- subtype
+- policy
+- placeholder
+- request host
+
+They should not contain raw secrets or PII in the normal path.
+
+### Narrow Host Scope
+
+KeyClaw only inspects configured provider hosts plus explicit includes. This
+keeps the proxy from acting as a general machine-wide inspection layer.
+
+## Known Limits
+
+- Detection is probabilistic. False negatives and false positives are possible.
+- The system does not inspect multipart uploads or arbitrary binary files.
+- Some desktop apps may bypass KeyClaw unless system proxy settings are correct.
+- Shape-preserving placeholders intentionally leak visible structure such as
+  length class and punctuation pattern.
+- Expired placeholders cannot be resolved after the session-scoped store drops
+  them.
+- `KEYCLAW_UNSAFE_LOG=true` weakens the normal logging safety model and should be
+  used only for local debugging.
 
 ## Out Of Scope
 
-- Protection against local malware or a compromised developer workstation
-- Traffic that never traverses the KeyClaw proxy
-- Hosts outside the built-in provider lists and any operator-supplied `include` patterns
-- Side channels such as exact secret-length leakage
-- Perfect detection across every possible prompt shape or value format
+- protecting a fully compromised workstation
+- protecting traffic that never routes through KeyClaw
+- social engineering
+- perfect semantic classification of every random-looking token
+- guaranteeing availability against local denial-of-service
 
-## Failure Modes To Watch
+## Reporting
 
-- `NO_PROXY` or direct client configuration bypasses the proxy
-- Broken CA trust makes the client talk around KeyClaw or fail TLS entirely
-- `KEYCLAW_UNSAFE_LOG=true` can leak raw values to local logs
-- Short session TTLs can cause placeholder resolution misses if a long-running conversation refers back to old placeholders
-- Overbroad allowlist entries can intentionally suppress needed redactions
-
-## Operational Guidance
-
-- Run `keyclaw doctor` after setup changes.
-- Keep `KEYCLAW_REQUIRE_MITM_EFFECTIVE=true` enabled.
-- Leave `KEYCLAW_UNSAFE_LOG` unset outside short-lived debugging.
-- Review allowlist entries carefully; they are explicit escapes from normal protection.
-- Treat the local CA material and proxy host machine as sensitive local state.
-
-## Summary
-
-KeyClaw is strongest when treated as a local inline control for supported traffic, not as a universal data-loss-prevention platform. It reduces accidental exposure to model providers, but it does not replace workstation security, credential hygiene, or offline scanning.
+If you find a security issue, follow the private reporting instructions in
+[`../SECURITY.md`](../SECURITY.md).
