@@ -93,29 +93,29 @@ impl SensitiveKind {
         }
     }
 
-    pub fn placeholder_label(self) -> &'static str {
+    pub fn placeholder_tag(self) -> char {
         match self {
-            Self::OpaqueToken => "OPAQUE",
-            Self::Password => "PASSWORD",
-            Self::Email => "EMAIL",
-            Self::Phone => "PHONE",
-            Self::NationalId => "ID",
-            Self::Passport => "PASSPORT",
-            Self::PaymentCard => "CARD",
-            Self::Cvv => "CVV",
+            Self::OpaqueToken => 'o',
+            Self::Password => 'p',
+            Self::Email => 'e',
+            Self::Phone => 'h',
+            Self::NationalId => 'i',
+            Self::Passport => 's',
+            Self::PaymentCard => 'c',
+            Self::Cvv => 'v',
         }
     }
 
-    pub fn from_placeholder_label(label: &str) -> Option<Self> {
-        match label {
-            "OPAQUE" => Some(Self::OpaqueToken),
-            "PASSWORD" => Some(Self::Password),
-            "EMAIL" => Some(Self::Email),
-            "PHONE" => Some(Self::Phone),
-            "ID" => Some(Self::NationalId),
-            "PASSPORT" => Some(Self::Passport),
-            "CARD" => Some(Self::PaymentCard),
-            "CVV" => Some(Self::Cvv),
+    pub fn from_placeholder_tag(tag: char) -> Option<Self> {
+        match tag {
+            'o' => Some(Self::OpaqueToken),
+            'p' => Some(Self::Password),
+            'e' => Some(Self::Email),
+            'h' => Some(Self::Phone),
+            'i' => Some(Self::NationalId),
+            's' => Some(Self::Passport),
+            'c' => Some(Self::PaymentCard),
+            'v' => Some(Self::Cvv),
             _ => None,
         }
     }
@@ -551,6 +551,7 @@ pub fn detect_sensitive<'a>(
     }
 
     let card_context = input.to_ascii_lowercase();
+    let placeholder_spans = find_placeholder_spans(input);
     let mut matches = Vec::new();
 
     if cfg.passwords_enabled {
@@ -564,7 +565,13 @@ pub fn detect_sensitive<'a>(
             confidence_score: 92,
             validator: Some(validate_password_candidate),
         };
-        detect_matches(input, &QUOTED_PASSWORD_RE, &labeled_password, &mut matches);
+        detect_matches(
+            input,
+            &QUOTED_PASSWORD_RE,
+            &labeled_password,
+            &placeholder_spans,
+            &mut matches,
+        );
         detect_matches(
             input,
             &UNQUOTED_PASSWORD_RE,
@@ -572,6 +579,7 @@ pub fn detect_sensitive<'a>(
                 confidence_score: 90,
                 ..labeled_password
             },
+            &placeholder_spans,
             &mut matches,
         );
         detect_matches(
@@ -583,6 +591,7 @@ pub fn detect_sensitive<'a>(
                 confidence_score: 95,
                 ..labeled_password
             },
+            &placeholder_spans,
             &mut matches,
         );
     }
@@ -601,6 +610,7 @@ pub fn detect_sensitive<'a>(
                 confidence_score: 90,
                 validator: Some(validate_email_candidate),
             },
+            &placeholder_spans,
             &mut matches,
         );
     }
@@ -619,6 +629,7 @@ pub fn detect_sensitive<'a>(
                 confidence_score: 55,
                 validator: Some(validate_phone_candidate),
             },
+            &placeholder_spans,
             &mut matches,
         );
     }
@@ -637,6 +648,7 @@ pub fn detect_sensitive<'a>(
                 confidence_score: 94,
                 validator: Some(validate_ssn_candidate),
             },
+            &placeholder_spans,
             &mut matches,
         );
         detect_matches(
@@ -652,6 +664,7 @@ pub fn detect_sensitive<'a>(
                 confidence_score: 58,
                 validator: Some(validate_id_candidate),
             },
+            &placeholder_spans,
             &mut matches,
         );
     }
@@ -670,6 +683,7 @@ pub fn detect_sensitive<'a>(
                 confidence_score: 58,
                 validator: Some(validate_passport_candidate),
             },
+            &placeholder_spans,
             &mut matches,
         );
     }
@@ -680,6 +694,9 @@ pub fn detect_sensitive<'a>(
             let Some(value_match) = caps.name("value") else {
                 continue;
             };
+            if overlaps_placeholder(value_match.start(), value_match.end(), &placeholder_spans) {
+                continue;
+            }
             let candidate = value_match.as_str();
             let Some(normalized) = normalize_card_candidate(candidate) else {
                 continue;
@@ -721,6 +738,7 @@ pub fn detect_sensitive<'a>(
                 confidence_score: 56,
                 validator: Some(validate_cvv_candidate),
             },
+            &placeholder_spans,
             &mut matches,
         );
     }
@@ -802,18 +820,47 @@ fn detect_matches<'a>(
     input: &'a str,
     regex: &Regex,
     spec: &DetectionSpec,
+    placeholder_spans: &[(usize, usize)],
     out: &mut Vec<DetectionMatch<'a>>,
 ) {
     for caps in regex.captures_iter(input) {
         let Some(value_match) = caps.name("value") else {
             continue;
         };
+        if overlaps_placeholder(value_match.start(), value_match.end(), placeholder_spans) {
+            continue;
+        }
         let candidate = value_match.as_str();
         if spec.validator.is_some_and(|check| !check(candidate)) {
             continue;
         }
         out.push(spec.to_match(value_match.start(), value_match.end(), candidate));
     }
+}
+
+fn find_placeholder_spans(input: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+
+    while let Some(rel) = input[cursor..].find("{{KEYCLAW_") {
+        let start = cursor + rel;
+        if let Some(len) = crate::placeholder::complete_placeholder_len(&input[start..]) {
+            spans.push((start, start + len));
+            cursor = start + len;
+        } else {
+            cursor = start + "{{KEYCLAW_".len();
+        }
+    }
+
+    spans
+}
+
+fn overlaps_placeholder(start: usize, end: usize, placeholder_spans: &[(usize, usize)]) -> bool {
+    placeholder_spans
+        .iter()
+        .any(|(placeholder_start, placeholder_end)| {
+            start < *placeholder_end && end > *placeholder_start
+        })
 }
 
 fn retain_best_matches<'a>(mut matches: Vec<DetectionMatch<'a>>) -> Vec<DetectionMatch<'a>> {

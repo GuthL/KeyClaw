@@ -134,7 +134,10 @@ fn redaction_notice_text(count: usize, mode: NoticeMode, replacements: &[Replace
     match mode {
         NoticeMode::Verbose => format!(
             "{} sensitive value(s) in this conversation were automatically redacted and replaced \
-             with placeholders (like {}) by KeyClaw, an on-device security proxy. \
+             with format-preserving placeholders (like {}). The placeholder format is \
+             {{{{KEYCLAW_<shape>~<kind><id>}}}} where <shape> mirrors the original value's visible \
+             character pattern without revealing the real characters. KeyClaw is an on-device \
+             security proxy. \
              {} \
              You did NOT see the real secret values. \
              IMPORTANT: The first time you encounter a redacted placeholder in this conversation, \
@@ -151,7 +154,8 @@ fn redaction_notice_text(count: usize, mode: NoticeMode, replacements: &[Replace
         ),
         NoticeMode::Minimal => format!(
             "{} sensitive value(s) in this conversation were redacted by KeyClaw and replaced with \
-             placeholders (like {}). You only see the placeholders, not the real secret values. \
+             format-preserving placeholders (like {}). Format: \
+             {{{{KEYCLAW_<shape>~<kind><id>}}}}. You only see the placeholders, not the real secret values. \
              {} \
              Use the placeholders normally; the on-device proxy reinjects the real credentials \
              before requests leave this machine.",

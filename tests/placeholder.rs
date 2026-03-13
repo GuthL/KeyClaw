@@ -9,7 +9,7 @@ use keyclaw::sensitive::SensitiveKind;
 fn opaque_placeholders_roundtrip_through_legacy_resolver() {
     let secret = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v";
     let id = make_id(secret);
-    let placeholder = make(&id);
+    let placeholder = make(secret, &id);
 
     assert!(is_placeholder(&placeholder), "placeholder={placeholder}");
     assert!(contains_complete_placeholder(&format!(
@@ -28,7 +28,11 @@ fn opaque_placeholders_roundtrip_through_legacy_resolver() {
 
 #[test]
 fn typed_placeholders_roundtrip_through_typed_resolver() {
-    let placeholder = make_typed(SensitiveKind::Email, "0123456789abcdef");
+    let placeholder = make_typed(
+        SensitiveKind::Email,
+        "alice@company.dev",
+        "0123456789abcdef",
+    );
 
     assert!(is_placeholder(&placeholder), "placeholder={placeholder}");
     assert_eq!(find_partial_placeholder_start(&placeholder), None);
@@ -45,11 +49,17 @@ fn typed_placeholders_roundtrip_through_typed_resolver() {
 
 #[test]
 fn typed_placeholders_do_not_leak_value_prefixes() {
-    let first = make_typed(SensitiveKind::Password, "0123456789abcdef");
-    let second = make_typed(SensitiveKind::Password, "fedcba9876543210");
+    let first = make_typed(SensitiveKind::Password, "hunter2!", "0123456789abcdef");
+    let second = make_typed(
+        SensitiveKind::Password,
+        "CorrectHorseBatteryStaple!",
+        "fedcba9876543210",
+    );
 
-    assert!(first.starts_with("{{KEYCLAW_PASSWORD_"), "{first}");
-    assert!(second.starts_with("{{KEYCLAW_PASSWORD_"), "{second}");
+    assert!(first.starts_with("{{KEYCLAW_"), "{first}");
+    assert!(second.starts_with("{{KEYCLAW_"), "{second}");
+    assert!(first.contains("aaaaaa0x~p"), "{first}");
+    assert!(second.contains("AaaaaaaAaaaaAaaaaaaAaaaaax~p"), "{second}");
     assert!(!first.contains("hunter2"), "{first}");
     assert!(!second.contains("hunter2"), "{second}");
 }
@@ -59,27 +69,27 @@ fn partial_placeholder_detection_handles_short_marker_prefixes() {
     assert_eq!(find_partial_placeholder_start("{"), Some(0));
     assert_eq!(find_partial_placeholder_start("abc{{KE"), Some(3));
     assert_eq!(
-        find_partial_placeholder_start("abc{{KEYCLAW_OPAQUE_deadbeefcafeba"),
+        find_partial_placeholder_start("abc{{KEYCLAW_Aaaa0000~odeadbeefcafeba"),
         Some(3)
     );
     assert_eq!(
-        find_partial_placeholder_start("{{KEYCLAW_OPAQUE_deadbeefcafebabe}}"),
+        find_partial_placeholder_start("{{KEYCLAW_Aaaa0000~odeadbeefcafebabe}}"),
         None
     );
 }
 
 #[test]
 fn complete_placeholder_detection_matches_only_real_placeholders() {
-    let placeholder = make("deadbeefcafebabe");
+    let placeholder = make("deadbeefcafebabe", "deadbeefcafebabe");
 
     assert!(contains_complete_placeholder(&format!(
         "value {placeholder}"
     )));
     assert!(!contains_complete_placeholder(
-        "value {{KEYCLAW_OPAQUE_xxxx}}"
+        "value {{KEYCLAW_Aa0a-0000~oxxxx}}"
     ));
     assert!(!contains_complete_placeholder(
-        "value {{KEYCLAW_OPAQUE_deadbeefcafeba"
+        "value {{KEYCLAW_Aaaa0000~odeadbeefcafeba"
     ));
 }
 

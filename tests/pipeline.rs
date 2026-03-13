@@ -46,7 +46,7 @@ fn resolve_text_strict_mode_errors_on_missing_placeholder() {
     );
 
     let err = processor
-        .resolve_text(b"hello {{KEYCLAW_OPAQUE_deadbeefcafebabe}}")
+        .resolve_text(b"hello {{KEYCLAW_Aa0a0000~odeadbeefcafebabe}}")
         .expect_err("strict mode should fail when placeholder cannot be resolved");
 
     assert_eq!(code_of(&err), Some(CODE_STRICT_RESOLVE_FAILED));
@@ -61,7 +61,7 @@ fn resolve_text_non_strict_mode_passes_through_missing_placeholder() {
         SensitiveDataConfig::default(),
     );
 
-    let payload = b"hello {{KEYCLAW_OPAQUE_deadbeefcafebabe}}";
+    let payload = b"hello {{KEYCLAW_Aa0a0000~odeadbeefcafebabe}}";
     let resolved = processor
         .resolve_text(payload)
         .expect("non-strict pass-through");
@@ -87,7 +87,7 @@ fn rewrite_detects_and_replaces_opaque_tokens() {
 
     let rewritten = String::from_utf8_lossy(&result.body);
     assert!(contains_complete_placeholder(&rewritten), "{rewritten}");
-    assert!(rewritten.contains("{{KEYCLAW_OPAQUE_"), "{rewritten}");
+    assert!(rewritten.contains("{{KEYCLAW_"), "{rewritten}");
     assert!(!rewritten.contains("aB3dE5fG"), "{rewritten}");
 
     let resolved = processor.resolve_json(&result.body).expect("resolve json");
@@ -161,9 +161,14 @@ fn rewrite_dry_run_reports_typed_placeholders_without_prefix_leakage() {
     assert_eq!(result.replacements.len(), 1);
     assert_eq!(result.replacements[0].kind, SensitiveKind::Email);
     assert!(
+        result.replacements[0].placeholder.starts_with("{{KEYCLAW_"),
+        "{:?}",
+        result.replacements[0]
+    );
+    assert!(
         result.replacements[0]
             .placeholder
-            .starts_with("{{KEYCLAW_EMAIL_"),
+            .contains("aaaaa@aaaaaaa.aaa~e"),
         "{:?}",
         result.replacements[0]
     );

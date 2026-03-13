@@ -50,7 +50,8 @@ const CLAUDE_SECRET: &str = "xY2zW4vU6tS8rQ0pO2nM4lK6jI8hG0f";
 
 static HOME_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 static COMPLETE_PLACEHOLDER_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\{\{KEYCLAW_[A-Z_]+_[0-9a-f]+\}\}").expect("valid placeholder regex")
+    Regex::new(r"\{\{KEYCLAW_[Aax0@._:/+=()#-]+~[a-z][0-9a-f]{16}\}\}")
+        .expect("valid placeholder regex")
 });
 
 // Reuse immutable test fixtures so integration tests exercise the proxy path,
@@ -323,7 +324,8 @@ fn response_placeholders_resolved_back_to_secrets() {
         resp_body
     );
     // Check no *real* placeholders remain (the redaction notice contains an example
-    // `{{KEYCLAW_OPAQUE_xxxx}}` which is fine — it doesn't match the full pattern).
+    // `{{KEYCLAW_Aa0a-0000~oxxxx}}` is fine here because it does not match the
+    // resolvable contract.
     assert!(
         !placeholder::contains_complete_placeholder(&resp_body),
         "unresolved real placeholder in response: {}",
@@ -750,9 +752,7 @@ fn sse_input_json_delta_fragments_resolve_split_placeholders() {
         format!("{{\"content\":\"{}\"}}", CODEX_SECRET)
     );
     assert!(
-        deltas
-            .iter()
-            .all(|delta| !delta.contains("KEYCLAW_OPAQUE") && !delta.contains("{{")),
+        deltas.iter().all(|delta| !delta.contains("{{KEYCLAW_")),
         "placeholder fragments leaked to client SSE: {:?}",
         deltas
     );

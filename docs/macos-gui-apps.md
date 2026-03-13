@@ -1,115 +1,104 @@
-# macOS Desktop-App Guide
+# macOS GUI Apps
 
-KeyClaw's CLI wrappers are the preferred macOS path because they inject proxy settings and CA trust into the child process directly.
+The recommended KeyClaw path on macOS is still the CLI wrapper flow:
 
-Finder-launched apps are different. `Claude.app`, `Codex.app`, `ChatGPT.app`, and similar GUI clients are launched by macOS, not by your shell, so they do not reliably inherit the proxy environment you get from `source ~/.keyclaw/env.sh`.
+- `keyclaw codex ...`
+- `keyclaw claude ...`
 
-The current supported path for macOS desktop apps is:
+Finder-launched desktop apps need more setup because shell environment injection
+is not enough.
 
-1. initialize KeyClaw normally
-2. trust `~/.keyclaw/ca.crt` in the login keychain for SSL
-3. run a healthy KeyClaw proxy
-4. enable the macOS HTTP and HTTPS system proxy on the active network service
-5. fully relaunch the desktop app
+## Supported Setup
 
-## Prerequisites
+Use this sequence when you want a GUI app to route traffic through KeyClaw:
 
-Run the normal first-run setup first:
+1. Run `keyclaw init`.
+2. Trust `~/.keyclaw/ca.crt` in the login keychain for SSL inspection.
+3. Start a healthy KeyClaw proxy.
+4. Point the macOS HTTP and HTTPS system proxy at the KeyClaw listener.
+5. Fully relaunch the desktop app.
+
+If one of those steps is missing, the app may bypass KeyClaw entirely or fail
+TLS validation.
+
+## Step By Step
+
+### 1. Initialize KeyClaw
 
 ```bash
 keyclaw init
-keyclaw proxy
-keyclaw proxy status
 keyclaw doctor
 ```
 
-If `keyclaw proxy status` is not healthy, do not enable the macOS system proxy yet. A system proxy that points at a dead KeyClaw listener can break browser and desktop-app connectivity. On macOS, `keyclaw doctor` also warns when Finder-launched apps are likely bypassing the proxy or when `~/.keyclaw/ca.crt` is not trusted for SSL in the login keychain.
+This creates:
 
-## Trust The KeyClaw CA
+- `~/.keyclaw/ca.crt`
+- `~/.keyclaw/ca.key`
+- `~/.keyclaw/env.sh`
 
-Trust `~/.keyclaw/ca.crt` in the login keychain for SSL:
+### 2. Trust The CA
 
-```bash
-security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db ~/.keyclaw/ca.crt
-killall trustd || true
-```
+Open `~/.keyclaw/ca.crt` in Keychain Access and trust it for SSL in the login
+keychain.
 
-Verify it:
+`keyclaw doctor` checks this with `security verify-cert`.
 
-```bash
-security verify-cert -c ~/.keyclaw/ca.crt -k ~/Library/Keychains/login.keychain-db -p ssl
-```
+### 3. Start The Proxy
 
-Use the user login keychain path above. The desktop-app trace showed that an incorrect trust-domain shape can still leave Electron/Chromium apps rejecting the KeyClaw CA with certificate-authority errors.
-
-## Enable The System Proxy
-
-Find the active network service if needed:
+Foreground:
 
 ```bash
-route get default
-networksetup -listnetworkserviceorder
+keyclaw proxy start --foreground
 ```
 
-Then enable the proxy on that service. Example for `Wi-Fi`:
+Detached:
 
 ```bash
-networksetup -setwebproxy "Wi-Fi" 127.0.0.1 8877 off
-networksetup -setsecurewebproxy "Wi-Fi" 127.0.0.1 8877 off
-networksetup -setwebproxystate "Wi-Fi" on
-networksetup -setsecurewebproxystate "Wi-Fi" on
-networksetup -setproxybypassdomains "Wi-Fi" localhost 127.0.0.1 "*.local" "169.254/16"
+keyclaw proxy start
 ```
 
-Check the live state:
+`keyclaw proxy status` should report the listener as healthy before you proceed.
 
-```bash
-networksetup -getwebproxy "Wi-Fi"
-networksetup -getsecurewebproxy "Wi-Fi"
-scutil --proxy
+### 4. Enable The System Proxy
+
+On the active network service, set both:
+
+- HTTP proxy
+- HTTPS proxy
+
+to the KeyClaw listener, usually `127.0.0.1:8877`.
+
+`keyclaw doctor` checks the current macOS system proxy settings through
+`scutil --proxy`.
+
+### 5. Relaunch The App
+
+Close the GUI app completely and relaunch it after the system proxy is set.
+
+Apps that keep long-lived connections open may not pick up the new proxy until a
+full restart.
+
+## Autostart
+
+`keyclaw proxy autostart enable` installs a per-user LaunchAgent:
+
+```text
+~/Library/LaunchAgents/com.keyclaw.proxy.plist
 ```
 
-You want both HTTP and HTTPS proxies enabled and pointing at `127.0.0.1:8877`.
+This keeps the daemon running after login. It does not set the macOS system
+proxy for you, and it does not modify existing shell sessions.
 
-## Relaunch And Verify
+## Common Failure Modes
 
-Fully quit and relaunch the desktop app after changing the proxy:
+- The app is launched from Finder but the system proxy is still off.
+- The CA exists but is not trusted in the login keychain.
+- The daemon is not healthy or is bound to a different address than the one
+  configured in the macOS system proxy.
+- The app was not fully restarted after proxy settings changed.
 
-```bash
-osascript -e 'tell application "Claude" to quit' || true
-open -a Claude
-```
+## Practical Advice
 
-Use the same pattern for `Codex` or `ChatGPT`.
-
-Useful verification checks:
-
-```bash
-keyclaw doctor
-keyclaw proxy status
-lsof -nP -iTCP:8877
-tail -n 50 ~/.keyclaw/audit.log
-```
-
-Healthy signs:
-
-- the app or its network helper has a live `127.0.0.1:* -> 127.0.0.1:8877` connection
-- `keyclaw proxy status` reports the proxy as healthy
-- audit-log entries or runtime logs show real provider hosts instead of only `stdin` or localhost test traffic
-
-## Roll Back
-
-To stop forcing macOS desktop traffic through KeyClaw:
-
-```bash
-networksetup -setwebproxystate "Wi-Fi" off
-networksetup -setsecurewebproxystate "Wi-Fi" off
-```
-
-Then relaunch the desktop app again.
-
-## Notes
-
-- The CLI wrappers remain the simpler and higher-confidence path when they are available.
-- Desktop-app support depends on both correct CA trust and a healthy system-proxy listener.
-- If traffic still \"feels low,\" inspect `keyclaw proxy stats`, `~/.keyclaw/audit.log`, and runtime logs before assuming detection is broken.
+If you control how the app is launched and the app has a CLI entrypoint, prefer
+the wrapper path instead of system-wide GUI proxying. The wrapper path is easier
+to reason about, easier to disable, and easier to verify with `keyclaw doctor`.

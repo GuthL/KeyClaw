@@ -57,7 +57,7 @@ fn operator_docs_describe_session_scoped_runtime() {
     let threat =
         std::fs::read_to_string("docs/threat-model.md").expect("read docs/threat-model.md");
 
-    for expected in ["session-scoped", "KEYCLAW_OPAQUE", "opaque_token"] {
+    for expected in ["session-scoped", "{{KEYCLAW_", "opaque_token"] {
         assert!(
             readme.contains(expected),
             "README.md missing {expected}: {readme}"

@@ -89,10 +89,7 @@ path = "{}"
         log.contains("\"rule_id\":\"opaque.high_entropy\""),
         "log={log}"
     );
-    assert!(
-        log.contains("\"placeholder\":\"{{KEYCLAW_OPAQUE_"),
-        "log={log}"
-    );
+    assert!(log.contains("\"placeholder\":\"{{KEYCLAW_"), "log={log}");
     assert!(!log.contains(TEST_SECRET_CODEX), "log={log}");
 }
 
@@ -125,6 +122,7 @@ event = "secret_detected"
 rule_ids = ["opaque.high_entropy"]
 action = "exec"
 command = "hook-capture"
+timeout_ms = 5000
 "#,
     )
     .expect("write config");
@@ -159,10 +157,7 @@ command = "hook-capture"
         env_capture.contains("opaque.high_entropy"),
         "env={env_capture}"
     );
-    assert!(
-        env_capture.contains("{{KEYCLAW_OPAQUE_"),
-        "env={env_capture}"
-    );
+    assert!(env_capture.contains("{{KEYCLAW_"), "env={env_capture}");
     assert!(
         !env_capture.contains(TEST_SECRET_CODEX),
         "env={env_capture}"
@@ -174,7 +169,7 @@ command = "hook-capture"
         "stdin={stdin_capture}"
     );
     assert!(
-        stdin_capture.contains("\"placeholder\":\"{{KEYCLAW_OPAQUE_"),
+        stdin_capture.contains("\"placeholder\":\"{{KEYCLAW_"),
         "stdin={stdin_capture}"
     );
     assert!(
